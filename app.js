@@ -520,7 +520,10 @@ function searchBox(placeholder, onInput, autofocus = false) {
     autocomplete: 'off',
     'aria-label': placeholder,
   });
-  if (autofocus) input.autofocus = true;
+  if (autofocus) {
+    input.autofocus = true;
+    requestAnimationFrame(() => input.focus());
+  }
   input.addEventListener('input', () => onInput(input.value));
   return h(
     'div',
@@ -1277,15 +1280,419 @@ function renderMachineDetail(route) {
   );
 }
 
-/* ---------- Placeholders until later milestones ---------- */
+/* ---------- Parts ---------- */
 
-function renderParts() {
-  setTitle('Parts');
-  return page(
-    pageHead('Parts'),
-    emptyState('Parts arrive in M3', 'The parts inventory is being built.', []),
+function partRow(part) {
+  const low = isLowStock(part);
+  const unit = part.unit || 'pcs';
+  return h(
+    'a',
+    { class: 'row', href: `#/parts/${encodeURIComponent(part.id)}` },
+    h(
+      'div',
+      { class: 'row-main' },
+      h('div', { class: 'row-title' }, part.name),
+      h(
+        'div',
+        { class: 'row-sub' },
+        [part.partNumber, part.location].filter(Boolean).join(' · ') || 'No part number',
+      ),
+    ),
+    h(
+      'div',
+      { class: 'row-side' },
+      h(
+        'span',
+        { class: `qty${low ? ' low-text' : ''}` },
+        `${toInteger(part.qtyOnHand)} ${unit}`,
+      ),
+      low ? h('span', { class: 'pill status-low' }, 'Low stock') : null,
+    ),
+    h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
   );
 }
+
+function renderParts(route) {
+  setTitle('Parts');
+  const lowOnly = route.params.get('low') === '1' || route.params.get('filter') === 'low';
+  const listHost = h('div', { class: 'list' });
+
+  function update(query = '') {
+    let parts = searchParts(state.parts, query, state.machines);
+    if (lowOnly) parts = parts.filter(isLowStock);
+    parts = parts
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    if (parts.length === 0) {
+      listHost.replaceChildren(
+        emptyState(
+          query.trim() ? 'No matching parts' : lowOnly ? 'No low-stock parts' : 'No parts yet',
+          query.trim()
+            ? 'Try a different search.'
+            : lowOnly
+              ? 'Everything is above its minimum level.'
+              : 'Add needles, blades, sensors and other spares you keep on the shelf.',
+          query.trim() || lowOnly
+            ? []
+            : [h('a', { class: 'btn btn-primary', href: '#/parts/new' }, 'Add a part')],
+        ),
+      );
+    } else {
+      listHost.replaceChildren(...parts.map(partRow));
+    }
+  }
+
+  update();
+  return page(
+    pageHead('Parts', h('a', { class: 'btn btn-primary btn-small', href: '#/parts/new' }, '+ Add part')),
+    searchBox('Search parts', (value) => update(value), true),
+    h(
+      'div',
+      { class: 'chips', role: 'group', 'aria-label': 'Filter parts' },
+      h(
+        'a',
+        {
+          class: `chip${lowOnly ? ' is-active' : ''}`,
+          href: lowOnly ? '#/parts' : '#/parts?low=1',
+          'aria-pressed': lowOnly ? 'true' : 'false',
+        },
+        'Low stock only',
+      ),
+    ),
+    listHost,
+  );
+}
+
+function renderPartDetail(route) {
+  const part = partById(route.segments[1]);
+  setTitle(part ? part.name : 'Part not found');
+  if (!part) {
+    return page(
+      pageHead('Part not found'),
+      emptyState('That part does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/parts' }, 'Back to Parts'),
+      ]),
+    );
+  }
+
+  const low = isLowStock(part);
+  const machines = state.machines.filter((machine) => (part.machineIds || []).includes(machine.id));
+  const usedOn = sortWorkOrdersNewest(
+    state.workOrders.filter((order) =>
+      (order.partsUsed || []).some((item) => item.partId === part.id),
+    ),
+  );
+
+  async function adjust(delta) {
+    const fresh = partById(part.id);
+    if (!fresh) return;
+    const nextQty = Math.max(0, toInteger(fresh.qtyOnHand) + delta);
+    if (nextQty === toInteger(fresh.qtyOnHand)) return;
+    await db.put('parts', { ...fresh, qtyOnHand: nextQty, updatedAt: nowISO() });
+    await refreshState();
+    toast(`${fresh.name}: ${nextQty} ${fresh.unit || 'pcs'} on hand.`);
+    render();
+  }
+
+  async function deletePart() {
+    const yes = await showConfirm({
+      title: 'Delete this part?',
+      message: `${part.name} will be removed. Work orders that already used it will keep their record.`,
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      danger: true,
+    });
+    if (!yes) return;
+    await db.del('parts', part.id);
+    await refreshState();
+    toast('Part deleted.');
+    navigate('#/parts');
+  }
+
+  const details = h(
+    'dl',
+    { class: 'detail-grid' },
+    h('dt', {}, 'Part number'),
+    h('dd', {}, part.partNumber || '—'),
+    h('dt', {}, 'Minimum'),
+    h('dd', {}, `${toInteger(part.minQty)} ${part.unit || 'pcs'}`),
+    h('dt', {}, 'Location'),
+    h('dd', {}, part.location || '—'),
+    h('dt', {}, 'Supplier'),
+    h('dd', {}, part.supplier || '—'),
+    h('dt', {}, 'Supplier contact'),
+    h('dd', {}, part.supplierContact || '—'),
+    h('dt', {}, 'Fits machines'),
+    h(
+      'dd',
+      {},
+      machines.length
+        ? machines.map((machine, index) => [
+            index ? ' · ' : '',
+            h(
+              'a',
+              { class: 'inline-link', href: `#/machines/${encodeURIComponent(machine.id)}` },
+              machine.name,
+            ),
+          ])
+        : '—',
+    ),
+    h('dt', {}, 'Notes'),
+    h('dd', { class: 'pre' }, part.notes || '—'),
+  );
+
+  return page(
+    h(
+      'div',
+      { class: 'detail-head' },
+      h(
+        'div',
+        {},
+        h('h2', {}, part.name),
+        h('div', { class: 'row-sub' }, part.partNumber || 'No part number'),
+      ),
+      low ? h('span', { class: 'pill status-low' }, 'Low stock') : statusPill('ok', { ok: 'In stock' }),
+    ),
+    h(
+      'div',
+      { class: 'card' },
+      h(
+        'div',
+        { class: 'stock-controls' },
+        h(
+          'button',
+          {
+            class: 'btn',
+            type: 'button',
+            'aria-label': `Remove one ${part.name}`,
+            disabled: toInteger(part.qtyOnHand) <= 0,
+            onclick: () => adjust(-1),
+          },
+          '−1',
+        ),
+        h(
+          'span',
+          { class: `qty-big${low ? ' low-text' : ''}` },
+          String(toInteger(part.qtyOnHand)),
+        ),
+        h('span', { class: 'muted' }, part.unit || 'pcs'),
+        h(
+          'button',
+          {
+            class: 'btn',
+            type: 'button',
+            'aria-label': `Add one ${part.name}`,
+            onclick: () => adjust(1),
+          },
+          '+1',
+        ),
+      ),
+    ),
+    h(
+      'div',
+      { class: 'button-row', style: { marginTop: '0.75rem' } },
+      h('a', { class: 'btn btn-small', href: `#/parts/${encodeURIComponent(part.id)}/edit` }, 'Edit part'),
+    ),
+    h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
+    sectionTitle('Used on work orders'),
+    usedOn.length
+      ? h(
+          'div',
+          { class: 'list' },
+          ...usedOn.map((order) => {
+            const used = (order.partsUsed || []).find((item) => item.partId === part.id);
+            return h(
+              'a',
+              { class: 'row', href: `#/jobs/${encodeURIComponent(order.id)}` },
+              h(
+                'div',
+                { class: 'row-main' },
+                h('div', { class: 'row-title' }, order.title),
+                h(
+                  'div',
+                  { class: 'row-sub' },
+                  `${machineName(order.machineId)} · ${formatDate(order.reportedAt)}`,
+                ),
+              ),
+              h(
+                'div',
+                { class: 'row-side' },
+                statusPill(order.status, LABELS.status),
+                h('span', {}, `Used ${toInteger(used ? used.qty : 0)}`),
+              ),
+            );
+          }),
+        )
+      : h('p', { class: 'muted' }, 'This part has not been used on a work order yet.'),
+    h(
+      'div',
+      { class: 'form-actions', style: { marginTop: '1.5rem' } },
+      h('button', { class: 'btn btn-danger', type: 'button', onclick: deletePart }, 'Delete part'),
+    ),
+  );
+}
+
+function renderPartForm(route) {
+  const id = route.segments[1];
+  const editing = Boolean(id && id !== 'new');
+  const existing = editing ? partById(id) : null;
+  setTitle(editing ? 'Edit part' : 'Add part');
+  if (editing && !existing) {
+    return page(
+      pageHead('Part not found'),
+      emptyState('That part does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/parts' }, 'Back to Parts'),
+      ]),
+    );
+  }
+  const base = existing || {
+    name: '',
+    partNumber: '',
+    qtyOnHand: 0,
+    minQty: 0,
+    unit: 'pcs',
+    location: '',
+    supplier: '',
+    supplierContact: '',
+    machineIds: [],
+    notes: '',
+  };
+
+  const form = h('form', { class: 'form', novalidate: true });
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+  const nameInput = h('input', {
+    type: 'text',
+    required: true,
+    autocomplete: 'off',
+    placeholder: 'e.g. Needles DBx1 size 14',
+    value: base.name || '',
+  });
+  const partNumberInput = h('input', { type: 'text', value: base.partNumber || '' });
+  const qtyInput = h('input', {
+    type: 'number',
+    min: 0,
+    step: 1,
+    inputmode: 'numeric',
+    value: String(toInteger(base.qtyOnHand)),
+  });
+  const minInput = h('input', {
+    type: 'number',
+    min: 0,
+    step: 1,
+    inputmode: 'numeric',
+    value: String(toInteger(base.minQty)),
+  });
+  const unitInput = h('input', { type: 'text', value: base.unit || 'pcs' });
+  const locationInput = h('input', { type: 'text', value: base.location || '' });
+  const supplierInput = h('input', { type: 'text', value: base.supplier || '' });
+  const contactInput = h('input', { type: 'text', value: base.supplierContact || '' });
+  const notesInput = h('textarea', { rows: 4, value: base.notes || '' });
+
+  const machineChecks = h('div', { class: 'check-list' });
+  if (state.machines.length === 0) {
+    machineChecks.append(h('p', { class: 'field-hint' }, 'No machines added yet.'));
+  } else {
+    for (const machine of state.machines
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))) {
+      const checkId = `part-machine-${++fieldCounter}`;
+      const checkbox = h('input', {
+        type: 'checkbox',
+        checked: (base.machineIds || []).includes(machine.id),
+        value: machine.id,
+      });
+      checkbox.id = checkId;
+      machineChecks.append(
+        h(
+          'div',
+          { class: 'check-row' },
+          checkbox,
+          h('label', { for: checkId }, machine.name),
+        ),
+      );
+    }
+  }
+
+  const machineFieldset = h(
+    'fieldset',
+    { class: 'field fieldset' },
+    h('legend', { class: 'field-label' }, 'Machines this part fits'),
+    machineChecks,
+  );
+
+  const save = h('button', { class: 'btn btn-primary', type: 'submit' }, existing ? 'Save changes' : 'Add part');
+  form.append(
+    errorBox,
+    field('Name', nameInput),
+    field('Part number', partNumberInput),
+    h('div', { class: 'grid-2' }, field('Quantity on hand', qtyInput), field('Minimum quantity', minInput)),
+    h('div', { class: 'grid-2' }, field('Unit', unitInput), field('Location', locationInput)),
+    h(
+      'div',
+      { class: 'grid-2' },
+      field('Supplier', supplierInput),
+      field('Supplier contact', contactInput, 'Phone or email, shown as selectable text.'),
+    ),
+    machineFieldset,
+    field('Notes', notesInput),
+    h(
+      'div',
+      { class: 'form-actions' },
+      save,
+      h(
+        'a',
+        { class: 'btn', href: existing ? `#/parts/${encodeURIComponent(existing.id)}` : '#/parts' },
+        'Cancel',
+      ),
+    ),
+  );
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const name = nameInput.value.trim();
+    if (!name) {
+      errorBox.textContent = 'Enter a part name.';
+      nameInput.focus();
+      return;
+    }
+    const now = nowISO();
+    const record = {
+      ...base,
+      id: existing ? existing.id : uid(),
+      name,
+      partNumber: partNumberInput.value.trim(),
+      qtyOnHand: toInteger(qtyInput.value),
+      minQty: toInteger(minInput.value),
+      unit: unitInput.value.trim() || 'pcs',
+      location: locationInput.value.trim(),
+      supplier: supplierInput.value.trim(),
+      supplierContact: contactInput.value.trim(),
+      machineIds: [...machineChecks.querySelectorAll('input[type="checkbox"]:checked')].map(
+        (input) => input.value,
+      ),
+      notes: notesInput.value.trim(),
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+    };
+    save.disabled = true;
+    try {
+      await db.put('parts', record);
+      await refreshState();
+      toast(existing ? 'Part saved.' : 'Part added.');
+      navigate(`#/parts/${encodeURIComponent(record.id)}`);
+    } catch (error) {
+      errorBox.textContent = 'Could not save. Please try again.';
+      console.error(error);
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  return page(pageHead(editing ? 'Edit part' : 'Add part'), form);
+}
+
+/* ---------- Placeholders until later milestones ---------- */
 
 function renderPM() {
   setTitle('PM');
@@ -1346,8 +1753,15 @@ async function render() {
       isDetail = true;
     }
   } else if (root === 'parts') {
-    content = renderParts(route);
-    isDetail = Boolean(second);
+    if (!second) content = renderParts(route);
+    else if (second === 'new') content = renderPartForm(route);
+    else if (third === 'edit') {
+      content = renderPartForm(route);
+      isDetail = true;
+    } else {
+      content = renderPartDetail(route);
+      isDetail = true;
+    }
   } else if (root === 'pm') {
     content = renderPM(route);
     isDetail = Boolean(second);
