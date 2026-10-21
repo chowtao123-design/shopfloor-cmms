@@ -1,9 +1,10 @@
 {
   "name": "shop-maintenance-log",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node server/server.js",
     "test": "node --test tests/"
   }
 }
