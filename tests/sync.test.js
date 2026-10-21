@@ -276,3 +276,15 @@ test('statusText labels every state and never says Synced while pending', () => 
   assert.equal(statusText({ online: true, failed: 1 }), '1 change failed to sync');
   assert.equal(statusText({ online: true, failed: 2, pending: 0 }), '2 changes failed to sync');
 });
+
+test('statusText shows Offline waiting while the browser is online but the server is unreachable', () => {
+  // sync.js computes online = navigator.onLine && serverReachable and feeds
+  // it here; a down server must read as Offline even with Wi-Fi on.
+  const browserOnline = true;
+  const serverReachable = false;
+  const online = browserOnline && serverReachable;
+  assert.equal(online, false);
+  assert.equal(statusText({ online, pending: 3 }), 'Offline – 3 changes waiting');
+  assert.equal(statusText({ online, pending: 1 }), 'Offline – 1 change waiting');
+  assert.equal(statusText({ online, pending: 0 }), 'Offline');
+});

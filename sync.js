@@ -22,6 +22,10 @@ const PUSH_SCHEDULE_MS = 25;
 let me = null;
 let needsLogin = false;
 let online = true;
+// `online` is only the browser's network indicator; the server can still be
+// down. `serverReachable` goes false when a push/pull cannot reach it and
+// back true on any successful API response (SPEC-v2.md 8).
+let serverReachable = true;
 let pushInFlight = false;
 let pullInFlight = false;
 let retryCount = 0;
@@ -58,17 +62,25 @@ function normalizeBaseVersion(baseVersion) {
 /**
  * JSON API helper. Same-origin credentials, the CSRF header the server
  * requires for non-GET routes, JSON bodies. Never throws for HTTP error
- * statuses; only network-level failures reject.
+ * statuses; only network-level failures reject (which also marks the
+ * server unreachable for the status pill).
  */
 export async function api(method, path, body) {
   const headers = { 'X-Requested-With': 'maint-log' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (error) {
+    serverReachable = false;
+    throw error;
+  }
+  serverReachable = true;
   const text = await response.text();
   let data = null;
   if (text) {
@@ -140,9 +152,13 @@ async function emitStatus() {
   const entries = isSyncedMode() ? await readOutbox() : [];
   const pending = coalesceOutbox(entries).length;
   const failed = (await getFailedEntries()).length;
+  const effectiveOnline = online && serverReachable;
   const detail = {
-    text: statusText({ online, pending, needsLogin, failed }),
-    online,
+    // A reachable-looking network with a down server still shows Offline
+    // (SPEC-v2.md 8), so the pill never claims Synced/Saving against a
+    // server that cannot take edits.
+    text: statusText({ online: effectiveOnline, pending, needsLogin, failed }),
+    online: effectiveOnline,
     pending,
     needsLogin,
     failed,
@@ -249,7 +265,7 @@ async function pushOne(entry) {
       );
     }
   } catch (error) {
-    console.error('Sync push failed (network):', error);
+    console.warn('Sync push failed (network):', error);
     return 'retry';
   }
   if (response.status === 401) return 'login';
@@ -360,7 +376,7 @@ export async function pull() {
       try {
         response = await api('GET', `/api/changes?since=${since}&limit=${PULL_PAGE_LIMIT}`);
       } catch (error) {
-        console.error('Sync pull failed (network):', error);
+        console.warn('Sync pull failed (network):', error);
         failure = 'offline';
         break;
       }
@@ -540,9 +556,10 @@ export function stop() {
     retryTimer = null;
   }
   unbindListeners();
+  const effectiveOnline = online && serverReachable;
   dispatch('sync-status', {
-    text: statusText({ online, pending: 0, needsLogin: false, failed: 0 }),
-    online,
+    text: statusText({ online: effectiveOnline, pending: 0, needsLogin: false, failed: 0 }),
+    online: effectiveOnline,
     pending: 0,
     needsLogin: false,
     failed: 0,

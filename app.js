@@ -60,6 +60,7 @@ const state = {
 
 let fieldCounter = 0;
 let teamUser = null;
+let teamUsers = [];
 let loginActive = false;
 let syncEventsBound = false;
 let userMenuElement = null;
@@ -306,6 +307,61 @@ function showConfirm({
   });
 }
 
+/** In-page input dialog (never window.prompt). Resolves the value, or null. */
+function showInputDialog({
+  title,
+  message,
+  label,
+  confirmText = 'Confirm',
+  cancelText = 'Cancel',
+  initial = '',
+  type = 'text',
+}) {
+  return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
+    const input = h('input', { type, value: initial, autocomplete: 'off' });
+    input.id = `dialog-input-${++fieldCounter}`;
+    const cancel = h('button', { class: 'btn', type: 'button' }, cancelText);
+    const confirm = h('button', { class: 'btn btn-primary', type: 'submit' }, confirmText);
+    const form = h(
+      'form',
+      { class: 'form', novalidate: true },
+      h('label', { class: 'field-label', for: input.id }, label),
+      input,
+      h('div', { class: 'dialog-actions' }, cancel, confirm),
+    );
+    const dialog = h(
+      'div',
+      { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' },
+      h('h2', { id: 'dialog-title' }, title),
+      message ? h('p', {}, message) : null,
+      form,
+    );
+    const backdrop = h('div', { class: 'dialog-backdrop' }, dialog);
+    const onKey = (event) => {
+      if (event.key === 'Escape') close(null);
+    };
+    const close = (value) => {
+      document.removeEventListener('keydown', onKey);
+      dialogRoot.replaceChildren();
+      if (previousFocus && typeof previousFocus.focus === 'function') previousFocus.focus();
+      resolve(value);
+    };
+    cancel.addEventListener('click', () => close(null));
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      close(input.value);
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) close(null);
+    });
+    document.addEventListener('keydown', onKey);
+    dialogRoot.replaceChildren(backdrop);
+    input.focus();
+    input.select();
+  });
+}
+
 function orderedMachines() {
   const ranks = new Map();
   let rank = 0;
@@ -505,6 +561,90 @@ function formatAge(days) {
   return `${days} days`;
 }
 
+/* ---------- Team mode tags (SPEC-v2.md 9.2) ---------- */
+
+/** Display name for a user id from the cached /api/users list. */
+function userDisplayName(id) {
+  if (!id) return '';
+  const user = teamUsers.find((entry) => entry && entry.id === id);
+  return user && user.displayName ? user.displayName : '';
+}
+
+/** Relative age ("5 min ago"); older than a week falls back to the date. */
+function relativeTime(iso) {
+  const time = new Date(iso).getTime();
+  if (!Number.isFinite(time)) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks} week${weeks === 1 ? '' : 's'} ago`;
+  return formatDate(iso);
+}
+
+/**
+ * "Edited by <Display Name> · <relative time>" tag, or "Not synced yet" for
+ * pending local edits; null in standalone mode (no server, no editor ids).
+ */
+function editedTag(record) {
+  if (!record) return null;
+  if (record.pendingSync) {
+    return h('span', { class: 'edited-tag is-pending', title: 'Waiting to sync to the server' }, 'Not synced yet');
+  }
+  if (!teamUser || !record.updatedAt || !record.updatedBy) return null;
+  const who = userDisplayName(record.updatedBy) || 'a teammate';
+  const when = relativeTime(record.updatedAt);
+  const absolute = formatSyncTime(record.updatedAt);
+  return h(
+    'span',
+    { class: 'edited-tag', title: absolute || when },
+    `Edited by ${who}${when ? ` · ${when}` : ''}`,
+  );
+}
+
+/** "Created by <name> · <date>" for detail views (SPEC-v2.md 9.2). */
+function createdTag(record) {
+  if (!teamUser || !record || !record.createdAt || !record.createdBy) return null;
+  const who = userDisplayName(record.createdBy) || 'a teammate';
+  return h(
+    'span',
+    { class: 'edited-tag', title: `Created ${formatSyncTime(record.createdAt)}` },
+    `Created by ${who} · ${formatDate(record.createdAt)}`,
+  );
+}
+
+/** Line of edited/created tags under a detail heading. */
+function detailMeta(record) {
+  if (!record) return null;
+  const tags = [editedTag(record), createdTag(record)].filter(Boolean);
+  if (tags.length === 0) return null;
+  return h('div', { class: 'detail-meta' }, ...tags);
+}
+
+/** Plain-text form for the desktop table's Edited by column. */
+function editedColumnText(record) {
+  if (!record) return '—';
+  if (record.pendingSync) return 'Not synced yet';
+  if (!teamUser || !record.updatedAt || !record.updatedBy) return '—';
+  const who = userDisplayName(record.updatedBy) || 'a teammate';
+  return `Edited by ${who} · ${relativeTime(record.updatedAt)}`;
+}
+
+function editedByColumn() {
+  return {
+    key: 'editedBy',
+    label: 'Edited by',
+    value: editedColumnText,
+    cell: (record) => editedTag(record) || editedColumnText(record),
+    sortValue: (record) => String(record.updatedAt || ''),
+  };
+}
+
 function jobRow(order) {
   return h(
     'a',
@@ -517,6 +657,7 @@ function jobRow(order) {
         'div',
         { class: 'row-sub' },
         `${machineName(order.machineId)} · ${formatDate(order.reportedAt)}`,
+        editedTag(order),
       ),
     ),
     h(
@@ -544,6 +685,7 @@ function machineRow(machine) {
         [LABELS.machineType[machine.type] || machine.type, machine.location]
           .filter(Boolean)
           .join(' · '),
+        editedTag(machine),
       ),
     ),
     h(
@@ -707,6 +849,7 @@ function jobsTableColumns() {
       value: (order) => `${toInteger(order.downtimeMinutes)} min`,
       sortValue: (order) => toInteger(order.downtimeMinutes),
     },
+    editedByColumn(),
   ];
 }
 
@@ -749,6 +892,7 @@ function machinesTableColumns() {
       },
       sortValue: (machine) => nextPMDueISO(machine),
     },
+    editedByColumn(),
   ];
 }
 
@@ -774,6 +918,7 @@ function partsTableColumns() {
     },
     { key: 'location', label: 'Location', value: (part) => part.location },
     { key: 'supplier', label: 'Supplier', value: (part) => part.supplier },
+    editedByColumn(),
   ];
 }
 
@@ -1011,6 +1156,8 @@ function renderJobDetail(route) {
       h('div', {}, h('h2', {}, order.title), h('div', { class: 'row-sub' }, machineName(order.machineId))),
       statusPill(order.status, LABELS.status),
     ),
+    detailMeta(order),
+    conflictBanner('workOrders', order.id),
     statusButtons,
     h('div', { class: 'card' }, details),
     order.problem ? [sectionTitle('Problem'), h('div', { class: 'card pre' }, order.problem)] : null,
@@ -1045,6 +1192,7 @@ function renderJobDetail(route) {
       { class: 'form-actions', style: { marginTop: '1.25rem' } },
       h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteOrder }, 'Delete work order'),
     ),
+    historySection('workOrders', order.id),
   );
 }
 
@@ -1486,6 +1634,8 @@ function renderMachineDetail(route) {
       h('div', {}, h('h2', {}, machine.name), h('div', { class: 'row-sub' }, machine.location || '')),
       statusPill(machine.status, LABELS.machineStatus),
     ),
+    detailMeta(machine),
+    conflictBanner('machines', machine.id),
     h(
       'div',
       { class: 'button-row' },
@@ -1555,6 +1705,7 @@ function renderMachineDetail(route) {
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
       h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteMachine }, 'Delete machine'),
     ),
+    historySection('machines', machine.id),
   );
 }
 
@@ -1574,6 +1725,7 @@ function partRow(part) {
         'div',
         { class: 'row-sub' },
         [part.partNumber, part.location].filter(Boolean).join(' · ') || 'No part number',
+        editedTag(part),
       ),
     ),
     h(
@@ -1748,6 +1900,8 @@ function renderPartDetail(route) {
       ),
       low ? h('span', { class: 'pill status-low' }, 'Low stock') : statusPill('ok', { ok: 'In stock' }),
     ),
+    detailMeta(part),
+    conflictBanner('parts', part.id),
     h(
       'div',
       { class: 'card' },
@@ -1824,6 +1978,7 @@ function renderPartDetail(route) {
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
       h('button', { class: 'btn btn-danger', type: 'button', onclick: deletePart }, 'Delete part'),
     ),
+    historySection('parts', part.id),
   );
 }
 
@@ -2026,6 +2181,7 @@ function pmTaskRow(task) {
         `${machineName(task.machineId)} · Due ${formatDate(due)}${
           lateDays > 0 ? ` · ${lateDays} day${lateDays === 1 ? '' : 's'} late` : ''
         } · every ${Math.max(1, Math.floor(Number(task.intervalDays) || 1))} days`,
+        editedTag(task),
       ),
     ),
     h(
@@ -2139,6 +2295,8 @@ function renderPMTaskDetail(route) {
       h('div', {}, h('h2', {}, task.title), h('div', { class: 'row-sub' }, machineName(task.machineId))),
       inactive ? statusPill('neutral', { neutral: 'Paused' }) : statusPill(pmState(task, today), LABELS.pmState),
     ),
+    detailMeta(task),
+    conflictBanner('pmTasks', task.id),
     h(
       'div',
       { class: 'button-row' },
@@ -2151,6 +2309,7 @@ function renderPMTaskDetail(route) {
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
       h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteTask }, 'Delete PM task'),
     ),
+    historySection('pmTasks', task.id),
   );
 }
 
@@ -2563,10 +2722,485 @@ async function eraseAllData() {
   render();
 }
 
+/* ---------- Team Settings: backups, users, v1 import (SPEC-v2.md 9.5-9.7) ---------- */
+
+function isAdmin() {
+  return Boolean(teamUser && teamUser.role === 'admin');
+}
+
+function formatBytes(bytes) {
+  const size = Math.max(0, Number(bytes) || 0);
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Section 10: over plain HTTP on a LAN IP the app works but cannot install offline. */
+function httpNotice() {
+  if (typeof location === 'undefined') return null;
+  if (location.protocol !== 'http:') return null;
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return null;
+  return h(
+    'p',
+    { class: 'settings-note' },
+    'You opened this over plain HTTP. Everything works online, but the app cannot be installed or opened offline on phones — offline install needs HTTPS. See the HTTPS section of the README.',
+  );
+}
+
+function suggestPassword(length = 12) {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = new Uint8Array(length);
+  if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  }
+  let out = '';
+  for (const byte of bytes) out += alphabet[byte % alphabet.length];
+  return out;
+}
+
+const STORE_LABELS = {
+  machines: 'Machine',
+  parts: 'Part',
+  workOrders: 'Work order',
+  pmTasks: 'PM task',
+};
+
+/** Failed outbox entries from sync.js, with a Retry button (SPEC-v2.md 8). */
+function failedSyncSection() {
+  const host = h('div', { class: 'failed-list' });
+
+  async function refresh() {
+    let entries = [];
+    try {
+      entries = await sync.failedEntries();
+    } catch (error) {
+      console.warn('Could not read the failed-changes list:', error);
+      return;
+    }
+    const rows = (Array.isArray(entries) ? entries : []).map((entry) => {
+      if (entry && entry.kind === 'stock') {
+        return `Stock change: ${entry.error || 'the server rejected it.'}`;
+      }
+      let label = STORE_LABELS[entry.store] || 'Record';
+      const payload = entry.payload && typeof entry.payload === 'object' ? entry.payload : {};
+      if (payload.title || payload.name) label = `${label} "${payload.title || payload.name}"`;
+      return `${label}: ${entry.error || 'The server rejected this change.'}`;
+    });
+    host.replaceChildren();
+    if (rows.length === 0) return;
+    const retry = h('button', { class: 'btn btn-small', type: 'button' }, 'Retry');
+    retry.addEventListener('click', async () => {
+      retry.disabled = true;
+      try {
+        await sync.retryFailed();
+        toast('Retrying the failed changes…');
+      } catch (error) {
+        toast('Could not retry. Please try again.', 'warn');
+        console.error(error);
+      } finally {
+        await refresh();
+      }
+    });
+    host.append(
+      h('p', { class: 'field-hint' }, 'These changes were rejected by the server and are not retried automatically:'),
+      ...rows.map((text) => h('div', { class: 'failed-entry' }, text)),
+      h('div', { class: 'button-row', style: { marginTop: '0.5rem' } }, retry),
+    );
+  }
+
+  refresh();
+  return host;
+}
+
+/** Recent server backups list (time, creator or Automatic, size, admin download). */
+async function loadServerBackups(listHost) {
+  let response;
+  try {
+    response = await sync.api('GET', '/api/backups');
+  } catch (error) {
+    console.warn('Could not load the server backup list:', error);
+    listHost.replaceChildren(
+      h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'The backup list needs a connection to the server.'),
+    );
+    return;
+  }
+  if (!response.ok || !Array.isArray(response.data)) {
+    listHost.replaceChildren(
+      h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'Could not load the backup list. Try again in a moment.'),
+    );
+    return;
+  }
+  const backups = response.data;
+  if (backups.length === 0) {
+    listHost.replaceChildren(
+      h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'No backups on the server yet.'),
+    );
+    return;
+  }
+  listHost.replaceChildren(
+    h(
+      'div',
+      { class: 'server-list' },
+      ...backups.map((backup) =>
+        h(
+          'div',
+          { class: 'server-row' },
+          h(
+            'span',
+            { class: 'grow' },
+            `${backup.createdAt ? formatBackupStamp(backup.createdAt) : 'Unknown time'} · ${backup.createdBy || 'Automatic'}`,
+          ),
+          h('span', { class: 'muted' }, formatBytes(backup.bytes)),
+          isAdmin() && backup.file
+            ? h(
+                'a',
+                { class: 'btn btn-small', href: `/api/backups/${encodeURIComponent(backup.file)}` },
+                'Download',
+              )
+            : null,
+        ),
+      ),
+    ),
+  );
+}
+
+/** "Backups on server" card with the one-click Back up now button (SPEC-v2.md 9.5). */
+function serverBackupsCard() {
+  const statusLine = h('p', { class: 'field-hint', role: 'status' });
+  const listHost = h('div');
+  const backupNow = h('button', { class: 'btn btn-primary', type: 'button' }, 'Back up now');
+  backupNow.addEventListener('click', async () => {
+    backupNow.disabled = true;
+    backupNow.textContent = 'Backing up…';
+    try {
+      const response = await sync.api('POST', '/api/backups');
+      if (response.ok && response.data && response.data.file) {
+        statusLine.textContent = `Backup saved on server: ${response.data.file} (${formatBytes(response.data.bytes)}).`;
+        toast('Backup saved on the server.');
+      } else {
+        // 429 (more than one per 30 s) or another rejection: the server's text.
+        statusLine.textContent =
+          (response.data && response.data.message) || `The server did not save the backup (HTTP ${response.status}).`;
+      }
+    } catch (error) {
+      statusLine.textContent = 'Could not reach the server for the backup.';
+      console.warn('Backup now failed (network):', error);
+    } finally {
+      backupNow.disabled = false;
+      backupNow.textContent = 'Back up now';
+      loadServerBackups(listHost);
+    }
+  });
+  loadServerBackups(listHost);
+  return h(
+    'section',
+    { class: 'card', style: { padding: '0.95rem 1rem', marginTop: '0.5rem' } },
+    h('h3', { class: 'card-title' }, 'Backups on server'),
+    h(
+      'p',
+      { class: 'field-hint' },
+      'One click saves a backup file on the server. The server also saves one automatically every night.',
+    ),
+    h('div', { class: 'button-row' }, backupNow),
+    statusLine,
+    listHost,
+  );
+}
+
+/** Admin Users card: list, add, disable/enable, reset password (SPEC-v2.md 9.6). */
+function usersCard() {
+  const listHost = h('div', { class: 'server-list' });
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+
+  async function refresh() {
+    let response;
+    try {
+      response = await sync.api('GET', '/api/users');
+    } catch (error) {
+      console.warn('Could not load the users list:', error);
+      listHost.replaceChildren(
+        h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'User management needs a connection to the server.'),
+      );
+      return;
+    }
+    if (!response.ok || !Array.isArray(response.data)) {
+      listHost.replaceChildren(
+        h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'Could not load the users list. Try again in a moment.'),
+      );
+      return;
+    }
+    const users = response.data;
+    try {
+      await db.setMeta('users', users);
+    } catch (error) {
+      console.warn('Could not cache the user list:', error);
+    }
+    teamUsers = users;
+    if (users.length === 0) {
+      listHost.replaceChildren(h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'No users yet.'));
+      return;
+    }
+    listHost.replaceChildren(...users.map((user) => userRow(user)));
+  }
+
+  async function patchUser(user, fields, { confirmTitle, confirmMessage, danger } = {}) {
+    if (confirmTitle) {
+      const yes = await showConfirm({
+        title: confirmTitle,
+        message: confirmMessage,
+        confirmText: 'Continue',
+        cancelText: 'Cancel',
+        danger,
+      });
+      if (!yes) return null;
+    }
+    const response = await sync.api('PATCH', `/api/users/${encodeURIComponent(user.id)}`, fields);
+    if (!response.ok) {
+      errorBox.textContent = (response.data && response.data.message) || 'The server rejected the change.';
+      return null;
+    }
+    errorBox.textContent = '';
+    return response.data;
+  }
+
+  function userRow(user) {
+    const disabled = Boolean(user.disabled);
+    const stateButtons = [];
+
+    const toggle = h(
+      'button',
+      { class: `btn btn-small${disabled ? '' : ' btn-danger'}`, type: 'button' },
+      disabled ? 'Enable' : 'Disable',
+    );
+    toggle.addEventListener('click', async () => {
+      if (disabled) {
+        const next = await patchUser(user, { disabled: false });
+        if (next) {
+          toast(`${user.displayName || user.username} can sign in again.`);
+          await refresh();
+        }
+        return;
+      }
+      const next = await patchUser(
+        user,
+        { disabled: true },
+        {
+          confirmTitle: `Disable ${user.displayName || user.username}?`,
+          confirmMessage:
+            'They are signed out everywhere at once and cannot sign in until you re-enable them.',
+          danger: true,
+        },
+      );
+      if (next) {
+        toast(`${user.displayName || user.username} is disabled.`);
+        await refresh();
+      }
+    });
+    stateButtons.push(toggle);
+
+    const reset = h('button', { class: 'btn btn-small', type: 'button' }, 'Reset password');
+    reset.addEventListener('click', async () => {
+      const password = await showInputDialog({
+        title: `Reset password for ${user.displayName || user.username}`,
+        message: 'They use the new password at the next sign-in. Minimum 8 characters.',
+        label: 'New temporary password',
+        initial: suggestPassword(),
+        confirmText: 'Reset password',
+      });
+      if (password === null) return;
+      if (password.trim().length < 8) {
+        toast('The password must be at least 8 characters.', 'warn');
+        return;
+      }
+      const next = await patchUser(user, { password: password.trim() });
+      if (next) toast(`Password reset for ${user.displayName || user.username}.`);
+    });
+    stateButtons.push(reset);
+
+    return h(
+      'div',
+      { class: `user-row${disabled ? ' is-disabled' : ''}` },
+      h(
+        'span',
+        { class: 'user-names' },
+        `${user.displayName || user.username}${disabled ? ' (disabled)' : ''}`,
+        h('span', { class: 'muted' }, user.username),
+      ),
+      h('span', { class: 'user-role' }, user.role === 'admin' ? 'Administrator' : 'Technician'),
+      ...stateButtons,
+    );
+  }
+
+  const usernameInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    placeholder: 'e.g. maria',
+    'aria-label': 'New user username',
+  });
+  const displayNameInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    placeholder: 'e.g. Maria P.',
+    'aria-label': 'New user display name',
+  });
+  const roleSelect = selectFrom(['tech', 'admin'], 'tech', (value) =>
+    value === 'admin' ? 'Administrator' : 'Technician',
+  );
+  const passwordInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    value: suggestPassword(),
+    'aria-label': 'New user temporary password',
+  });
+
+  const addUser = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add user');
+  const addUserForm = h(
+    'form',
+    { class: 'form', novalidate: true },
+    errorBox,
+    h('div', { class: 'grid-2' }, field('Username', usernameInput), field('Display name', displayNameInput)),
+    h('div', { class: 'grid-2' }, field('Role', roleSelect), field('Temporary password', passwordInput)),
+    addUser,
+  );
+  addUserForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const username = usernameInput.value.trim();
+    const displayName = displayNameInput.value.trim();
+    const password = passwordInput.value.trim();
+    if (!username || !displayName) {
+      errorBox.textContent = 'Enter a username and a display name.';
+      return;
+    }
+    if (password.length < 8) {
+      errorBox.textContent = 'The temporary password must be at least 8 characters.';
+      return;
+    }
+    addUser.disabled = true;
+    try {
+      const response = await sync.api('POST', '/api/users', {
+        username,
+        displayName,
+        role: roleSelect.value,
+        password,
+      });
+      if (!response.ok) {
+        errorBox.textContent = (response.data && response.data.message) || 'The server rejected the new user.';
+        return;
+      }
+      usernameInput.value = '';
+      displayNameInput.value = '';
+      passwordInput.value = suggestPassword();
+      roleSelect.value = 'tech';
+      toast(`User ${displayName} added. Give them the temporary password.`);
+      await refresh();
+    } catch (error) {
+      errorBox.textContent = 'Could not reach the server. Try again.';
+      console.warn('Add user failed (network):', error);
+    } finally {
+      addUser.disabled = false;
+    }
+  });
+
+  refresh();
+  return h(
+    'section',
+    { class: 'card', style: { padding: '0.95rem 1rem', marginTop: '0.5rem' } },
+    h('h3', { class: 'card-title' }, 'Users'),
+    h('p', { class: 'field-hint' }, 'Add teammates, set roles, disable accounts and reset passwords. Disabled users are signed out at once.'),
+    listHost,
+    sectionTitle('Add a user'),
+    addUserForm,
+  );
+}
+
+/** Admin Import v1 data card (SPEC-v2.md 9.7 and section 11). */
+function importV1Card() {
+  const status = h('p', { class: 'field-hint', role: 'status' });
+  const fileInputId = `import-v1-file-${++fieldCounter}`;
+  const fileInput = h('input', {
+    type: 'file',
+    accept: '.json,application/json',
+    class: 'sr-only',
+    'aria-label': 'v1 backup JSON file',
+  });
+  fileInput.id = fileInputId;
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    fileInput.value = '';
+    if (!file) return;
+    status.textContent = `Reading ${file.name}…`;
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (error) {
+      status.textContent = 'Could not read that file. Is it a v1 JSON backup?';
+      console.warn('Import v1 parse failed:', error);
+      return;
+    }
+    const check = validateBackup(parsed);
+    if (!check.ok) {
+      status.textContent = check.error;
+      return;
+    }
+    const c = check.counts;
+    const yes = await showConfirm({
+      title: 'Import this v1 backup into the shared log?',
+      message: `It holds ${c.machines} machine${c.machines === 1 ? '' : 's'}, ${c.parts} part${
+        c.parts === 1 ? '' : 's'
+      }, ${c.workOrders} work order${c.workOrders === 1 ? '' : 's'} and ${c.pmTasks} PM task${
+        c.pmTasks === 1 ? '' : 's'
+      }. Records whose ids already exist on the server are skipped. The whole team sees imported records after their next sync.`,
+      confirmText: 'Import',
+      cancelText: 'Cancel',
+    });
+    if (!yes) {
+      status.textContent = 'Import cancelled.';
+      return;
+    }
+    try {
+      const response = await sync.api('POST', '/api/import-v1', parsed);
+      if (!response.ok) {
+        status.textContent = (response.data && response.data.message) || 'The server rejected the import.';
+        return;
+      }
+      const created = response.data && Number(response.data.created);
+      const skipped = response.data && Number(response.data.skipped);
+      status.textContent = `Imported ${created} record${created === 1 ? '' : 's'}${
+        skipped > 0 ? `, skipped ${skipped} already present` : ''
+      }.`;
+      toast(`Imported ${created} v1 record${created === 1 ? '' : 's'} onto the server.`);
+      await sync.pull();
+      await refreshState();
+      render();
+    } catch (error) {
+      status.textContent = 'Could not reach the server for the import.';
+      console.warn('Import v1 failed (network):', error);
+    }
+  });
+  return h(
+    'section',
+    { class: 'card', style: { padding: '0.95rem 1rem', marginTop: '0.5rem' } },
+    h('h3', { class: 'card-title' }, 'Import v1 data'),
+    h(
+      'p',
+      { class: 'field-hint' },
+      'Bring a v1 JSON backup (from the old single-device app) into the shared log. Existing records on the server are kept.',
+    ),
+    h('div', { class: 'button-row' }, h('label', { class: 'btn btn-primary btn-small', for: fileInputId }, 'Choose v1 backup file…')),
+    fileInput,
+    status,
+  );
+}
+
 function renderSettings() {
   setTitle('Settings');
   const lastBackup = storageGet(LAST_BACKUP_KEY);
+  const team = Boolean(teamUser);
 
+  // Local JSON import stays available only in standalone mode (SPEC-v2.md 9.5).
   const importStatus = h('p', { class: 'field-hint', role: 'status' });
   const fileInputId = `import-file-${++fieldCounter}`;
   const fileInput = h('input', {
@@ -2624,30 +3258,45 @@ function renderSettings() {
       h('a', { href: '#/help' }, 'How this app works'),
       ' — a short guide with a glossary and FAQ.',
     ),
-    h('p', { class: 'muted' }, 'All data lives on this device only. Keep a backup copy somewhere safe.'),
-    h(
-      'p',
-      { class: 'field-hint' },
-      `Last backup: ${lastBackup ? formatBackupStamp(lastBackup) : 'Never'}`,
-    ),
-    sectionTitle('Backup'),
+    httpNotice(),
+    team
+      ? h(
+          'p',
+          { class: 'muted' },
+          `Signed in as ${teamUser.displayName}${teamUser.role === 'admin' ? ' (administrator)' : ''} — everyone on the team shares one log on the server.`,
+        )
+      : h('p', { class: 'muted' }, 'All data lives on this device only. Keep a backup copy somewhere safe.'),
+    h('p', { class: 'field-hint' }, `Last backup: ${lastBackup ? formatBackupStamp(lastBackup) : 'Never'}`),
+    sectionTitle(team ? 'Backup on this device' : 'Backup'),
     h(
       'div',
       { class: 'settings-actions' },
       h('button', { class: 'btn', type: 'button', onclick: exportBackup }, 'Export backup (JSON)', h('small', {}, 'Everything on this device in one file')),
-      h('label', { class: 'btn', for: fileInputId }, 'Import backup', h('small', {}, 'Replace all data from a backup file')),
+      team
+        ? null
+        : h('label', { class: 'btn', for: fileInputId }, 'Import backup', h('small', {}, 'Replace all data from a backup file')),
       h('button', { class: 'btn', type: 'button', onclick: exportWorkOrderCSV }, 'Export work orders (CSV)', h('small', {}, 'For Excel or email')),
-      fileInput,
+      team ? null : fileInput,
     ),
-    importStatus,
-    sectionTitle('Data'),
-    h(
-      'div',
-      { class: 'settings-actions' },
-      h('button', { class: 'btn', type: 'button', onclick: loadSampleData }, 'Load sample data', h('small', {}, 'Example machines, parts, jobs and PM tasks')),
-      eraseReveal,
-    ),
-    erasePanel,
+    team ? null : importStatus,
+    team
+      ? [
+          sectionTitle('Backups on server'),
+          serverBackupsCard(),
+          failedSyncSection(),
+          isAdmin() ? [sectionTitle('Users'), usersCard()] : null,
+          isAdmin() ? [sectionTitle('Import v1 data'), importV1Card()] : null,
+        ]
+      : [
+          sectionTitle('Data'),
+          h(
+            'div',
+            { class: 'settings-actions' },
+            h('button', { class: 'btn', type: 'button', onclick: loadSampleData }, 'Load sample data', h('small', {}, 'Example machines, parts, jobs and PM tasks')),
+            eraseReveal,
+          ),
+          erasePanel,
+        ],
   );
 }
 
@@ -2872,6 +3521,161 @@ function formatSyncTime(iso) {
   return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+/* ---------- History and conflict notices (SPEC-v2.md 9.3) ---------- */
+
+// Last conflict per record kept in memory from 'sync-conflict'; recent
+// entries show a banner on the record's detail view.
+const CONFLICT_BANNER_MS = 60 * 60 * 1000;
+const recentConflicts = new Map();
+
+function rememberConflict(store, id, conflict) {
+  if (!store || !id || !conflict) return;
+  recentConflicts.set(`${store}/${id}`, { conflict, at: nowISO() });
+}
+
+function conflictBanner(store, id) {
+  if (!teamUser) return null;
+  const key = `${store}/${id}`;
+  const entry = recentConflicts.get(key);
+  if (!entry) return null;
+  const elapsed = Date.now() - new Date(entry.at).getTime();
+  if (Number.isFinite(elapsed) && elapsed > CONFLICT_BANNER_MS) {
+    recentConflicts.delete(key);
+    return null;
+  }
+  const who = entry.conflict.overwrittenBy || 'another user';
+  const when = formatSyncTime(entry.conflict.overwrittenAt);
+  return h(
+    'div',
+    { class: 'card conflict-banner', role: 'status' },
+    `You saved over changes by ${who}${when ? ` from ${when}` : ''}. Nothing was lost — the overwritten version is in History.`,
+  );
+}
+
+const HISTORY_VERB = {
+  create: 'Created',
+  update: 'Edited',
+  delete: 'Deleted',
+  restore: 'Restored',
+  stock: 'Stock',
+};
+
+/** "Oct 20, 14:03" local time for history lines (SPEC-v2.md 9.3). */
+function formatHistoryTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/** Field names whose values differ between the before and after payloads. */
+function changedKeys(before, after) {
+  const left = before && typeof before === 'object' ? before : {};
+  const right = after && typeof after === 'object' ? after : {};
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  const changed = [];
+  for (const key of keys) {
+    const inLeft = Object.prototype.hasOwnProperty.call(left, key);
+    const inRight = Object.prototype.hasOwnProperty.call(right, key);
+    if (inLeft !== inRight || JSON.stringify(left[key]) !== JSON.stringify(right[key])) changed.push(key);
+  }
+  return changed;
+}
+
+/** "Overwrote v6 by Ben" from the server's conflict note ("overwrote v6 by Ben at …"). */
+function conflictLine(entry) {
+  if (!entry || !entry.conflict || !entry.note) return '';
+  const match = /^overwrote v(\d+) by (.+?) at /.exec(String(entry.note));
+  if (match) return `Overwrote v${match[1]} by ${match[2]}`;
+  return String(entry.note);
+}
+
+/** "… · +2 (job-done)" for stock entries, from the server note. */
+function stockLine(entry) {
+  const note = String(entry && entry.note ? entry.note : '');
+  const match = /^stock ([+-]\d+) \(([^)]+)\)(.*)$/.exec(note);
+  if (!match) return note;
+  return `${match[1]} (${match[2]})${match[3] || ''}`;
+}
+
+function historyEntryNode(entry) {
+  const who = entry.displayName || 'a teammate';
+  const when = formatHistoryTime(entry.at);
+  const verb = HISTORY_VERB[entry.action] || entry.action || 'Changed';
+  const line = [`v${entry.version === null || entry.version === undefined ? '?' : entry.version}`, `${verb} by ${who}`];
+  if (when) line.push(when);
+  if (entry.action === 'stock') {
+    const stock = stockLine(entry);
+    if (stock) line.push(stock);
+  } else if (entry.action === 'update') {
+    const keys = changedKeys(entry.before, entry.after);
+    if (keys.length > 0) line.push(`changed: ${keys.join(', ')}`);
+  } else if (entry.action === 'restore') {
+    const keys = changedKeys(entry.before, entry.after);
+    if (keys.length > 0) line.push(`changed: ${keys.join(', ')}`);
+  }
+  const conflict = entry.action !== 'stock' && conflictLine(entry);
+  return h(
+    'div',
+    { class: `history-entry${conflict ? ' is-conflict' : ''}` },
+    h('div', { class: 'history-line' }, line.join(' · ')),
+    conflict ? h('div', { class: 'history-note' }, conflict) : null,
+    entry.action === 'stock' && !stockLine(entry) && entry.note
+      ? h('div', { class: 'history-note' }, String(entry.note))
+      : null,
+  );
+}
+
+function historySection(store, id) {
+  if (!teamUser) return null;
+  const body = h('div', { class: 'history-body' }, h('p', { class: 'muted' }, 'Loading history…'));
+  const section = h(
+    'details',
+    { class: 'more history-section' },
+    h('summary', {}, 'History'),
+    body,
+  );
+  let loaded = false;
+  section.addEventListener('toggle', () => {
+    if (!section.open || loaded) return;
+    loaded = true;
+    loadHistory();
+  });
+
+  async function loadHistory() {
+    let response;
+    try {
+      response = await sync.api('GET', `/api/history/${encodeURIComponent(store)}/${encodeURIComponent(id)}`);
+    } catch (error) {
+      // Offline or the server is down (SPEC-v2.md 9.3).
+      console.warn('Could not load history:', error);
+      body.replaceChildren(h('p', { class: 'muted' }, 'History needs a connection to the server.'));
+      return;
+    }
+    if (response.status === 404) {
+      body.replaceChildren(h('p', { class: 'muted' }, 'No history yet.'));
+      return;
+    }
+    if (!response.ok) {
+      body.replaceChildren(h('p', { class: 'muted' }, 'Could not load history. Try again in a moment.'));
+      return;
+    }
+    const entries = Array.isArray(response.data) ? response.data : [];
+    if (entries.length === 0) {
+      body.replaceChildren(h('p', { class: 'muted' }, 'No history yet.'));
+      return;
+    }
+    body.replaceChildren(...entries.map((entry) => historyEntryNode(entry)));
+  }
+
+  return section;
+}
+
 function handleSyncStatus(event) {
   if (!syncPill) return;
   syncPill.hidden = !teamUser;
@@ -2893,6 +3697,7 @@ function handleSyncStatus(event) {
 function handleSyncConflict(event) {
   const detail = event.detail || {};
   const conflict = detail.conflict || {};
+  rememberConflict(detail.store, detail.id, conflict);
   const who = conflict.overwrittenBy || 'another user';
   const when = formatSyncTime(conflict.overwrittenAt);
   const title = detail.title ? `"${detail.title}" ` : '';
@@ -2927,10 +3732,20 @@ async function loadTeamUsers() {
   try {
     const response = await sync.api('GET', '/api/users');
     if (response.ok && Array.isArray(response.data)) {
-      await db.setMeta('users', response.data);
+      teamUsers = response.data;
+      await db.setMeta('users', teamUsers);
+      return;
     }
+    if (response.status === 401) return;
   } catch (error) {
-    console.error('Could not load the user list:', error);
+    // Offline or the server is down: the cached list still gives names.
+    console.warn('Could not load the user list:', error);
+  }
+  try {
+    const cached = await db.getMeta('users');
+    if (Array.isArray(cached)) teamUsers = cached;
+  } catch (error) {
+    console.warn('Could not read the cached user list:', error);
   }
 }
 

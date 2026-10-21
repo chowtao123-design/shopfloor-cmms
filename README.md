@@ -1,11 +1,129 @@
 # Shop Maintenance Log
 
-A mobile-first, offline-capable maintenance log for one technician in a garment
-factory: work orders, machines, parts inventory and preventive maintenance.
-Plain HTML + CSS + vanilla JavaScript ES modules. No build step, no framework,
-no dependencies, nothing leaves the device.
+A mobile-first, offline-capable maintenance log for a garment factory: work
+orders, machines, parts inventory and preventive maintenance. Plain HTML + CSS
++ vanilla JavaScript ES modules. No build step, no framework, no dependencies.
 
-## Run locally
+Two ways to run it:
+
+- **Team server (v2)** — one shared log on one company computer, everyone
+  signs in and syncs, edits queue while offline. See the next section.
+- **Standalone** — one device, no server; the data stays in that browser.
+  See *Run locally* below.
+
+## Team server (v2)
+
+Several technicians share **one** log hosted on one company computer: each
+person signs in, sees everyone's records, keeps working offline on the shop
+floor, and syncs when back on the network. Every record shows who last edited
+it, every change is kept in a per-record History, and anyone signed in can
+make a one-click backup saved on the server.
+
+> **Get IT approval before running a server on a company computer.** A server
+> the shop relies on should run on a machine that stays on, gets backed up,
+> and that IT knows about (port, firewall, HTTPS certificate, backups).
+
+### Requirements
+
+- Node.js 24 (anything ≥ 22.5 works; the server uses `node:sqlite` from
+  22.5). Check with `node -v`.
+- No npm packages — the server uses only Node built-ins.
+
+### First admin
+
+```
+node server/admin.js create-user --admin <username> "<Display Name>"
+```
+
+It prompts on the terminal (hidden input) for the password; add
+`--password-stdin` to read it from stdin instead. There is no self sign-up:
+admins add every other account later on the Settings screen (Users card) or
+with the same command without `--admin`.
+
+### Start
+
+```
+npm start
+```
+
+The server binds `0.0.0.0:8080`, serves the app itself, and keeps all data in
+`./data/` (a SQLite file plus `backups/`; git-ignored). Open
+`http://<that-computer>:8080/` from any device on the network and sign in.
+
+Configuration (environment variables):
+
+| Var | Default | Meaning |
+|---|---|---|
+| `PORT` | `8080` | listen port |
+| `HOST` | `0.0.0.0` | bind address (LAN) |
+| `DATA_DIR` | `./data` | SQLite file + backups |
+| `TLS_CERT`, `TLS_KEY` | unset | if both set, serve HTTPS (see below) |
+| `SESSION_DAYS` | `14` | sign-in session lifetime (sliding) |
+| `BACKUP_KEEP` | `30` | number of backups kept |
+| `BACKUP_DAILY_AT` | `02:00` | local time for the automatic daily backup; `off` disables |
+
+### LAN access and firewall
+
+- Find the computer's LAN address (`ip a`, or `ipconfig` on Windows), e.g.
+  `192.168.1.50`. Everyone opens `http://192.168.1.50:8080`.
+- Open the port in the firewall if needed: Ubuntu `sudo ufw allow 8080/tcp`,
+  Windows Defender Firewall → Inbound Rules → new TCP rule for port 8080.
+- Run the server somewhere that survives logouts (tmux, a systemd unit, or
+  Windows Task Scheduler) so the nightly backup and sync keep working.
+
+### HTTPS (needed to install/open the app offline on phones)
+
+Offline install (service worker) and offline opening only work over HTTPS or
+`localhost`. Over plain HTTP on a LAN IP the app still works online — sign-in,
+sync and the offline queue — but it cannot be installed or opened offline, and
+Settings shows a note saying so. To serve HTTPS with a certificate that
+phones trust:
+
+```
+# once: install mkcert (github.com/FiloSottile/mkcert), then:
+mkcert -install                                   # trust the CA on this computer
+mkcert -cert-file cert.pem -key-file key.pem 0.0.0.0 192.168.1.50 localhost
+TLS_CERT=cert.pem TLS_KEY=key.pem npm start
+```
+
+- Install that mkcert CA on each phone/PC that will use the app (send them the
+  `rootCA.pem` from `mkcert -CAROOT` and have them open/install it), or use a
+  certificate your company already issues for internal hosts.
+- Keep `cert.pem`/`key.pem` out of git; they are credentials.
+
+### Backups
+
+- **One click:** anyone signed in → Settings → **Back up now**. The file is
+  written to `DATA_DIR/backups/` and shows up in the list right away.
+- **Automatic:** the server backs itself up daily at `BACKUP_DAILY_AT` and
+  keeps the newest `BACKUP_KEEP` backups (older files are deleted).
+- **Admins** can download any backup from Settings.
+- **Restore** (with the server stopped):
+  `node server/admin.js restore <backup-file>` — the current database is
+  saved first as `backups/pre-restore-<timestamp>.db`. There is no restore
+  over HTTP.
+
+### Importing v1 data
+
+An admin imports a v1 JSON backup (from the old single-device app) on the
+Settings screen → **Import v1 data**, or on the server:
+
+```
+node server/admin.js import-v1 <file> --as <your-username>
+```
+
+Records keep their ids; ids that already exist on the server are skipped
+(reported as created/skipped counts). Imported parts set their quantity with
+one stock entry of reason `import`.
+
+### Updating the app
+
+Replace the app files (git pull, or copy the folder), restart the server, done.
+Records live in `data/maint.db`, not in the app files, so an update does not
+touch them. Devices pick up the new app shell on their next reload (the
+service-worker cache is versioned and refreshes itself).
+
+## Run locally (standalone, single device)
 
 ```
 python3 -m http.server 8080
@@ -14,6 +132,8 @@ python3 -m http.server 8080
 Then open <http://localhost:8080>. Any other static file server works too.
 Opening `index.html` directly from the file system (`file://…`) is not
 supported: IndexedDB and the service worker need a real http(s) origin.
+Without the team server this stays the v1 single-device app: no sign-in, no
+sync, everything in that browser (use Settings → Export backup to move data).
 
 ## Run the tests
 
@@ -41,9 +161,11 @@ quoting, backup validation, and the sample-data composition.
    makes no network calls at runtime, so any dumb file host will do) and repeat
    step 2 from that address.
 
-All data lives in IndexedDB on that phone, in that browser. Nothing is synced
-anywhere. Use **Settings → Export backup (JSON)** regularly and keep the file
-somewhere safe; **Import backup** on a new phone restores everything.
+When you run the app standalone like this, all data lives in IndexedDB on
+that phone, in that browser, and is not synced anywhere — use
+**Settings → Export backup (JSON)** regularly and keep the file somewhere
+safe. On the team server there is nothing to move: records live on the server
+and every device syncs automatically.
 
 ## App tour
 

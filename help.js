@@ -1,6 +1,6 @@
 const HELP_SECTIONS = [
   { id: 'help-about', title: 'What this app is' },
-  { id: 'help-data', title: 'Your data stays on this device' },
+  { id: 'help-data', title: 'Your data' },
   { id: 'help-quickstart', title: 'Quick start' },
   { id: 'help-glossary', title: 'Glossary' },
   { id: 'help-howto', title: 'How to…' },
@@ -59,9 +59,13 @@ function helpAbout(h) {
     h(
       'p',
       {},
-      'A maintenance log for one technician: repairs, machines, parts and preventive maintenance (PM) in one place. It is built for use on a phone on the shop floor — short forms, big buttons, and it works offline.',
+      'A maintenance log for a garment shop: repairs, machines, parts and preventive maintenance (PM) in one place. It is built for use on a phone on the shop floor — short forms, big buttons, and it keeps working when the Wi-Fi drops.',
     ),
-    h('p', {}, 'There is no account and nothing to set up. Open the app and start logging.'),
+    h(
+      'p',
+      {},
+      'On the team server, everyone signs in with a team account and shares one log: you see what your coworkers log, every record says who last edited it, and nothing is lost when two people save at the same time.',
+    ),
   );
 }
 
@@ -69,18 +73,55 @@ function helpData(h) {
   return helpSection(
     h,
     'help-data',
-    'Your data stays on this device',
+    'Your data',
     helpList(h, [
-      ['No account, no cloud. Everything you write is saved in this browser, on this device, only.'],
-      ['Sharing this link shares the empty app, not your records. Whoever opens it starts with their own empty log.'],
       [
-        'To hand your records to someone: ',
-        h('strong', {}, 'Settings → Export backup (JSON)'),
-        ', send them the file, and they pick ',
-        h('strong', {}, 'Import backup'),
-        ' in Settings on their device.',
+        'One shared log on the company server. ',
+        'Everything you see is the team’s log stored on your company’s server. Sign in with your team account and you see everyone’s records, and they see yours.',
       ],
-      ['Clearing your browser data erases your records, so export a backup regularly.'],
+      [
+        'Who edited what. ',
+        'Every record shows ',
+        h('strong', {}, 'Edited by <Name> · <time>'),
+        ' (hold to see the exact time), and detail pages also show who created it. Your own edits that have not reached the server yet say ',
+        h('strong', {}, 'Not synced yet'),
+        '.',
+      ],
+      [
+        'History for every record. ',
+        'Open any job, machine, part or PM task and scroll to ',
+        h('strong', {}, 'History'),
+        ' to see every saved version — who changed it, when, and which fields changed. Nothing is thrown away, not even versions that were saved over.',
+      ],
+      [
+        'Offline is fine. ',
+        'The status pill in the header says what is happening: ',
+        h('strong', {}, 'Synced'),
+        ' (you have everything), ',
+        h('strong', {}, 'Saving… (n)'),
+        ' (sending n of your changes), ',
+        h('strong', {}, 'Offline – n changes waiting'),
+        ' (no server, your edits are queued on this device), ',
+        h('strong', {}, 'Sign in needed'),
+        ', or ',
+        h('strong', {}, 'n changes failed to sync'),
+        ' (the server rejected a change — Settings shows why and offers Retry).',
+      ],
+      [
+        'Backups live on the server. ',
+        h('strong', {}, 'Settings → Back up now'),
+        ' saves a backup file on the server with one click — anyone signed in can do it. The server also backs itself up automatically every night. Admins can download backup files.',
+      ],
+      [
+        'Admins manage teammates. ',
+        'In Settings, admins add users, set roles (administrator or technician), disable accounts and reset passwords. Accounts are never self-serve.',
+      ],
+      [
+        'Standalone copies. ',
+        'If this app was opened without a team server, that copy keeps everything in this browser, on this device, and ',
+        h('strong', {}, 'Settings → Export backup (JSON)'),
+        ' is the way to hand records over.',
+      ],
     ]),
   );
 }
@@ -92,7 +133,7 @@ function helpQuickStart(h) {
     'Quick start',
     h('p', {}, 'Five steps and the app is doing its job:'),
     helpSteps(h, [
-      'Add your machines (Machines → + Add machine), or load sample data from Settings to explore first.',
+      'Add your machines (Machines → + Add machine) — or, if your shop is moving over from the old single-device app, an administrator imports its backup in Settings → Import v1 data.',
       'Log a repair — Jobs → + Log repair, pick the machine, say what happened.',
       'Update the job’s status as you work: open it and move it along — In progress, Waiting parts, Waiting tech, Done.',
       'Add the parts you keep in stock (Parts → + Add part) and set a minimum quantity for each, so the app warns you before you run out.',
@@ -151,8 +192,8 @@ function helpHowTo(h) {
       ],
       ['Export to Excel (CSV)', ' — Settings → Export work orders (CSV). The file opens in Excel, Numbers or Google Sheets.'],
       [
-        'Back up and restore',
-        ' — Settings → Export backup (JSON) saves everything in one file. Settings → Import backup restores it, on this device or another one.',
+        'Back up',
+        ' — Settings → Back up now saves a backup of the whole shared log on the server with one click; the server also does it automatically every night. Settings → Export backup (JSON) saves a local file of what this device holds.',
       ],
     ]),
   );
@@ -166,7 +207,9 @@ function helpInstall(h) {
     helpList(h, [
       ['Android (Chrome): open the ⋮ menu and tap “Install app” (or “Add to Home screen”).'],
       ['iPhone (Safari): tap Share, then “Add to Home Screen”.'],
-      ['After your first visit, the app loads with no signal — the whole thing is cached on the device.'],
+      [
+        'After your first visit, the app loads with no signal — the whole thing is cached on the device. On the team server this needs the HTTPS address (offline install and offline opening do not work over plain HTTP); ask whoever runs the server for the HTTPS link.',
+      ],
     ]),
   );
 }
@@ -219,18 +262,33 @@ function helpFaq(h) {
     'FAQ',
     ...helpQa(
       h,
-      'I shared the link and my coworker sees nothing',
-      'That is by design: records never leave the device that made them, so the link opens the empty app for them. To share your records, use Settings → Export backup (JSON) and send them the file; they use Settings → Import backup.',
-    ),
-    ...helpQa(
-      h,
-      'Will I lose data if I update the app?',
-      'No. Updates replace the app itself, not the records stored by your browser. Export a backup before updating anyway — it is one button in Settings.',
-    ),
-    ...helpQa(
-      h,
       'Can two people use the same log?',
-      'Not in this version: each device keeps its own log. A shared log for several people is planned.',
+      'Yes — that is the normal way. Everyone signs in to the team server with their own account and shares one log. Each person works on their own device, and every record says who last edited it.',
+    ),
+    ...helpQa(
+      h,
+      'What happens when two people edit the same job?',
+      'The later save wins, and nothing is lost: the app tells the second saver that they saved over changes by the first, and both versions stay in the job’s History section. If you both close jobs that use the same part, both stock deductions apply.',
+    ),
+    ...helpQa(
+      h,
+      'What does the pill in the header mean?',
+      'It is the sync status. “Synced” means you have everything and the server has all of your changes. “Saving… (n)” means n of your changes are being sent. “Offline – n changes waiting” means the server cannot be reached and your edits are safely queued on this device. “Sign in needed” means you have to sign in again. “n changes failed to sync” means the server rejected a change — Settings shows why and offers Retry.',
+    ),
+    ...helpQa(
+      h,
+      'I made edits on the shop floor with no Wi-Fi. Where are they?',
+      'Still here, marked “Not synced yet”, and counted in the pill as waiting changes. They send automatically as soon as the server is reachable again — nothing to press.',
+    ),
+    ...helpQa(
+      h,
+      'How do backups work?',
+      'Anyone signed in can tap Settings → Back up now: that saves a backup file on the server immediately. On top of that the server backs itself up automatically every night, and admins can download the backup files.',
+    ),
+    ...helpQa(
+      h,
+      'Will I lose data if the app is updated?',
+      'No. Updates replace the app itself, not the records. Records live on the team server (and each device keeps a working copy); an update just refreshes the app shell.',
     ),
   );
 }

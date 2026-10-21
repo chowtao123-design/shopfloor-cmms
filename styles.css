@@ -1351,7 +1351,8 @@ details.more[open] > summary {
   .split-list .data-table [data-col="nextPM"],
   .split-list .data-table [data-col="partNumber"],
   .split-list .data-table [data-col="min"],
-  .split-list .data-table [data-col="supplier"] {
+  .split-list .data-table [data-col="supplier"],
+  .split-list .data-table [data-col="editedBy"] {
     display: none;
   }
 
@@ -1570,4 +1571,182 @@ body.logged-out #back-button {
   margin: 0.35rem 0 0;
   color: var(--danger);
   font-size: 0.92rem;
+}
+
+/* ---------- Team UI: edited-by tags and history (SPEC-v2.md 9.2, 9.3) ---------- */
+
+.edited-tag {
+  display: inline-block;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.edited-tag.is-pending {
+  color: var(--waiting-fg);
+  font-weight: 650;
+}
+
+.row-sub .edited-tag {
+  margin-left: 0.35rem;
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.9rem;
+  margin: 0 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.conflict-banner {
+  margin-top: 0.75rem;
+  border-left: 4px solid var(--waiting-bg);
+  background: var(--waiting-bg);
+  color: var(--waiting-fg);
+  font-size: 0.92rem;
+}
+
+.history-section {
+  margin-top: 1.25rem;
+}
+
+.history-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.history-entry {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  font-size: 0.88rem;
+}
+
+.history-entry.is-conflict {
+  border-color: var(--waiting-bg);
+  background: var(--waiting-bg);
+  color: var(--waiting-fg);
+}
+
+.history-line {
+  font-weight: 650;
+}
+
+.history-note {
+  margin-top: 0.15rem;
+  font-size: 0.8rem;
+}
+
+/* ---------- Team Settings: server backups, users, import (SPEC-v2.md 9.5-9.7) ---------- */
+
+.card-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.settings-note {
+  margin: 0.5rem 0 0.9rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.settings-note a {
+  color: inherit;
+}
+
+.server-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.server-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.9rem;
+  align-items: baseline;
+  padding: 0.55rem 0.75rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.server-row:last-child {
+  border-bottom: 0;
+}
+
+.server-row .grow {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.server-row .muted {
+  color: var(--muted);
+}
+
+.server-row .btn {
+  padding: 0.3rem 0.65rem;
+}
+
+.failed-list {
+  margin-top: 0.4rem;
+}
+
+.failed-entry {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--danger-bg);
+  border-radius: var(--radius);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 0.86rem;
+  overflow-wrap: break-word;
+}
+
+.user-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.9rem;
+  align-items: center;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.92rem;
+}
+
+.user-row:last-child {
+  border-bottom: 0;
+}
+
+.user-row .user-names {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.user-row .user-names .muted {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow-wrap: break-word;
+}
+
+.user-row .user-role {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.user-row.is-disabled .user-names {
+  color: var(--muted);
+  text-decoration: line-through;
 }
