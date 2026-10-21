@@ -25,6 +25,14 @@ import {
   validateSession,
   verifyPassword,
 } from './auth.js';
+import {
+  ApiError,
+  STORES,
+  applyStockMoves,
+  deleteRecord,
+  importV1,
+  putRecord,
+} from './records.js';
 import { openStore } from './store.js';
 
 /**
@@ -266,6 +274,88 @@ function isJsonObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function requestQuery(req) {
+  return new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
+}
+
+/** Non-negative integer query parameter, or the fallback when absent. */
+function intQueryParam(query, name, { fallback, min, max }) {
+  const raw = query.get(name);
+  if (raw === null || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new HttpError(400, 'bad_request', `${name} must be an integer between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function checkStoreParam(storeName) {
+  if (!STORES.includes(storeName)) {
+    throw new HttpError(400, 'bad_request', `Unknown store "${storeName}"; expected one of ${STORES.join(', ')}`);
+  }
+  return storeName;
+}
+
+function changesHandler(req, res, ctx) {
+  const query = requestQuery(req);
+  const since = intQueryParam(query, 'since', { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
+  const limit = intQueryParam(query, 'limit', { fallback: 500, min: 1, max: 1000 });
+  sendJson(req, res, 200, ctx.store.changesFeed(since, limit));
+}
+
+async function putRecordHandler(req, res, ctx, params) {
+  const body = await readJsonBody(req);
+  const result = putRecord(ctx.store, {
+    storeName: params.store,
+    id: params.id,
+    body,
+    user: ctx.user,
+  });
+  sendJson(req, res, 200, result);
+}
+
+async function deleteRecordHandler(req, res, ctx, params) {
+  const query = requestQuery(req);
+  const baseVersionRaw = query.get('baseVersion');
+  let baseVersion = null;
+  if (baseVersionRaw !== null && baseVersionRaw !== '') {
+    baseVersion = Number(baseVersionRaw);
+    if (!Number.isInteger(baseVersion) || baseVersion < 1) {
+      throw new HttpError(400, 'bad_request', 'baseVersion must be a positive integer');
+    }
+  }
+  const result = deleteRecord(ctx.store, {
+    storeName: params.store,
+    id: params.id,
+    baseVersion,
+    user: ctx.user,
+  });
+  sendJson(req, res, 200, result);
+}
+
+function historyHandler(req, res, ctx, params) {
+  checkStoreParam(params.store);
+  if (ctx.store.getRecord(params.store, params.id) === null) {
+    throw new HttpError(404, 'not_found', 'No such record');
+  }
+  sendJson(req, res, 200, ctx.store.historyList(params.store, params.id));
+}
+
+async function stockMovesHandler(req, res, ctx) {
+  const body = await readJsonBody(req);
+  if (!isJsonObject(body)) {
+    throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
+  }
+  const result = applyStockMoves(ctx.store, { moves: body.moves, user: ctx.user });
+  sendJson(req, res, 200, result);
+}
+
+async function importV1Handler(req, res, ctx) {
+  const body = await readJsonBody(req);
+  const counts = importV1(ctx.store, body, ctx.user);
+  sendJson(req, res, 200, counts);
+}
+
 function ipOf(req) {
   return (req.socket && req.socket.remoteAddress) || 'unknown';
 }
@@ -423,6 +513,17 @@ const ROUTES = [
   compileRoute('GET', '/api/users', { auth: true }, listUsersHandler),
   compileRoute('POST', '/api/users', { auth: true, admin: true }, createUserHandler),
   compileRoute('PATCH', '/api/users/:id', { auth: true, admin: true }, patchUserHandler),
+  compileRoute('GET', '/api/changes', { auth: true }, changesHandler),
+  compileRoute('PUT', '/api/records/:store/:id', { auth: true }, putRecordHandler),
+  compileRoute('DELETE', '/api/records/:store/:id', { auth: true }, deleteRecordHandler),
+  compileRoute('GET', '/api/history/:store/:id', { auth: true }, historyHandler),
+  compileRoute('POST', '/api/stock-moves', { auth: true }, stockMovesHandler),
+  compileRoute(
+    'POST',
+    '/api/import-v1',
+    { auth: true, admin: true, adminMessage: 'Only admins can import v1 data' },
+    importV1Handler
+  ),
 ];
 
 function matchRoute(method, apiPath) {
@@ -470,7 +571,12 @@ async function handleApi(req, res, decodedPath, ctx) {
     }
   }
   if (route.admin && context.user.role !== 'admin') {
-    sendJson(req, res, 403, errorResponse('forbidden', 'Only admins can manage users'));
+    sendJson(
+      req,
+      res,
+      403,
+      errorResponse('forbidden', route.adminMessage || 'Only admins can manage users')
+    );
     return;
   }
   await route.handler(req, res, context, params);
@@ -525,7 +631,7 @@ export function createRequestHandler(context = {}) {
       })
       .catch((err) => {
         if (res.writableEnded) return;
-        if (err instanceof HttpError) {
+        if (err instanceof HttpError || err instanceof ApiError) {
           sendJson(req, res, err.status, errorResponse(err.code, err.message));
           return;
         }

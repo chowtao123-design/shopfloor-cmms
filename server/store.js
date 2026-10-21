@@ -123,6 +123,40 @@ function migrate(db) {
   }
 }
 
+/** Public JSON shape of one records row (SPEC-v2.md section 7). */
+function publicRecord(row) {
+  return {
+    store: row.store,
+    id: row.id,
+    data: JSON.parse(row.data),
+    version: Number(row.version),
+    deleted: Number(row.deleted) === 1,
+    createdAt: row.created_at,
+    createdBy: row.created_by,
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by,
+    seq: Number(row.seq),
+  };
+}
+
+/** Public JSON shape of one history entry, with the acting user's display name. */
+function publicHistory(row) {
+  return {
+    hid: Number(row.hid),
+    store: row.store,
+    recordId: row.record_id,
+    version: row.version === null ? null : Number(row.version),
+    action: row.action,
+    at: row.at,
+    userId: row.user_id,
+    displayName: row.display_name,
+    before: row.before === null ? null : JSON.parse(row.before),
+    after: row.after === null ? null : JSON.parse(row.after),
+    conflict: Number(row.conflict) === 1,
+    note: row.note,
+  };
+}
+
 /**
  * Open (creating if needed) the SQLite database in `dataDir`.
  * @param {string} dataDir directory for maint.db (and later backups/)
@@ -257,6 +291,140 @@ export function openStore(dataDir) {
     },
     deleteLoginAttempt(key) {
       db.prepare('DELETE FROM login_attempts WHERE key = ?').run(key);
+    },
+    /** Display name of a user id, or null for unknown/absent users. */
+    displayName(userId) {
+      if (userId === null || userId === undefined) return null;
+      const row = db.prepare('SELECT display_name FROM users WHERE id = ?').get(userId);
+      return row === undefined ? null : row.display_name;
+    },
+    /**
+     * Run `fn` inside one SQLite transaction so every write (records row,
+     * counter bump, history entry) commits or rolls back together. Not
+     * reentrant: public operations wrap their own single transaction.
+     */
+    transaction(fn) {
+      db.exec('BEGIN IMMEDIATE');
+      let result;
+      try {
+        result = fn();
+      } catch (err) {
+        try {
+          db.exec('ROLLBACK');
+        } catch {
+          /* connection already left the transaction; report original error */
+        }
+        throw err;
+      }
+      db.exec('COMMIT');
+      return result;
+    },
+    /** Current row for a record (or null), including tombstones. */
+    getRecord(storeName, id) {
+      const row = db
+        .prepare('SELECT * FROM records WHERE store = ? AND id = ?')
+        .get(storeName, id);
+      return row === undefined ? null : row;
+    },
+    /** Insert or fully replace one records row (version bump decided by caller). */
+    upsertRecord(record) {
+      db.prepare(
+        `INSERT INTO records
+           (store, id, data, version, deleted, created_at, created_by, updated_at, updated_by, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(store, id) DO UPDATE SET
+           data = excluded.data,
+           version = excluded.version,
+           deleted = excluded.deleted,
+           created_at = excluded.created_at,
+           created_by = excluded.created_by,
+           updated_at = excluded.updated_at,
+           updated_by = excluded.updated_by,
+           seq = excluded.seq`
+      ).run(
+        record.store,
+        record.id,
+        record.data,
+        record.version,
+        record.deleted ? 1 : 0,
+        record.createdAt,
+        record.createdBy === undefined ? null : record.createdBy,
+        record.updatedAt,
+        record.updatedBy,
+        record.seq
+      );
+    },
+    /** Append one history entry; `before`/`after` are JSON strings or null. */
+    insertHistory(entry) {
+      db.prepare(
+        `INSERT INTO history
+           (store, record_id, version, action, user_id, at, before, after, conflict, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        entry.store,
+        entry.recordId,
+        entry.version === undefined ? null : entry.version,
+        entry.action,
+        entry.userId === undefined ? null : entry.userId,
+        entry.at,
+        entry.before === undefined ? null : entry.before,
+        entry.after === undefined ? null : entry.after,
+        entry.conflict ? 1 : 0,
+        entry.note === undefined ? null : entry.note
+      );
+    },
+    /**
+     * Changes feed: records with seq > since ordered by seq (ascending),
+     * tombstones included. Returns {records, lastSeq, more} where `more`
+     * marks a truncated page and `lastSeq` is the resume position.
+     */
+    changesFeed(since, limit) {
+      const rows = db
+        .prepare('SELECT * FROM records WHERE seq > ? ORDER BY seq ASC LIMIT ?')
+        .all(since, limit + 1);
+      const more = rows.length > limit;
+      const page = more ? rows.slice(0, limit) : rows;
+      const records = page.map((row) => publicRecord(row));
+      let lastSeq;
+      if (records.length > 0) {
+        lastSeq = records[records.length - 1].seq;
+      } else {
+        const max = db.prepare('SELECT MAX(seq) AS seq FROM records').get();
+        lastSeq = Math.max(since, Number(max && max.seq) || 0);
+      }
+      return { records, lastSeq, more };
+    },
+    /** History entries for one record, newest first, with display names. */
+    historyList(storeName, recordId) {
+      return db
+        .prepare(
+          `SELECT h.hid, h.store, h.record_id, h.version, h.action, h.user_id, h.at,
+                  h.before, h.after, h.conflict, h.note, u.display_name
+           FROM history h LEFT JOIN users u ON u.id = h.user_id
+           WHERE h.store = ? AND h.record_id = ?
+           ORDER BY h.hid DESC`
+        )
+        .all(storeName, recordId)
+        .map((row) => publicHistory(row));
+    },
+    /** An applied stock move by its client id, or null (idempotency check). */
+    getStockMove(id) {
+      const row = db.prepare('SELECT * FROM stock_moves WHERE id = ?').get(id);
+      return row === undefined ? null : row;
+    },
+    insertStockMove(move) {
+      db.prepare(
+        `INSERT INTO stock_moves (id, part_id, delta, reason, work_order_id, user_id, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        move.id,
+        move.partId,
+        move.delta,
+        move.reason,
+        move.workOrderId === undefined ? null : move.workOrderId,
+        move.userId,
+        move.at
+      );
     },
     close() {
       if (db.open) db.close();

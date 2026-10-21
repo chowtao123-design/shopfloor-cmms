@@ -1,8 +1,10 @@
 'use strict';
 
+import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import * as auth from './auth.js';
+import { importV1 } from './records.js';
 import { openStore } from './store.js';
 
 const DATA_DIR =
@@ -14,10 +16,12 @@ const USAGE = `Usage:
   node server/admin.js disable-user <username>
   node server/admin.js enable-user <username>
   node server/admin.js list-users
+  node server/admin.js import-v1 <file> --as <username>
 
 Accounts live in the SQLite database under DATA_DIR (default: ./data).
 Passwords are read hidden from the terminal, or as one line from stdin
-when --password-stdin is given.`;
+when --password-stdin is given. import-v1 reads a v1 JSON backup and
+attributes the imported records to the given admin user.`;
 
 function usageError() {
   console.error(USAGE);
@@ -192,6 +196,43 @@ async function cmdListUsers(args) {
   }
 }
 
+async function cmdImportV1(args) {
+  let asUsername = null;
+  const positional = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--as') {
+      asUsername = args[i + 1] ?? null;
+      i += 1;
+    } else if (args[i].startsWith('--as=')) {
+      asUsername = args[i].slice(5);
+    } else {
+      positional.push(args[i]);
+    }
+  }
+  if (positional.length !== 1 || asUsername === null || asUsername === '') return usageError();
+  const file = positional[0];
+  const store = openStore(DATA_DIR);
+  try {
+    const user = store.getUserByUsername(asUsername);
+    if (user === null) throw new Error(`no user named "${asUsername}"`);
+    if (user.role !== 'admin') {
+      throw new Error(`user "${asUsername}" is not an admin; only admins can import v1 data`);
+    }
+    let payload;
+    try {
+      payload = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+    } catch (err) {
+      throw new Error(`could not read v1 backup "${file}": ${err.message}`);
+    }
+    const counts = importV1(store, payload, user);
+    console.log(`Imported ${counts.created} record(s); skipped ${counts.skipped} existing.`);
+    console.log(`Attributed to "${user.username}" (${user.display_name}).`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 async function main(argv) {
   const [command, ...args] = argv;
   switch (command) {
@@ -205,6 +246,8 @@ async function main(argv) {
       return cmdEnableUser(args);
     case 'list-users':
       return cmdListUsers(args);
+    case 'import-v1':
+      return cmdImportV1(args);
     case '--help':
     case 'help':
       console.log(USAGE);
