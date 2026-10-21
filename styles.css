@@ -430,6 +430,25 @@ time {
   color: inherit;
 }
 
+/* Job detail status buttons (SPEC-v2.md 15.4 item 4): a wrapping grid, not a
+   horizontal scroll strip. Filter chip rows above keep their scroll behaviour. */
+.status-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.status-buttons .chip {
+  width: 100%;
+  justify-content: center;
+}
+
+@media (min-width: 768px) {
+  .status-buttons {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+}
+
 /* Cards and lists */
 .card {
   background: var(--surface);
@@ -561,6 +580,27 @@ a.row:hover {
 .pill-priority {
   border: 1px solid currentColor;
   background: transparent;
+}
+
+/* Machine type badge (SPEC-v2.md 15.4 item 5): a small muted pill used on
+   machine cards and table rows. */
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.3rem;
+  padding: 0.02rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.row-sub .type-badge {
+  margin-right: 0.2rem;
 }
 
 /* Search */
@@ -1288,6 +1328,12 @@ details.pm-group-paused[open] > summary {
     padding-bottom: 1.5rem;
   }
 
+  /* Desktop header (SPEC-v2.md 15.4 item 3): the sidebar already shows the
+     brand, so the header logo is dropped. */
+  .header-title .brand-mark {
+    display: none;
+  }
+
   .app-header,
   .page {
     max-width: 1200px;
@@ -1464,6 +1510,7 @@ details.pm-group-paused[open] > summary {
 .sync-pill {
   display: inline-flex;
   align-items: center;
+  gap: 0.4rem;
   min-height: 1.7rem;
   padding: 0.15rem 0.65rem;
   border-radius: 999px;
@@ -1473,6 +1520,19 @@ details.pm-group-paused[open] > summary {
   font-size: 0.74rem;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.sync-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.sync-pill-compact {
+  display: none;
 }
 
 .sync-pill.is-ok {
@@ -1507,6 +1567,7 @@ details.pm-group-paused[open] > summary {
 
 .user-button {
   width: auto;
+  max-width: 12rem;
   min-width: 2.6rem;
   padding: 0 0.7rem;
   font-size: 0.9rem;
@@ -1516,16 +1577,28 @@ details.pm-group-paused[open] > summary {
   text-overflow: ellipsis;
 }
 
+.user-button-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-button-avatar {
+  display: none;
+}
+
+/*
+ * Account menu (SPEC-v2.md 15.4 item 1): anchored to the user button by JS
+ * (top/right inline styles); width 280px capped at the viewport minus gutters.
+ */
 .user-menu {
   position: fixed;
   z-index: 60;
-  top: calc(3.6rem + env(safe-area-inset-top));
-  right: max(0.85rem, calc((100vw - 720px) / 2));
+  width: min(280px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
-  min-width: 13rem;
-  padding: 0.8rem 0.9rem;
+  gap: 0.35rem;
+  padding: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -1540,6 +1613,102 @@ details.pm-group-paused[open] > summary {
   color: var(--muted);
   font-size: 0.82rem;
   margin-bottom: 0.25rem;
+}
+
+.user-menu-divider {
+  height: 1px;
+  margin: 0.35rem 0;
+  background: var(--border);
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 0.6rem;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.user-menu-item:hover,
+.user-menu-item:focus-visible {
+  background: var(--surface-2);
+}
+
+.user-menu-item.is-danger {
+  color: var(--danger);
+}
+
+.user-menu-item-icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--muted);
+}
+
+.user-menu-item.is-danger .user-menu-item-icon {
+  color: var(--danger);
+}
+
+/* Phone header (< 768px, SPEC-v2.md 15.4 item 2): initials avatar instead of
+   the full name, compact sync pill, and room for the page title (the logo
+   moves aside; the sidebar/tablet still carries the brand). */
+@media (max-width: 767.98px) {
+  .header-title .brand-mark {
+    display: none;
+  }
+
+  .user-button {
+    min-width: 0;
+    padding: 0 0.25rem;
+  }
+
+  .user-button-name {
+    display: none;
+  }
+
+  .user-button-avatar {
+    display: inline-grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    font-size: 0.8rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+
+  .sync-pill {
+    gap: 0.35rem;
+    padding: 0.15rem 0.5rem;
+  }
+
+  .sync-pill-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .sync-pill-compact {
+    display: inline;
+  }
 }
 
 /* Login screen (SPEC-v2.md section 9.1): no app chrome before sign-in. */

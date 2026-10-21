@@ -113,6 +113,40 @@ export function machineTypeLabel(machine) {
 }
 
 /**
+ * Two-letter initials for a display name (SPEC-v2.md 15.4 item 2): the first
+ * letters of the first two words ("Jane Cruz" -> "JC"), or the first two
+ * letters of a single word ("Madeleine" -> "MA"). Returns '' for nothing.
+ */
+export function initialsOf(name) {
+  const words = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return '';
+  if (words.length === 1) {
+    const letters = Array.from(words[0]);
+    return (letters[0] + (letters[1] || '')).toUpperCase();
+  }
+  return (Array.from(words[0])[0] + Array.from(words[1])[0]).toUpperCase();
+}
+
+/**
+ * Compact phone header text for the sync pill (SPEC-v2.md 15.4 item 2):
+ * a dot plus a word, with the pending count shown only while changes are
+ * pending. Mirrors statusText states (logic-sync.js) without replacing it.
+ */
+export function compactSyncLabel(status = {}) {
+  const pending = Math.max(0, Math.floor(Number(status.pending) || 0));
+  const failed = Math.max(0, Math.floor(Number(status.failed) || 0));
+  const online = status.online !== false;
+  if (status.needsLogin) return 'Sign in';
+  if (pending > 0) return online ? `Saving ${pending}` : `Offline ${pending}`;
+  if (!online) return 'Offline';
+  if (failed > 0) return 'Failed';
+  return 'Synced';
+}
+
+/**
  * Distinct custom ("Other") machine types already in use (SPEC-v2.md 15.2):
  * the `typeLabel` values of all non-deleted machines with `type === 'other'`,
  * de-duplicated case-insensitively (most common spelling wins, first-seen

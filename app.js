@@ -13,12 +13,14 @@ import {
   applyWorkOrderStatus,
   completePMTask,
   customTypeOptions,
+  compactSyncLabel,
   dashboardCounts,
   daysBetween,
   filterWorkOrders,
   formatDate,
   formatPartsUsed,
   groupPMTasks,
+  initialsOf,
   isISODate,
   isLowStock,
   machineTypeLabel,
@@ -55,6 +57,9 @@ const userMenuButton = document.getElementById('user-menu-button');
 
 const DESKTOP_QUERY = '(min-width: 1024px)';
 const desktopMedia = window.matchMedia(DESKTOP_QUERY);
+// Phone header (SPEC-v2.md 15.4 item 2): same boundary as CSS max-width: 767.98px.
+const PHONE_QUERY = '(max-width: 767.98px)';
+const phoneMedia = window.matchMedia(PHONE_QUERY);
 
 const state = {
   machines: [],
@@ -218,6 +223,12 @@ function machineName(id) {
 function statusPill(status, labels) {
   const label = labels ? labels[status] : status;
   return h('span', { class: `pill status-${status}` }, label || status || 'Unknown');
+}
+
+function machineTypeBadge(machine) {
+  const label = machineTypeLabel(machine);
+  if (!label) return '—';
+  return h('span', { class: 'type-badge' }, label);
 }
 
 function field(labelText, control, hint) {
@@ -725,9 +736,8 @@ function machineRow(machine) {
       h(
         'div',
         { class: 'row-sub' },
-        [machineTypeLabel(machine), machine.location]
-          .filter(Boolean)
-          .join(' · '),
+        machineTypeBadge(machine),
+        machine.location ? h('span', {}, machine.location) : null,
         editedTag(machine),
       ),
     ),
@@ -912,6 +922,7 @@ function machinesTableColumns() {
       key: 'type',
       label: 'Type',
       value: (machine) => machineTypeLabel(machine),
+      cell: (machine) => machineTypeBadge(machine),
     },
     { key: 'location', label: 'Location', value: (machine) => machine.location },
     {
@@ -1129,7 +1140,7 @@ function renderJobDetail(route) {
 
   const statusButtons = h(
     'div',
-    { class: 'chips', role: 'group', 'aria-label': 'Change status' },
+    { class: 'status-buttons', role: 'group', 'aria-label': 'Change status' },
     ...WORK_ORDER_STATUSES.map((status) =>
       h(
         'button',
@@ -3815,7 +3826,13 @@ function handleSyncStatus(event) {
   if (!syncPill) return;
   syncPill.hidden = !teamUser;
   const detail = event.detail || {};
-  syncPill.textContent = detail.text || '';
+  // Full label for wide screens and screen readers; the compact label is the
+  // phone strip (SPEC-v2.md 15.4 item 2) and never announced twice.
+  syncPill.replaceChildren(
+    h('span', { class: 'sync-dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'sync-pill-full' }, detail.text || ''),
+    h('span', { class: 'sync-pill-compact', 'aria-hidden': 'true' }, compactSyncLabel(detail)),
+  );
   syncPill.className = `sync-pill${
     detail.needsLogin
       ? ' is-login'
@@ -3884,30 +3901,91 @@ async function loadTeamUsers() {
   }
 }
 
-function closeUserMenu() {
-  if (userMenuElement) {
-    userMenuElement.remove();
-    userMenuElement = null;
+function closeUserMenu({ refocus = false } = {}) {
+  if (!userMenuElement) return;
+  const hadFocus = userMenuElement.contains(document.activeElement);
+  userMenuElement.remove();
+  userMenuElement = null;
+  if ((refocus || hadFocus) && userMenuButton && !userMenuButton.hidden) {
+    userMenuButton.focus();
   }
   if (userMenuButton) userMenuButton.setAttribute('aria-expanded', 'false');
 }
+
+function positionUserMenu() {
+  if (!userMenuElement || !userMenuButton) return;
+  const rect = userMenuButton.getBoundingClientRect();
+  const viewportWidth = document.documentElement.clientWidth;
+  userMenuElement.style.top = `${Math.round(rect.bottom + 8)}px`;
+  userMenuElement.style.right = `${Math.max(8, Math.round(viewportWidth - rect.right))}px`;
+}
+
+function menuIcon(paths) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'user-menu-item-icon');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  for (const d of paths) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+const USER_MENU_ICONS = {
+  help: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z', 'M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.2-3 4', 'M12 17.3h.01'],
+  settings: ['M4 21v-7', 'M4 10V3', 'M12 21v-9', 'M12 8V3', 'M20 21v-5', 'M20 12V3', 'M1 14h6', 'M9 8h6', 'M17 16h6'],
+  signout: ['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9'],
+};
 
 function toggleUserMenu() {
   if (userMenuElement) {
     closeUserMenu();
     return;
   }
-  const displayName = teamUser ? teamUser.displayName : '';
-  const roleLabel = teamUser && teamUser.role === 'admin' ? 'Administrator' : 'Technician';
+  const displayName = teamUser && teamUser.displayName ? teamUser.displayName : '';
+  const username = teamUser && teamUser.username ? teamUser.username : '';
+  const role = teamUser && teamUser.role === 'admin' ? 'Administrator' : 'Technician';
+  const accountLine = username ? `@${username} · ${role}` : role;
   userMenuElement = h(
     'div',
-    { class: 'user-menu', role: 'menu' },
-    h('div', { class: 'user-menu-name' }, displayName),
-    h('div', { class: 'user-menu-role' }, roleLabel),
+    { class: 'user-menu', role: 'menu', 'aria-label': 'Account menu' },
+    h('div', { class: 'user-menu-name' }, displayName || 'Account'),
+    h('div', { class: 'user-menu-role' }, accountLine),
+    h('div', { class: 'user-menu-divider', role: 'separator' }),
+    h(
+      'a',
+      {
+        class: 'user-menu-item',
+        href: '#/help',
+        role: 'menuitem',
+        onclick: () => closeUserMenu({ refocus: true }),
+      },
+      menuIcon(USER_MENU_ICONS.help),
+      h('span', {}, 'Help'),
+    ),
+    h(
+      'a',
+      {
+        class: 'user-menu-item',
+        href: '#/settings',
+        role: 'menuitem',
+        onclick: () => closeUserMenu({ refocus: true }),
+      },
+      menuIcon(USER_MENU_ICONS.settings),
+      h('span', {}, 'Settings'),
+    ),
+    h('div', { class: 'user-menu-divider', role: 'separator' }),
     h(
       'button',
       {
-        class: 'btn btn-danger btn-small',
+        class: 'user-menu-item is-danger',
         type: 'button',
         role: 'menuitem',
         onclick: () => {
@@ -3915,11 +3993,15 @@ function toggleUserMenu() {
           signOut();
         },
       },
-      'Sign out',
+      menuIcon(USER_MENU_ICONS.signout),
+      h('span', {}, 'Sign out'),
     ),
   );
   document.body.append(userMenuElement);
+  positionUserMenu();
   userMenuButton.setAttribute('aria-expanded', 'true');
+  const firstItem = userMenuElement.querySelector('[role="menuitem"]');
+  if (firstItem) firstItem.focus();
 }
 
 document.addEventListener('click', (event) => {
@@ -3930,27 +4012,87 @@ document.addEventListener('click', (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeUserMenu();
+  if (!userMenuElement) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeUserMenu({ refocus: true });
+    return;
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  if (!userMenuElement.contains(document.activeElement)) return;
+  event.preventDefault();
+  const items = Array.from(userMenuElement.querySelectorAll('[role="menuitem"]'));
+  if (items.length === 0) return;
+  const current = items.indexOf(document.activeElement);
+  const next =
+    current === -1
+      ? event.key === 'ArrowDown'
+        ? 0
+        : items.length - 1
+      : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+  items[next].focus();
 });
+
+window.addEventListener('resize', () => {
+  positionUserMenu();
+});
+
+window.addEventListener(
+  'scroll',
+  () => {
+    closeUserMenu();
+  },
+  true,
+);
+
+function userButtonName() {
+  return teamUser && teamUser.displayName ? teamUser.displayName : 'Account';
+}
+
+function syncUserButtonLabel() {
+  if (!userMenuButton) return;
+  const name = userButtonName();
+  // Phone shows only the initials avatar (SPEC-v2.md 15.4 item 2), so the
+  // button needs an explicit label there; wider screens read the visible name.
+  if (phoneMedia.matches) userMenuButton.setAttribute('aria-label', `Account: ${name}`);
+  else userMenuButton.removeAttribute('aria-label');
+}
+
+function renderUserButton() {
+  if (!userMenuButton) return;
+  const name = userButtonName();
+  userMenuButton.replaceChildren(
+    h('span', { class: 'user-button-name' }, name),
+    h('span', { class: 'user-button-avatar', 'aria-hidden': 'true' }, initialsOf(name) || '··'),
+  );
+  syncUserButtonLabel();
+  userMenuButton.setAttribute('aria-expanded', 'false');
+}
 
 function setupTeamHeader() {
   if (syncPill) syncPill.hidden = false;
   if (!userMenuButton) return;
   userMenuButton.hidden = false;
-  userMenuButton.textContent = teamUser ? teamUser.displayName : 'Account';
-  userMenuButton.setAttribute('aria-expanded', 'false');
+  renderUserButton();
   if (!userMenuButton.dataset.bound) {
     userMenuButton.dataset.bound = 'true';
     userMenuButton.addEventListener('click', () => toggleUserMenu());
+    phoneMedia.addEventListener('change', () => {
+      syncUserButtonLabel();
+      positionUserMenu();
+    });
   }
 }
 
 function teardownTeamHeader() {
   if (syncPill) {
     syncPill.hidden = true;
-    syncPill.textContent = '';
+    syncPill.replaceChildren();
   }
-  if (userMenuButton) userMenuButton.hidden = true;
+  if (userMenuButton) {
+    userMenuButton.hidden = true;
+    userMenuButton.replaceChildren();
+  }
   closeUserMenu();
 }
 

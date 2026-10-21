@@ -150,8 +150,10 @@ function helpGlossarySection(h) {
     helpGlossary(h, [
       ['Work order / job', 'One repair or task, from the moment it is logged until it is marked Done. “Job” and “work order” mean the same thing here.'],
       ['Breakdown', 'A repair logged because a machine stopped working. The app offers to mark that machine Down while the job is open, and Running again after.'],
+      ['Machine type', 'What kind of machine it is — single-needle lockstitch, bartack, 5-thread overlock and other garment-shop types. If none of them fit, pick Other (type your own) and give it your own name; the types you use are remembered for next time.'],
       ['PM (preventive maintenance)', 'A small, scheduled check that keeps a machine working — cleaning, oiling, checking tension. Example: clean and oil the single-needle machine every 30 days.'],
       ['PM interval', 'How often a PM task repeats, in days from the last time it was done. A 30-day task is due again 30 days after you mark it done.'],
+      ['Paused PM', 'The PM tasks of a machine that is In storage or Retired are paused: they do not count as overdue or due soon, and they sit in the “Paused” group on the PM tab. Set the machine back to Running and the tasks resume with their due dates unchanged.'],
       ['Overdue', 'Past its due date and not done yet.'],
       ['Due soon', 'Due within the next 3 days.'],
       ['Open', 'Logged, but nobody has started on it yet.'],
@@ -162,6 +164,7 @@ function helpGlossarySection(h) {
       ['Downtime', 'How many minutes the machine was out of service because of this job. Entered on the job as “Machine downtime (minutes)”.'],
       ['Labour minutes', 'How many minutes you spent working on the job — your time, tracked separately from downtime.'],
       ['Low stock / minimum quantity', 'Every part has a minimum quantity. When the quantity on hand falls to it or below, the part is flagged Low so you can reorder in time.'],
+      ['In storage', 'A machine that is put away instead of working on the floor. Jobs and PM tasks can still be logged for it, but the app leaves its status alone and pauses its PM while it is stored.'],
       ['Building item', 'Something that is part of the building — a drain, a gutter run, a light — logged like a machine so it can have jobs and PM tasks too.'],
     ]),
   );
