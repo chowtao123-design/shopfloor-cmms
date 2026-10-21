@@ -538,6 +538,7 @@ function searchBox(placeholder, onInput, autofocus = false) {
     autocomplete: 'off',
     'aria-label': placeholder,
   });
+  input.id = `search-${++fieldCounter}`;
   if (autofocus) {
     input.autofocus = true;
     requestAnimationFrame(() => input.focus());
@@ -547,6 +548,7 @@ function searchBox(placeholder, onInput, autofocus = false) {
     'div',
     { class: 'search-wrap' },
     h('span', { class: 'search-icon', 'aria-hidden': 'true' }, '⌕'),
+    h('label', { class: 'sr-only', for: input.id }, placeholder),
     input,
   );
 }
@@ -2254,7 +2256,14 @@ function renderSettings() {
   const lastBackup = storageGet(LAST_BACKUP_KEY);
 
   const importStatus = h('p', { class: 'field-hint', role: 'status' });
-  const fileInput = h('input', { type: 'file', accept: '.json,application/json', class: 'sr-only' });
+  const fileInputId = `import-file-${++fieldCounter}`;
+  const fileInput = h('input', {
+    type: 'file',
+    accept: '.json,application/json',
+    class: 'sr-only',
+    'aria-label': 'Backup JSON file',
+  });
+  fileInput.id = fileInputId;
   fileInput.addEventListener('change', async () => {
     const file = fileInput.files && fileInput.files[0];
     fileInput.value = '';
@@ -2308,8 +2317,9 @@ function renderSettings() {
       'div',
       { class: 'settings-actions' },
       h('button', { class: 'btn', type: 'button', onclick: exportBackup }, 'Export backup (JSON)', h('small', {}, 'Everything on this device in one file')),
-      h('button', { class: 'btn', type: 'button', onclick: () => fileInput.click() }, 'Import backup', fileInput, h('small', {}, 'Replace all data from a backup file')),
+      h('label', { class: 'btn', for: fileInputId }, 'Import backup', h('small', {}, 'Replace all data from a backup file')),
       h('button', { class: 'btn', type: 'button', onclick: exportWorkOrderCSV }, 'Export work orders (CSV)', h('small', {}, 'For Excel or email')),
+      fileInput,
     ),
     importStatus,
     sectionTitle('Data'),
@@ -2408,7 +2418,14 @@ async function start() {
   try {
     await db.open();
     await refreshState();
+    if (!location.hash) {
+      const last = storageGet(LAST_TAB_KEY);
+      if (last && ['home', 'jobs', 'machines', 'parts', 'pm'].includes(last)) {
+        history.replaceState(null, '', `#/${last}`);
+      }
+    }
     await render();
+    registerServiceWorker();
     window.__maintLogReady = true;
   } catch (error) {
     appMain.replaceChildren(
@@ -2421,6 +2438,18 @@ async function start() {
     );
     console.error(error);
   }
+}
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  const secure =
+    location.protocol === 'https:' ||
+    location.hostname === 'localhost' ||
+    location.hostname === '127.0.0.1';
+  if (!secure) return;
+  navigator.serviceWorker.register('./sw.js').catch((error) => {
+    console.error('Service worker registration failed:', error);
+  });
 }
 
 start();
