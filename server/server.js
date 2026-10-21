@@ -4,7 +4,8 @@ import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isMainModule } from './is-main.js';
 
 import {
   burnPasswordCheck,
@@ -802,9 +803,7 @@ export async function startServer(options = {}) {
   return { server, port, host: config.host, config, store, scheme, url: `${scheme}://127.0.0.1:${port}`, close };
 }
 
-const isMain =
-  process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain = isMainModule(import.meta.url);
 
 if (isMain) {
   try {

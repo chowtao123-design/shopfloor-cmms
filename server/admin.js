@@ -2,13 +2,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
 import * as auth from './auth.js';
 import { BACKUP_NAME_RE, formatBackupStamp, isValidBackupName } from './backup.js';
 import { importV1 } from './records.js';
 import { openStore } from './store.js';
+import { isMainModule } from './is-main.js';
 
 const DATA_DIR =
   process.env.DATA_DIR === undefined || process.env.DATA_DIR === '' ? './data' : process.env.DATA_DIR;
@@ -63,15 +63,14 @@ function readPasswordHidden(prompt) {
       process.stdout.write('\n');
       resolve(result);
     };
+    // Handle one character at a time: a paste arrives as one chunk that may end with Enter,
+    // and Windows terminals send \b (not DEL) for Backspace.
     const onData = (chunk) => {
-      if (chunk === '\r' || chunk === '\n') {
-        finish(value);
-      } else if (chunk === '\x03') {
-        finish(null);
-      } else if (chunk === '\x7f') {
-        value = value.slice(0, -1);
-      } else {
-        value += chunk;
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') return finish(value);
+        if (ch === '\x03') return finish(null);
+        if (ch === '\x7f' || ch === '\b') value = value.slice(0, -1);
+        else value += ch;
       }
     };
     process.stdin.on('data', onData);
@@ -365,9 +364,7 @@ async function main(argv) {
   }
 }
 
-const isMain =
-  process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain = isMainModule(import.meta.url);
 
 if (isMain) {
   try {

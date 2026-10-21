@@ -11,6 +11,66 @@ Two ways to run it:
 - **Standalone** — one device, no server; the data stays in that browser.
   See *Run locally* below.
 
+## Install on Windows (10 / 11)
+
+These steps set up the **team server** on a Windows PC. Use **PowerShell** or
+**Command Prompt** (not Git Bash, whose terminal cannot hide the password prompt).
+
+1. **Install Node.js 24 LTS** (the only requirement, no npm packages are needed):
+   ```powershell
+   winget install OpenJS.NodeJS.LTS
+   ```
+   or download the installer from <https://nodejs.org>. Close and reopen the
+   terminal, then check `node --version` shows **v22.5 or newer** (v24 recommended).
+2. **Get the code**: on GitHub click **Code → Download ZIP** and extract it to
+   `C:\shopfloor-cmms`, or:
+   ```powershell
+   git clone https://github.com/chowtao123-design/shopfloor-cmms.git C:\shopfloor-cmms
+   ```
+3. **Create the first admin** (asks for a password, at least 8 characters):
+   ```powershell
+   cd C:\shopfloor-cmms
+   node server\admin.js create-user --admin <username> "<Your Name>"
+   ```
+4. **Start the server**: double-click **`start-server.cmd`**, or run `npm start`.
+   When Windows Firewall asks, allow access on **Private networks** only.
+   Keep the window open; closing it stops the server.
+5. **Open the app**: on this PC go to <http://localhost:8080>. Other devices on
+   the same network use `http://<this-PC-IP>:8080`; find the IP with `ipconfig`
+   (the "IPv4 Address" line, e.g. `192.168.1.50`).
+
+**Firewall rule by hand** (if no prompt appeared; run PowerShell as Administrator):
+```powershell
+New-NetFirewallRule -DisplayName "Shopfloor CMMS" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private
+```
+
+**Different port**: PowerShell `$env:PORT=8090; npm start` · Command Prompt `set PORT=8090 && npm start`.
+
+**Start automatically when the PC boots** (PowerShell as Administrator; adjust the path):
+```powershell
+$action  = New-ScheduledTaskAction -Execute "C:\shopfloor-cmms\start-server.cmd"
+$trigger = New-ScheduledTaskTrigger -AtStartup
+Register-ScheduledTask -TaskName "Shopfloor CMMS" -Action $action -Trigger $trigger -User "SYSTEM" -RunLevel Highest
+```
+Remove it again with `Unregister-ScheduledTask -TaskName "Shopfloor CMMS"`.
+
+**Where the data is**: `C:\shopfloor-cmms\data\` (database) and
+`C:\shopfloor-cmms\data\backups\` (one-click and daily backups). Copy the
+`backups` folder to another drive or network share regularly. To restore, stop the
+server, then run `node server\admin.js restore <backup-file.db> --yes`.
+
+**HTTPS on Windows** (needed for phones to install the app and open it offline):
+```powershell
+winget install FiloSottile.mkcert
+mkcert -install
+mkcert 192.168.1.50 localhost        # use your PC's IP
+$env:TLS_CERT="C:\shopfloor-cmms\192.168.1.50+1.pem"; $env:TLS_KEY="C:\shopfloor-cmms\192.168.1.50+1-key.pem"; npm start
+```
+Then install mkcert's root certificate on each phone (see [HTTPS](#https-needed-to-installopen-the-app-offline-on-phones) below).
+
+> These Windows steps follow standard Windows 10/11 tools. The server itself is
+> tested on Linux; if a step does not work on your PC, please open an issue.
+
 ## Team server (v2)
 
 Several technicians share **one** log hosted on one company computer: each
