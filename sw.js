@@ -1,7 +1,7 @@
 // Service worker: cache-first app shell so the log works offline.
 // Bump CACHE_VERSION whenever any shell file changes.
 
-const CACHE_VERSION = 6;
+const CACHE_VERSION = 7;
 const CACHE_NAME = `maint-log-v${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -12,6 +12,9 @@ const APP_SHELL = [
   './help.js',
   './db.js',
   './logic.js',
+  './logic-sync.js',
+  './sync.js',
+  './login.js',
   './seed.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
@@ -47,6 +50,8 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  // Never cache or intercept API traffic (SPEC-v2.md section 10).
+  if (url.pathname === '/api/' || url.pathname.startsWith('/api/')) return;
 
   event.respondWith(
     (async () => {

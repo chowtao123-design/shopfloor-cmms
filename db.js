@@ -1,7 +1,9 @@
 const DB_NAME = 'maint-log';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export const STORES = ['machines', 'parts', 'workOrders', 'pmTasks'];
+export const OUTBOX_STORE = 'outbox';
+export const META_STORE = 'meta';
 
 let dbPromise = null;
 
@@ -19,6 +21,13 @@ export function open() {
         if (!db.objectStoreNames.contains(store)) {
           db.createObjectStore(store, { keyPath: 'id' });
         }
+      }
+      // v2 sync stores (SPEC-v2.md section 8): pending writes + sync metadata.
+      if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+        db.createObjectStore(OUTBOX_STORE, { keyPath: 'opId' });
+      }
+      if (!db.objectStoreNames.contains(META_STORE)) {
+        db.createObjectStore(META_STORE, { keyPath: 'key' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -87,9 +96,21 @@ export async function clear(store) {
 
 export async function clearAll() {
   const db = await open();
-  const tx = db.transaction(STORES, 'readwrite');
-  for (const store of STORES) tx.objectStore(store).clear();
+  const stores = [...STORES, OUTBOX_STORE, META_STORE];
+  const tx = db.transaction(stores, 'readwrite');
+  for (const store of stores) tx.objectStore(store).clear();
   await transactionDone(tx);
+}
+
+/** Read one sync metadata value ({key, value} rows in the `meta` store). */
+export async function getMeta(key) {
+  const row = await get(META_STORE, key);
+  return row === undefined || row === null ? null : row.value;
+}
+
+/** Write one sync metadata value. */
+export async function setMeta(key, value) {
+  await put(META_STORE, { key, value });
 }
 
 export async function replaceAll(data) {
@@ -113,5 +134,9 @@ export const db = {
   clear,
   clearAll,
   replaceAll,
+  getMeta,
+  setMeta,
   STORES,
+  OUTBOX_STORE,
+  META_STORE,
 };

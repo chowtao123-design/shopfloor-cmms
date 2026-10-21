@@ -36,6 +36,8 @@ import {
 } from './logic.js';
 import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
+import * as sync from './sync.js';
+import { checkSession, logout, renderLogin } from './login.js';
 
 const appMain = document.getElementById('app-main');
 const pageTitle = document.getElementById('page-title');
@@ -43,6 +45,8 @@ const backButton = document.getElementById('back-button');
 const fab = document.getElementById('fab');
 const dialogRoot = document.getElementById('dialog-root');
 const toastRoot = document.getElementById('toast-root');
+const syncPill = document.getElementById('sync-pill');
+const userMenuButton = document.getElementById('user-menu-button');
 
 const DESKTOP_QUERY = '(min-width: 1024px)';
 const desktopMedia = window.matchMedia(DESKTOP_QUERY);
@@ -55,6 +59,10 @@ const state = {
 };
 
 let fieldCounter = 0;
+let teamUser = null;
+let loginActive = false;
+let syncEventsBound = false;
+let userMenuElement = null;
 const LAST_BACKUP_KEY = 'maint-log:last-backup';
 const LAST_MACHINE_KEY = 'maint-log:last-machine';
 const LAST_TAB_KEY = 'maint-log:last-tab';
@@ -436,12 +444,24 @@ function createPartsEditor(initialPartsUsed = []) {
   };
 }
 
-async function persistChangedParts(result) {
-  const now = nowISO();
-  const changed = new Set(result.changedIds || []);
-  for (const id of changed) {
-    const part = result.parts.find((item) => item.id === id);
-    if (part) await db.put('parts', { ...part, updatedAt: now });
+async function persistStockMoves(result, existing) {
+  const order = result.order;
+  const wasDeducted = Boolean(existing && existing.stockDeducted);
+  const deducting = order.status === 'done' && !wasDeducted;
+  const restoring = order.status !== 'done' && wasDeducted;
+  if (!deducting && !restoring) return;
+  const source = deducting ? order.partsUsed || [] : (existing && existing.partsUsed) || [];
+  const usage = new Map();
+  for (const item of source) {
+    if (!item || !item.partId) continue;
+    const qty = toInteger(item.qty);
+    if (qty <= 0) continue;
+    usage.set(item.partId, (usage.get(item.partId) || 0) + qty);
+  }
+  for (const [partId, qty] of usage) {
+    if (!partById(partId)) continue;
+    const delta = deducting ? -qty : qty;
+    await sync.adjustStock(partId, delta, deducting ? 'job-done' : 'job-reopened', order.id);
   }
 }
 
@@ -449,14 +469,14 @@ async function persistWorkOrderSave(existing, incoming, options = {}) {
   const now = nowISO();
   const result = applyWorkOrderSave(existing, incoming, state.parts, todayISO());
   result.order.updatedAt = now;
-  await persistChangedParts(result);
+  await persistStockMoves(result, existing);
   if (options.setMachineDown) {
     const machine = machineById(result.order.machineId);
     if (machine && machine.status !== 'down' && machine.status !== 'retired') {
-      await db.put('machines', { ...machine, status: 'down', updatedAt: now });
+      await sync.saveRecord('machines', { ...machine, status: 'down', updatedAt: now }, machine.version);
     }
   }
-  await db.put('workOrders', result.order);
+  await sync.saveRecord('workOrders', result.order, existing ? existing.version : null);
   await refreshState();
   showWarnings(result.warnings);
   if (result.order.machineId) storageSet(LAST_MACHINE_KEY, result.order.machineId);
@@ -474,7 +494,7 @@ async function maybeOfferRunning(order, wasDone) {
     cancelText: 'Leave Down',
   });
   if (!yes) return;
-  await db.put('machines', { ...machine, status: 'running', updatedAt: nowISO() });
+  await sync.saveRecord('machines', { ...machine, status: 'running', updatedAt: nowISO() }, machine.version);
   await refreshState();
   toast(`${machine.name} set to Running.`);
 }
@@ -890,11 +910,11 @@ function renderJobDetail(route) {
           cancelText: 'Leave Running',
         });
         if (yes) {
-          await db.put('machines', {
-            ...currentMachine,
-            status: 'down',
-            updatedAt: nowISO(),
-          });
+          await sync.saveRecord(
+            'machines',
+            { ...currentMachine, status: 'down', updatedAt: nowISO() },
+            currentMachine.version,
+          );
           await refreshState();
         }
       }
@@ -913,7 +933,7 @@ function renderJobDetail(route) {
       danger: true,
     });
     if (!yes) return;
-    await db.del('workOrders', order.id);
+    await sync.deleteRecord('workOrders', order.id, order.version);
     await refreshState();
     toast('Work order deleted.');
     navigate('#/jobs');
@@ -1384,7 +1404,7 @@ function renderMachineForm(route) {
     };
     save.disabled = true;
     try {
-      await db.put('machines', record);
+      await sync.saveRecord('machines', record, existing ? existing.version : null);
       await refreshState();
       toast(existing ? 'Machine saved.' : 'Machine added.');
       navigate(`#/machines/${encodeURIComponent(record.id)}`);
@@ -1434,7 +1454,7 @@ function renderMachineDetail(route) {
       danger: true,
     });
     if (!yes) return;
-    await db.del('machines', machine.id);
+    await sync.deleteRecord('machines', machine.id, machine.version);
     await refreshState();
     toast('Machine deleted.');
     navigate('#/machines');
@@ -1660,9 +1680,10 @@ function renderPartDetail(route) {
   async function adjust(delta) {
     const fresh = partById(part.id);
     if (!fresh) return;
-    const nextQty = Math.max(0, toInteger(fresh.qtyOnHand) + delta);
-    if (nextQty === toInteger(fresh.qtyOnHand)) return;
-    await db.put('parts', { ...fresh, qtyOnHand: nextQty, updatedAt: nowISO() });
+    const currentQty = toInteger(fresh.qtyOnHand);
+    if (currentQty === 0 && delta < 0) return;
+    const updated = await sync.adjustStock(part.id, delta, 'manual');
+    const nextQty = updated ? toInteger(updated.qtyOnHand) : currentQty;
     await refreshState();
     toast(`${fresh.name}: ${nextQty} ${fresh.unit || 'pcs'} on hand.`);
     render();
@@ -1677,7 +1698,7 @@ function renderPartDetail(route) {
       danger: true,
     });
     if (!yes) return;
-    await db.del('parts', part.id);
+    await sync.deleteRecord('parts', part.id, part.version);
     await refreshState();
     toast('Part deleted.');
     navigate('#/parts');
@@ -1951,7 +1972,7 @@ function renderPartForm(route) {
     };
     save.disabled = true;
     try {
-      await db.put('parts', record);
+      await sync.saveRecord('parts', record, existing ? existing.version : null);
       await refreshState();
       toast(existing ? 'Part saved.' : 'Part added.');
       navigate(`#/parts/${encodeURIComponent(record.id)}`);
@@ -1976,8 +1997,8 @@ async function markPMTaskDone(task) {
     now,
   });
   try {
-    await db.put('pmTasks', updatedTask);
-    await db.put('workOrders', workOrder);
+    await sync.saveRecord('pmTasks', updatedTask, task.version);
+    await sync.saveRecord('workOrders', workOrder, null);
     await refreshState();
     toast(`PM done: ${task.title}. Logged as a done PM job; next due ${formatDate(pmDueDate(updatedTask))}.`);
     render();
@@ -2078,7 +2099,7 @@ function renderPMTaskDetail(route) {
       danger: true,
     });
     if (!yes) return;
-    await db.del('pmTasks', task.id);
+    await sync.deleteRecord('pmTasks', task.id, task.version);
     await refreshState();
     toast('PM task deleted.');
     navigate('#/pm');
@@ -2260,7 +2281,7 @@ function renderPMTaskForm(route) {
     };
     save.disabled = true;
     try {
-      await db.put('pmTasks', record);
+      await sync.saveRecord('pmTasks', record, existing ? existing.version : null);
       await refreshState();
       toast(existing ? 'PM task saved.' : 'PM task added.');
       navigate(`#/pm/${encodeURIComponent(record.id)}`);
@@ -2458,6 +2479,10 @@ function exportWorkOrderCSV() {
 }
 
 async function importBackupFile(file, statusHost) {
+  if (teamUser) {
+    statusHost.textContent = 'Local backup import is not available while signed in to the team server.';
+    return;
+  }
   statusHost.textContent = `Reading ${file.name}…`;
   try {
     const text = await file.text();
@@ -2499,6 +2524,10 @@ async function importBackupFile(file, statusHost) {
 }
 
 async function loadSampleData() {
+  if (teamUser) {
+    toast('Example data is not available while signed in to the team server.', 'warn');
+    return;
+  }
   const hasData = BACKUP_STORES.some((store) => state[store].length > 0);
   if (hasData) {
     const yes = await showConfirm({
@@ -2523,6 +2552,10 @@ async function loadSampleData() {
 }
 
 async function eraseAllData() {
+  if (teamUser) {
+    toast('Erasing data on this device is not available while signed in to the team server.', 'warn');
+    return;
+  }
   await db.clearAll();
   storageRemove(LAST_BACKUP_KEY);
   await refreshState();
@@ -2635,6 +2668,7 @@ function updateNavCounts() {
 }
 
 async function render() {
+  if (loginActive) return;
   const route = routeInfo();
   const [root, second, third] = route.segments;
   const tab = root || 'home';
@@ -2830,19 +2864,227 @@ window.addEventListener('keydown', (event) => {
   }
 });
 
+/* ---------- Team sync wiring (SPEC-v2.md sections 8 and 9.1, 9.4) ---------- */
+
+function formatSyncTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function handleSyncStatus(event) {
+  if (!syncPill) return;
+  syncPill.hidden = !teamUser;
+  const detail = event.detail || {};
+  syncPill.textContent = detail.text || '';
+  syncPill.className = `sync-pill${
+    detail.needsLogin
+      ? ' is-login'
+      : detail.failed > 0
+        ? ' is-failed'
+        : detail.pending > 0
+          ? ' is-saving'
+          : detail.online === false
+            ? ' is-offline'
+            : ' is-ok'
+  }`;
+}
+
+function handleSyncConflict(event) {
+  const detail = event.detail || {};
+  const conflict = detail.conflict || {};
+  const who = conflict.overwrittenBy || 'another user';
+  const when = formatSyncTime(conflict.overwrittenAt);
+  const title = detail.title ? `"${detail.title}" ` : '';
+  toast(`${title}You saved over changes by ${who}${when ? ` from ${when}` : ''}. See History.`, 'warn');
+}
+
+function handleSyncSessionExpired() {
+  if (!teamUser || loginActive) return;
+  showLoginScreen();
+}
+
+async function handleSyncApplied(event) {
+  if (!teamUser || loginActive) return;
+  const detail = event.detail || {};
+  if (!(detail.applied > 0)) return;
+  await refreshState();
+  // Keep any form the user is filling in; the next navigation re-renders.
+  if (appMain.querySelector('form')) return;
+  render();
+}
+
+function bindSyncEvents() {
+  if (syncEventsBound) return;
+  syncEventsBound = true;
+  window.addEventListener('sync-status', handleSyncStatus);
+  window.addEventListener('sync-conflict', handleSyncConflict);
+  window.addEventListener('sync-session', handleSyncSessionExpired);
+  window.addEventListener('sync-applied', handleSyncApplied);
+}
+
+async function loadTeamUsers() {
+  try {
+    const response = await sync.api('GET', '/api/users');
+    if (response.ok && Array.isArray(response.data)) {
+      await db.setMeta('users', response.data);
+    }
+  } catch (error) {
+    console.error('Could not load the user list:', error);
+  }
+}
+
+function closeUserMenu() {
+  if (userMenuElement) {
+    userMenuElement.remove();
+    userMenuElement = null;
+  }
+  if (userMenuButton) userMenuButton.setAttribute('aria-expanded', 'false');
+}
+
+function toggleUserMenu() {
+  if (userMenuElement) {
+    closeUserMenu();
+    return;
+  }
+  const displayName = teamUser ? teamUser.displayName : '';
+  const roleLabel = teamUser && teamUser.role === 'admin' ? 'Administrator' : 'Technician';
+  userMenuElement = h(
+    'div',
+    { class: 'user-menu', role: 'menu' },
+    h('div', { class: 'user-menu-name' }, displayName),
+    h('div', { class: 'user-menu-role' }, roleLabel),
+    h(
+      'button',
+      {
+        class: 'btn btn-danger btn-small',
+        type: 'button',
+        role: 'menuitem',
+        onclick: () => {
+          closeUserMenu();
+          signOut();
+        },
+      },
+      'Sign out',
+    ),
+  );
+  document.body.append(userMenuElement);
+  userMenuButton.setAttribute('aria-expanded', 'true');
+}
+
+document.addEventListener('click', (event) => {
+  if (!userMenuElement) return;
+  if (userMenuElement.contains(event.target)) return;
+  if (userMenuButton && userMenuButton.contains(event.target)) return;
+  closeUserMenu();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeUserMenu();
+});
+
+function setupTeamHeader() {
+  if (syncPill) syncPill.hidden = false;
+  if (!userMenuButton) return;
+  userMenuButton.hidden = false;
+  userMenuButton.textContent = teamUser ? teamUser.displayName : 'Account';
+  userMenuButton.setAttribute('aria-expanded', 'false');
+  if (!userMenuButton.dataset.bound) {
+    userMenuButton.dataset.bound = 'true';
+    userMenuButton.addEventListener('click', () => toggleUserMenu());
+  }
+}
+
+function teardownTeamHeader() {
+  if (syncPill) {
+    syncPill.hidden = true;
+    syncPill.textContent = '';
+  }
+  if (userMenuButton) userMenuButton.hidden = true;
+  closeUserMenu();
+}
+
+async function signOut() {
+  sync.stop();
+  const done = await logout({ confirmDialog: showConfirm });
+  if (!done) {
+    // The server session may already be gone; resume timers so the next
+    // 401 shows the login screen.
+    await sync.start(teamUser);
+    return;
+  }
+  teamUser = null;
+  await refreshState();
+  showLoginScreen();
+}
+
+function showLoginScreen() {
+  loginActive = true;
+  teamUser = null;
+  teardownTeamHeader();
+  document.body.classList.add('logged-out');
+  setTitle('Sign in');
+  appMain.replaceChildren();
+  registerServiceWorker();
+  renderLogin(appMain, async (user) => {
+    loginActive = false;
+    document.body.classList.remove('logged-out');
+    await enterTeamMode(user);
+  });
+  window.__maintLogReady = true;
+}
+
+function restoreLastTab() {
+  if (location.hash) return;
+  const last = storageGet(LAST_TAB_KEY);
+  if (last && ['home', 'jobs', 'machines', 'parts', 'pm'].includes(last)) {
+    history.replaceState(null, '', `#/${last}`);
+  }
+}
+
+async function enterTeamMode(user) {
+  teamUser = user;
+  document.body.classList.remove('logged-out');
+  bindSyncEvents();
+  setupTeamHeader();
+  await loadTeamUsers();
+  await sync.start(user);
+  await sync.pull();
+  restoreLastTab();
+  await refreshState();
+  await render();
+  registerServiceWorker();
+  window.__maintLogReady = true;
+}
+
+async function startLocalMode() {
+  await refreshState();
+  restoreLastTab();
+  await render();
+  registerServiceWorker();
+  window.__maintLogReady = true;
+}
+
 async function start() {
   try {
     await db.open();
-    await refreshState();
-    if (!location.hash) {
-      const last = storageGet(LAST_TAB_KEY);
-      if (last && ['home', 'jobs', 'machines', 'parts', 'pm'].includes(last)) {
-        history.replaceState(null, '', `#/${last}`);
+    const session = await checkSession();
+    if (session.status === 'ok' && session.user) {
+      await enterTeamMode(session.user);
+      return;
+    }
+    if (session.status === 'login') {
+      showLoginScreen();
+      return;
+    }
+    if (session.status === 'offline') {
+      const saved = await db.getMeta('me');
+      if (saved && saved.id) {
+        await enterTeamMode(saved);
+        return;
       }
     }
-    await render();
-    registerServiceWorker();
-    window.__maintLogReady = true;
+    await startLocalMode();
   } catch (error) {
     appMain.replaceChildren(
       page(

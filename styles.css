@@ -1431,3 +1431,143 @@ details.more[open] > summary {
     border-left: 1px solid var(--border);
   }
 }
+
+/* ---------- Team sync (SPEC-v2.md section 9.4) ---------- */
+
+.header-sync {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.sync-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.7rem;
+  padding: 0.15rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sync-pill.is-ok {
+  border-color: transparent;
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+.sync-pill.is-saving {
+  border-color: transparent;
+  background: var(--progress-bg);
+  color: var(--progress-fg);
+}
+
+.sync-pill.is-offline {
+  border-color: transparent;
+  background: var(--waiting-bg);
+  color: var(--waiting-fg);
+}
+
+.sync-pill.is-failed {
+  border-color: transparent;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.sync-pill.is-login {
+  border-color: transparent;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.user-button {
+  width: auto;
+  min-width: 2.6rem;
+  padding: 0 0.7rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-menu {
+  position: fixed;
+  z-index: 60;
+  top: calc(3.6rem + env(safe-area-inset-top));
+  right: max(0.85rem, calc((100vw - 720px) / 2));
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 13rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.user-menu-name {
+  font-weight: 800;
+}
+
+.user-menu-role {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-bottom: 0.25rem;
+}
+
+/* Login screen (SPEC-v2.md section 9.1): no app chrome before sign-in. */
+
+body.logged-out .sidebar,
+body.logged-out .tabbar,
+body.logged-out .fab,
+body.logged-out #help-link,
+body.logged-out #settings-link,
+body.logged-out #back-button {
+  display: none !important;
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: min(24rem, 100%);
+  margin: 18vh auto 0;
+  padding: 1.4rem 1.4rem 1.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.login-card h2 {
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+.login-sub {
+  color: var(--muted);
+  margin: 0 0 0.9rem;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.login-form .field-label {
+  margin-top: 0.55rem;
+}
+
+.login-error {
+  min-height: 1.2em;
+  margin: 0.35rem 0 0;
+  color: var(--danger);
+  font-size: 0.92rem;
+}
