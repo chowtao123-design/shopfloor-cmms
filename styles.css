@@ -1285,3 +1285,135 @@ details.more[open] > summary {
     align-items: start;
   }
 }
+
+/* ==========================================================================
+   M8b: Desktop sortable tables and list + detail split view (SPEC 13.1 item 2 & 3).
+   Below 1024px nothing changes: the card lists stay the only list UI.
+   ========================================================================== */
+
+/* Base (< 1024px): the table wrapper is hidden; card lists render as before. */
+.table-wrap {
+  display: none;
+  overflow-x: auto;
+}
+
+@media (min-width: 1024px) {
+  /* On Jobs, Machines and Parts the table replaces the card list; the empty
+     state drops .cards-only so it shows at every width. */
+  .table-wrap {
+    display: block;
+    margin-bottom: 1rem;
+  }
+
+  .list.cards-only {
+    display: none;
+  }
+
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: 0.55rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .data-table thead th {
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    border-bottom: 2px solid var(--border-strong);
+  }
+
+  .data-table tbody tr:last-child td,
+  .data-table tbody tr:last-child th {
+    border-bottom: 0;
+  }
+
+  .data-table td {
+    overflow-wrap: anywhere;
+  }
+
+  .th-sort {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.05rem 0.15rem;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    font-weight: inherit;
+    cursor: pointer;
+  }
+
+  .th-sort:hover {
+    color: var(--accent-strong);
+  }
+
+  .th-sort:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  .sort-arrow {
+    font-size: 0.75rem;
+  }
+
+  .data-row {
+    cursor: pointer;
+  }
+
+  .data-row:hover {
+    background: var(--surface-2);
+  }
+
+  .data-row:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: -3px;
+  }
+
+  .data-row td .pill {
+    margin-left: 0.45rem;
+  }
+
+  /* List + detail split view: list left, detail right (~45%). */
+  .split {
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 1rem 0.75rem 1.25rem;
+    display: grid;
+    grid-template-columns: minmax(0, 55fr) minmax(0, 45fr);
+    gap: 1.25rem;
+    align-items: start;
+  }
+
+  .split-list,
+  .split-detail {
+    min-width: 0;
+  }
+
+  .split .page {
+    max-width: none;
+    padding: 0;
+  }
+
+  .split-detail {
+    position: sticky;
+    top: 0.75rem;
+    max-height: calc(100vh - 1.5rem);
+    overflow-y: auto;
+    padding-left: 1.25rem;
+    border-left: 1px solid var(--border);
+  }
+}

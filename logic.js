@@ -357,6 +357,41 @@ export function sortWorkOrdersNewest(workOrders) {
   });
 }
 
+function isEmptySortValue(value) {
+  return value === null || value === undefined || value === '';
+}
+
+/**
+ * Sort rows for the desktop tables (SPEC 13.1 item 2).
+ * `key` is a string field name or a function row => value. Strings compare
+ * case-insensitively (localeCompare, sensitivity 'base'); numbers compare
+ * numerically; ISO dates are plain strings so lexicographic order is
+ * chronological. null/undefined/'' always sort LAST in both directions.
+ * Equal values keep their original order (stable). Returns a new array.
+ */
+export function sortRows(rows, key, dir = 'asc') {
+  const getValue = typeof key === 'function' ? key : (row) => row[key];
+  const order = dir === 'desc' ? -1 : 1;
+  const indexed = rows.map((row, index) => ({ row, index }));
+  indexed.sort((entryA, entryB) => {
+    const valueA = getValue(entryA.row);
+    const valueB = getValue(entryB.row);
+    if (isEmptySortValue(valueA) && isEmptySortValue(valueB)) return entryA.index - entryB.index;
+    if (isEmptySortValue(valueA)) return 1;
+    if (isEmptySortValue(valueB)) return -1;
+    let compared = 0;
+    if (typeof valueA === 'number' && typeof valueB === 'number') {
+      if (valueA < valueB) compared = -1;
+      else if (valueA > valueB) compared = 1;
+    } else {
+      compared = String(valueA).localeCompare(String(valueB), undefined, { sensitivity: 'base' });
+    }
+    if (compared === 0) return entryA.index - entryB.index;
+    return compared * order;
+  });
+  return indexed.map((entry) => entry.row);
+}
+
 export function dashboardCounts({ workOrders = [], pmTasks = [], parts = [] } = {}, today = todayISO()) {
   return {
     openJobs: workOrders.filter((order) => order.status !== 'done').length,

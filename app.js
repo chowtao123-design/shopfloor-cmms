@@ -27,6 +27,7 @@ import {
   searchWorkOrders,
   shouldOfferMachineDown,
   shouldOfferMachineRunning,
+  sortRows,
   sortWorkOrdersNewest,
   todayISO,
   validateBackup,
@@ -42,6 +43,9 @@ const backButton = document.getElementById('back-button');
 const fab = document.getElementById('fab');
 const dialogRoot = document.getElementById('dialog-root');
 const toastRoot = document.getElementById('toast-root');
+
+const DESKTOP_QUERY = '(min-width: 1024px)';
+const desktopMedia = window.matchMedia(DESKTOP_QUERY);
 
 const state = {
   machines: [],
@@ -554,6 +558,204 @@ function searchBox(placeholder, onInput, autofocus = false) {
   );
 }
 
+/* ---------- Desktop sortable tables (SPEC 13.1 item 2, >= 1024px) ---------- */
+
+const tableSort = {
+  jobs: { key: null, dir: 'asc' },
+  machines: { key: null, dir: 'asc' },
+  parts: { key: null, dir: 'asc' },
+};
+
+function toggleTableSort(pageKey, columnKey) {
+  const sortState = tableSort[pageKey];
+  if (sortState.key === columnKey) {
+    sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortState.key = columnKey;
+    sortState.dir = 'asc';
+  }
+}
+
+function tableCellContent(column, row) {
+  if (column.cell) return column.cell(row);
+  const value = column.value(row);
+  return value === null || value === undefined || value === '' ? '—' : String(value);
+}
+
+function dataTableRow(columns, row, href) {
+  return h(
+    'tr',
+    {
+      class: 'data-row',
+      tabindex: 0,
+      onclick: () => navigate(href),
+      onkeydown: (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          navigate(href);
+        }
+      },
+    },
+    ...columns.map((column) => h('td', {}, tableCellContent(column, row))),
+  );
+}
+
+function buildDataTable(pageKey, columns, rows, hrefForRow, onResort) {
+  const sortState = tableSort[pageKey];
+  const activeColumn = sortState.key ? columns.find((column) => column.key === sortState.key) : null;
+  const sortedRows = activeColumn
+    ? sortRows(rows, activeColumn.sortValue || activeColumn.value, sortState.dir)
+    : rows;
+  return h(
+    'table',
+    { class: 'data-table' },
+    h(
+      'thead',
+      {},
+      h(
+        'tr',
+        {},
+        ...columns.map((column) => {
+          const isActive = Boolean(activeColumn) && activeColumn.key === column.key;
+          return h(
+            'th',
+            {
+              scope: 'col',
+              ...(isActive ? { 'aria-sort': sortState.dir === 'asc' ? 'ascending' : 'descending' } : {}),
+            },
+            h(
+              'button',
+              {
+                type: 'button',
+                class: 'th-sort',
+                onclick: () => {
+                  toggleTableSort(pageKey, column.key);
+                  onResort();
+                },
+              },
+              column.label,
+              isActive
+                ? h('span', { class: 'sort-arrow', 'aria-hidden': 'true' }, sortState.dir === 'asc' ? '↑' : '↓')
+                : null,
+            ),
+          );
+        }),
+      ),
+    ),
+    h(
+      'tbody',
+      {},
+      ...sortedRows.map((row) => dataTableRow(columns, row, hrefForRow(row))),
+    ),
+  );
+}
+
+function jobsTableColumns() {
+  const today = todayISO();
+  return [
+    {
+      key: 'status',
+      label: 'Status',
+      value: (order) => LABELS.status[order.status] || order.status,
+      cell: (order) => statusPill(order.status, LABELS.status),
+    },
+    { key: 'title', label: 'Title', value: (order) => order.title },
+    { key: 'machine', label: 'Machine', value: (order) => machineName(order.machineId) },
+    { key: 'kind', label: 'Kind', value: (order) => LABELS.kind[order.kind] || order.kind },
+    {
+      key: 'priority',
+      label: 'Priority',
+      value: (order) => LABELS.priority[order.priority] || order.priority,
+      sortValue: (order) => PRIORITIES.indexOf(order.priority),
+    },
+    {
+      key: 'reported',
+      label: 'Reported',
+      value: (order) => formatDate(order.reportedAt),
+      sortValue: (order) => order.reportedAt,
+    },
+    {
+      key: 'age',
+      label: 'Age (days)',
+      value: (order) => String(workOrderAgeDays(order, today)),
+      sortValue: (order) => workOrderAgeDays(order, today),
+    },
+    {
+      key: 'downtime',
+      label: 'Downtime',
+      value: (order) => `${toInteger(order.downtimeMinutes)} min`,
+      sortValue: (order) => toInteger(order.downtimeMinutes),
+    },
+  ];
+}
+
+function nextPMDueISO(machine) {
+  const dates = state.pmTasks
+    .filter((task) => task.machineId === machine.id && task.active !== false)
+    .map((task) => pmDueDate(task))
+    .filter(Boolean)
+    .sort();
+  return dates[0] || '';
+}
+
+function machinesTableColumns() {
+  return [
+    { key: 'name', label: 'Name', value: (machine) => machine.name },
+    {
+      key: 'type',
+      label: 'Type',
+      value: (machine) => LABELS.machineType[machine.type] || machine.type,
+    },
+    { key: 'location', label: 'Location', value: (machine) => machine.location },
+    {
+      key: 'status',
+      label: 'Status',
+      value: (machine) => LABELS.machineStatus[machine.status] || machine.status,
+      cell: (machine) => statusPill(machine.status, LABELS.machineStatus),
+    },
+    {
+      key: 'openJobs',
+      label: 'Open jobs',
+      value: (machine) => String(openJobCount(state.workOrders, machine.id)),
+      sortValue: (machine) => openJobCount(state.workOrders, machine.id),
+    },
+    {
+      key: 'nextPM',
+      label: 'Next PM due',
+      value: (machine) => {
+        const due = nextPMDueISO(machine);
+        return due ? formatDate(due) : '—';
+      },
+      sortValue: (machine) => nextPMDueISO(machine),
+    },
+  ];
+}
+
+function partsTableColumns() {
+  return [
+    { key: 'name', label: 'Name', value: (part) => part.name },
+    { key: 'partNumber', label: 'Part #', value: (part) => part.partNumber },
+    {
+      key: 'qty',
+      label: 'Qty',
+      value: (part) => `${toInteger(part.qtyOnHand)} ${part.unit || 'pcs'}`,
+      sortValue: (part) => toInteger(part.qtyOnHand),
+      cell: (part) => {
+        const qty = h('span', {}, `${toInteger(part.qtyOnHand)} ${part.unit || 'pcs'}`);
+        return isLowStock(part) ? [qty, h('span', { class: 'pill status-low' }, 'Low')] : qty;
+      },
+    },
+    {
+      key: 'min',
+      label: 'Min',
+      value: (part) => `${toInteger(part.minQty)} ${part.unit || 'pcs'}`,
+      sortValue: (part) => toInteger(part.minQty),
+    },
+    { key: 'location', label: 'Location', value: (part) => part.location },
+    { key: 'supplier', label: 'Supplier', value: (part) => part.supplier },
+  ];
+}
+
 /* ---------- Work orders ---------- */
 
 function renderJobs(route) {
@@ -563,23 +765,38 @@ function renderJobs(route) {
     ? requested
     : 'active';
   const listHost = h('div', { class: 'list' });
+  const tableHost = h('div', { class: 'table-wrap' });
+  let searchQuery = '';
 
-  function update(query = '') {
+  function update(nextQuery) {
+    if (typeof nextQuery === 'string') searchQuery = nextQuery;
     let orders = filterWorkOrders(state.workOrders, filter);
-    if (query.trim()) orders = searchWorkOrders(orders, query, state.machines);
+    if (searchQuery.trim()) orders = searchWorkOrders(orders, searchQuery, state.machines);
     orders = sortWorkOrdersNewest(orders);
     if (orders.length === 0) {
       listHost.replaceChildren(
         emptyState(
-          query.trim() ? 'No matching jobs' : 'No jobs here',
-          query.trim()
+          searchQuery.trim() ? 'No matching jobs' : 'No jobs here',
+          searchQuery.trim()
             ? 'Try a different search.'
             : 'Log a repair to keep track of what is open.',
           filter === 'active' ? [h('a', { class: 'btn btn-primary', href: '#/jobs/new' }, '+ Log repair')] : [],
         ),
       );
+      listHost.classList.remove('cards-only');
+      tableHost.replaceChildren();
     } else {
       listHost.replaceChildren(...orders.map(jobRow));
+      listHost.classList.add('cards-only');
+      tableHost.replaceChildren(
+        buildDataTable(
+          'jobs',
+          jobsTableColumns(),
+          orders,
+          (order) => `#/jobs/${encodeURIComponent(order.id)}`,
+          update,
+        ),
+      );
     }
   }
 
@@ -616,6 +833,7 @@ function renderJobs(route) {
     search,
     chips,
     listHost,
+    tableHost,
   );
 }
 
@@ -1027,9 +1245,12 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
 function renderMachines(route) {
   setTitle('Machines');
   const listHost = h('div', { class: 'list' });
+  const tableHost = h('div', { class: 'table-wrap' });
+  let searchQuery = '';
 
-  function update(query = '') {
-    const needle = query.trim().toLowerCase();
+  function update(nextQuery) {
+    if (typeof nextQuery === 'string') searchQuery = nextQuery;
+    const needle = searchQuery.trim().toLowerCase();
     const machines = state.machines
       .filter((machine) => {
         if (!needle) return true;
@@ -1050,8 +1271,20 @@ function renderMachines(route) {
             : [h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine')],
         ),
       );
+      listHost.classList.remove('cards-only');
+      tableHost.replaceChildren();
     } else {
       listHost.replaceChildren(...machines.map(machineRow));
+      listHost.classList.add('cards-only');
+      tableHost.replaceChildren(
+        buildDataTable(
+          'machines',
+          machinesTableColumns(),
+          machines,
+          (machine) => `#/machines/${encodeURIComponent(machine.id)}`,
+          update,
+        ),
+      );
     }
   }
 
@@ -1063,6 +1296,7 @@ function renderMachines(route) {
     ),
     searchBox('Search machines', (value) => update(value)),
     listHost,
+    tableHost,
   );
 }
 
@@ -1339,9 +1573,12 @@ function renderParts(route) {
   setTitle('Parts');
   const lowOnly = route.params.get('low') === '1' || route.params.get('filter') === 'low';
   const listHost = h('div', { class: 'list' });
+  const tableHost = h('div', { class: 'table-wrap' });
+  let searchQuery = '';
 
-  function update(query = '') {
-    let parts = searchParts(state.parts, query, state.machines);
+  function update(nextQuery) {
+    if (typeof nextQuery === 'string') searchQuery = nextQuery;
+    let parts = searchParts(state.parts, searchQuery, state.machines);
     if (lowOnly) parts = parts.filter(isLowStock);
     parts = parts
       .slice()
@@ -1349,19 +1586,31 @@ function renderParts(route) {
     if (parts.length === 0) {
       listHost.replaceChildren(
         emptyState(
-          query.trim() ? 'No matching parts' : lowOnly ? 'No low-stock parts' : 'No parts yet',
-          query.trim()
+          searchQuery.trim() ? 'No matching parts' : lowOnly ? 'No low-stock parts' : 'No parts yet',
+          searchQuery.trim()
             ? 'Try a different search.'
             : lowOnly
               ? 'Everything is above its minimum level.'
               : 'Add needles, blades, sensors and other spares you keep on the shelf.',
-          query.trim() || lowOnly
+          searchQuery.trim() || lowOnly
             ? []
             : [h('a', { class: 'btn btn-primary', href: '#/parts/new' }, 'Add a part')],
         ),
       );
+      listHost.classList.remove('cards-only');
+      tableHost.replaceChildren();
     } else {
       listHost.replaceChildren(...parts.map(partRow));
+      listHost.classList.add('cards-only');
+      tableHost.replaceChildren(
+        buildDataTable(
+          'parts',
+          partsTableColumns(),
+          parts,
+          (part) => `#/parts/${encodeURIComponent(part.id)}`,
+          update,
+        ),
+      );
     }
   }
 
@@ -1383,6 +1632,7 @@ function renderParts(route) {
       ),
     ),
     listHost,
+    tableHost,
   );
 }
 
@@ -2041,9 +2291,7 @@ function backupReminder(today) {
     return h(
       'div',
       { class: 'backup-note' },
-      'No backup yet. ',
-      h('a', { href: '#/settings' }, 'Export one in Settings'),
-      '.',
+      h('span', {}, 'No backup yet. ', h('a', { href: '#/settings' }, 'Export one in Settings'), '.'),
     );
   }
   const days = daysBetween(String(last).slice(0, 10), today);
@@ -2051,9 +2299,13 @@ function backupReminder(today) {
   return h(
     'div',
     { class: 'backup-note' },
-    `Last backup ${days} day${days === 1 ? '' : 's'} ago. `,
-    h('a', { href: '#/settings' }, 'Export a fresh backup'),
-    '.',
+    h(
+      'span',
+      {},
+      `Last backup ${days} day${days === 1 ? '' : 's'} ago. `,
+      h('a', { href: '#/settings' }, 'Export a fresh backup'),
+      '.',
+    ),
   );
 }
 
@@ -2395,6 +2647,7 @@ async function render() {
 
   let content;
   let isDetail = false;
+  let splitListRoot = null;
 
   if (!root || root === 'home') {
     content = renderHome();
@@ -2404,6 +2657,7 @@ async function render() {
     else {
       content = renderJobDetail(route);
       isDetail = true;
+      splitListRoot = 'jobs';
     }
   } else if (root === 'machines') {
     if (!second) content = renderMachines(route);
@@ -2414,6 +2668,7 @@ async function render() {
     } else {
       content = renderMachineDetail(route);
       isDetail = true;
+      splitListRoot = 'machines';
     }
   } else if (root === 'parts') {
     if (!second) content = renderParts(route);
@@ -2424,6 +2679,7 @@ async function render() {
     } else {
       content = renderPartDetail(route);
       isDetail = true;
+      splitListRoot = 'parts';
     }
   } else if (root === 'pm') {
     if (!second) content = renderPM(route);
@@ -2449,6 +2705,27 @@ async function render() {
     );
   }
 
+  /* Desktop split view (SPEC 13.1 item 3): list on the left, detail on the
+     right. Below 1024px the detail stays a full page; the change listener
+     below re-renders when the viewport crosses the breakpoint. */
+  if (splitListRoot && desktopMedia.matches) {
+    const detailTitle = pageTitle.textContent;
+    const listRoute = { segments: [splitListRoot], params: new URLSearchParams() };
+    const listPage =
+      splitListRoot === 'jobs'
+        ? renderJobs(listRoute)
+        : splitListRoot === 'machines'
+          ? renderMachines(listRoute)
+          : renderParts(listRoute);
+    content = h(
+      'div',
+      { class: 'split' },
+      h('section', { class: 'split-list' }, listPage),
+      h('section', { class: 'split-detail' }, content),
+    );
+    setTitle(detailTitle);
+  }
+
   backButton.hidden = !isDetail;
   fab.hidden = !(tab === 'home' || (tab === 'jobs' && !second));
   appMain.replaceChildren(content);
@@ -2462,6 +2739,94 @@ backButton.addEventListener('click', () => {
 window.addEventListener('hashchange', () => {
   window.scrollTo(0, 0);
   render();
+});
+
+/* Re-render when the viewport crosses the 1024px desktop breakpoint so the
+   split view appears or the full-page detail comes back. */
+function handleDesktopChange() {
+  render();
+}
+
+if (typeof desktopMedia.addEventListener === 'function') {
+  desktopMedia.addEventListener('change', handleDesktopChange);
+} else if (typeof desktopMedia.addListener === 'function') {
+  desktopMedia.addListener(handleDesktopChange);
+}
+
+/* ---------- Desktop keyboard shortcuts (SPEC 13.1 item 5) ---------- */
+
+const GO_SEQUENCE_MS = 1500;
+let goSequenceUntil = 0;
+
+function isTypingTarget(target) {
+  if (!(target instanceof Element)) return false;
+  const tag = target.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+}
+
+function focusPageSearch() {
+  const input = appMain.querySelector('input[type="search"]');
+  if (!input) return;
+  input.focus();
+  if (typeof input.select === 'function') input.select();
+}
+
+window.addEventListener('keydown', (event) => {
+  if (!desktopMedia.matches) return;
+  if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+    goSequenceUntil = 0;
+    return;
+  }
+  if (isTypingTarget(event.target)) return;
+  if (dialogRoot.childElementCount > 0) {
+    goSequenceUntil = 0;
+    return;
+  }
+  const key = event.key;
+  const now = Date.now();
+  const inGoSequence = goSequenceUntil > now;
+  goSequenceUntil = 0;
+  if (inGoSequence) {
+    if (key === 'h') {
+      event.preventDefault();
+      navigate('#/home');
+      return;
+    }
+    if (key === 'j') {
+      event.preventDefault();
+      navigate('#/jobs');
+      return;
+    }
+    if (key === 'm') {
+      event.preventDefault();
+      navigate('#/machines');
+      return;
+    }
+    if (key === 'p') {
+      event.preventDefault();
+      navigate('#/parts');
+      return;
+    }
+    if (key === 'k') {
+      event.preventDefault();
+      navigate('#/pm');
+      return;
+    }
+    // Any other key ends the "g" sequence and falls through below.
+  }
+  if (key === 'g') {
+    goSequenceUntil = now + GO_SEQUENCE_MS;
+    return;
+  }
+  if (key === 'n') {
+    event.preventDefault();
+    navigate('#/jobs/new');
+    return;
+  }
+  if (key === '/') {
+    event.preventDefault();
+    focusPageSearch();
+  }
 });
 
 async function start() {

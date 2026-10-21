@@ -22,6 +22,7 @@ import {
   searchWorkOrders,
   shouldOfferMachineDown,
   shouldOfferMachineRunning,
+  sortRows,
   todayISO,
   validateBackup,
   workOrdersToCSV,
@@ -508,4 +509,103 @@ test('sample data matches the composition in the spec', () => {
   for (const collection of [data.machines, data.parts, data.workOrders, data.pmTasks]) {
     for (const record of collection) assert.ok(record.createdAt && record.updatedAt);
   }
+});
+
+test('sortRows compares strings case-insensitively in both directions', () => {
+  const rows = [{ name: 'banana' }, { name: 'Apple' }, { name: 'cherry' }, { name: 'apricot' }];
+  assert.deepEqual(
+    sortRows(rows, 'name', 'asc').map((row) => row.name),
+    ['Apple', 'apricot', 'banana', 'cherry'],
+  );
+  assert.deepEqual(
+    sortRows(rows, 'name', 'desc').map((row) => row.name),
+    ['cherry', 'banana', 'apricot', 'Apple'],
+  );
+});
+
+test('sortRows compares numbers numerically, not as text', () => {
+  const rows = [{ qty: 10 }, { qty: 2 }, { qty: 33 }, { qty: 5 }];
+  assert.deepEqual(
+    sortRows(rows, 'qty', 'asc').map((row) => row.qty),
+    [2, 5, 10, 33],
+  );
+  assert.deepEqual(
+    sortRows(rows, 'qty', 'desc').map((row) => row.qty),
+    [33, 10, 5, 2],
+  );
+});
+
+test('sortRows orders ISO date strings chronologically', () => {
+  const rows = [
+    { due: '2026-01-02' },
+    { due: '2026-10-20' },
+    { due: '2025-12-31' },
+    { due: '2026-01-01' },
+  ];
+  assert.deepEqual(
+    sortRows(rows, 'due', 'asc').map((row) => row.due),
+    ['2025-12-31', '2026-01-01', '2026-01-02', '2026-10-20'],
+  );
+  assert.deepEqual(
+    sortRows(rows, 'due', 'desc').map((row) => row.due),
+    ['2026-10-20', '2026-01-02', '2026-01-01', '2025-12-31'],
+  );
+});
+
+test('sortRows puts empty values last in both directions', () => {
+  const rows = [
+    { note: 'b' },
+    { note: null },
+    { note: 'a' },
+    { note: '' },
+    {},
+    { note: 'c' },
+  ];
+  const label = (row) => (row.note === undefined ? '<missing>' : row.note);
+  assert.deepEqual(
+    sortRows(rows, 'note', 'asc').map(label),
+    ['a', 'b', 'c', null, '', '<missing>'],
+  );
+  assert.deepEqual(
+    sortRows(rows, 'note', 'desc').map(label),
+    ['c', 'b', 'a', null, '', '<missing>'],
+  );
+});
+
+test('sortRows is stable for equal values', () => {
+  const rows = [
+    { prio: 1, id: 'first' },
+    { prio: 2, id: 'second' },
+    { prio: 1, id: 'third' },
+    { prio: 2, id: 'fourth' },
+    { prio: 1, id: 'fifth' },
+  ];
+  assert.deepEqual(
+    sortRows(rows, 'prio', 'asc').map((row) => row.id),
+    ['first', 'third', 'fifth', 'second', 'fourth'],
+  );
+  assert.deepEqual(
+    sortRows(rows, 'prio', 'desc').map((row) => row.id),
+    ['second', 'fourth', 'first', 'third', 'fifth'],
+  );
+});
+
+test('sortRows accepts a key function and returns a new array without mutating the input', () => {
+  const rows = [
+    { meta: { count: 3 } },
+    { meta: { count: 20 } },
+    { meta: { count: 7 } },
+  ];
+  const before = rows.map((row) => ({ meta: { count: row.meta.count } }));
+  const sorted = sortRows(rows, (row) => row.meta.count, 'asc');
+  assert.deepEqual(
+    sorted.map((row) => row.meta.count),
+    [3, 7, 20],
+  );
+  assert.notEqual(sorted, rows, 'sortRows must return a new array');
+  assert.deepEqual(rows, before, 'sortRows must not mutate the input');
+  assert.deepEqual(
+    sortRows(rows, (row) => row.meta.count, 'desc').map((row) => row.meta.count),
+    [20, 7, 3],
+  );
 });
