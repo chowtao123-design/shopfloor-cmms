@@ -614,7 +614,7 @@ function createdTag(record) {
   return h(
     'span',
     { class: 'edited-tag', title: `Created ${formatSyncTime(record.createdAt)}` },
-    `Created by ${who} · ${formatDate(record.createdAt)}`,
+    `Created by ${who} · ${formatDate(String(record.createdAt).slice(0, 10))}`,
   );
 }
 
