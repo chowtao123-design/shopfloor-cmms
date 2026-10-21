@@ -2,21 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  MACHINE_TYPES,
   WORK_ORDER_CSV_COLUMNS,
   addDays,
   applyWorkOrderSave,
   applyWorkOrderStatus,
   completePMTask,
   csvEscape,
+  customTypeOptions,
   dashboardCounts,
   daysBetween,
   deductStock,
   filterWorkOrders,
   groupPMTasks,
   isLowStock,
+  machineTypeLabel,
   needsAttention,
   openBreakdownCount,
   pmDueDate,
+  pmPaused,
   pmState,
   searchParts,
   searchWorkOrders,
@@ -460,24 +464,43 @@ test('sample data matches the composition in the spec', () => {
   const data = buildSampleData(new Date(2026, 9, 20, 9, 0));
   const machineCounts = {};
   for (const machine of data.machines) machineCounts[machine.type] = (machineCounts[machine.type] || 0) + 1;
-  assert.equal(data.machines.length, 8);
+  assert.equal(data.machines.length, 10);
   assert.deepEqual(machineCounts, {
-    sewing: 3,
+    'single-needle': 3,
+    'overlock-5': 1,
+    bartack: 1,
     quilting: 1,
     'down-filling': 1,
     cutter: 1,
     building: 2,
   });
+  for (const machine of data.machines) {
+    assert.ok(MACHINE_TYPES.includes(machine.type), `machine type ${machine.type} must be storable`);
+  }
+
+  // One machine is in storage with a PM task, so the paused group shows up.
+  const stored = data.machines.filter((machine) => machine.status === 'in-storage');
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].type, 'bartack');
+  assert.ok(data.pmTasks.some((task) => task.machineId === stored[0].id));
 
   assert.equal(data.parts.length, 6);
   assert.equal(data.parts.filter(isLowStock).length, 1);
   assert.equal(data.parts.find(isLowStock).id, 'sample-p-bobbin');
 
-  assert.equal(data.pmTasks.length, 4);
+  assert.equal(data.pmTasks.length, 5);
   const states = data.pmTasks.map((task) => pmState(task, TODAY));
-  assert.equal(states.filter((state) => state === 'overdue').length, 1);
+  assert.equal(states.filter((state) => state === 'overdue').length, 2);
   assert.equal(states.filter((state) => state === 'due-soon').length, 1);
   assert.equal(states.filter((state) => state === 'ok').length, 2);
+  // The stored machine's overdue PM is paused, not counted as overdue.
+  const groups = groupPMTasks(data.pmTasks, TODAY, data.machines);
+  assert.deepEqual(
+    groups.paused.map((task) => task.machineId),
+    [stored[0].id],
+  );
+  assert.equal(groups.overdue.length, 1);
+  assert.equal(groups.overdue[0].id, 'sample-pm-oil');
 
   assert.equal(data.workOrders.length, 6);
   const statuses = new Set(data.workOrders.map((order) => order.status));
@@ -608,4 +631,133 @@ test('sortRows accepts a key function and returns a new array without mutating t
     sortRows(rows, (row) => row.meta.count, 'desc').map((row) => row.meta.count),
     [20, 7, 3],
   );
+});
+
+/* ---------- v2.1: machine types, custom types, In storage, paused PM ---------- */
+
+test('machineTypeLabel: custom label for other, built-in label otherwise', () => {
+  assert.equal(machineTypeLabel(machine({ type: 'other', typeLabel: 'Piping machine' })), 'Piping machine');
+  assert.equal(machineTypeLabel(machine({ type: 'other', typeLabel: '  Trim station  ' })), 'Trim station');
+  assert.equal(machineTypeLabel(machine({ type: 'other', typeLabel: '' })), 'Other (type your own)');
+  assert.equal(machineTypeLabel(machine({ type: 'other' })), 'Other (type your own)');
+  assert.equal(machineTypeLabel(machine({ type: 'single-needle' })), 'Single needle lockstitch');
+  assert.equal(machineTypeLabel(machine({ type: 'overlock-5' })), '5-thread overlock (safety stitch)');
+  assert.equal(machineTypeLabel(machine({ type: 'sewing' })), 'Sewing (general)');
+  assert.equal(machineTypeLabel(machine({ type: 'hovercraft' })), 'hovercraft');
+  assert.equal(machineTypeLabel(null), '');
+});
+
+test('MACHINE_TYPES covers every grouped value plus the legacy sewing', () => {
+  assert.ok(MACHINE_TYPES.includes('sewing'), 'legacy sewing stays storable');
+  assert.ok(MACHINE_TYPES.includes('other'));
+  assert.ok(MACHINE_TYPES.includes('single-needle'));
+  assert.ok(MACHINE_TYPES.includes('pressing'));
+  assert.ok(MACHINE_TYPES.includes('building'));
+  assert.equal(new Set(MACHINE_TYPES).size, MACHINE_TYPES.length, 'no duplicate type values');
+});
+
+test('customTypeOptions: de-dupes case-insensitively, most common spelling, A–Z', () => {
+  const machinesList = [
+    machine({ id: 'm1', type: 'other', typeLabel: 'piping machine' }),
+    machine({ id: 'm2', type: 'other', typeLabel: 'Piping Machine' }),
+    machine({ id: 'm3', type: 'other', typeLabel: 'Piping machine' }),
+    machine({ id: 'm4', type: 'other', typeLabel: 'Elastic feeder' }),
+    machine({ id: 'm5', type: 'other', typeLabel: 'Bias binder' }),
+    machine({ id: 'm6', type: 'single-needle', typeLabel: 'not a custom type' }),
+    machine({ id: 'm7', type: 'other', typeLabel: 'Deleted machine', deleted: true }),
+    machine({ id: 'm8', type: 'other', typeLabel: '' }),
+  ];
+  assert.deepEqual(customTypeOptions(machinesList), [
+    'Bias binder',
+    'Elastic feeder',
+    'piping machine',
+  ]);
+  // "Piping machine" (2 votes) beats "piping MACHINE" (1 vote) as the spelling.
+  assert.deepEqual(
+    customTypeOptions([
+      machine({ type: 'other', typeLabel: 'piping MACHINE' }),
+      machine({ type: 'other', typeLabel: 'Piping machine' }),
+      machine({ type: 'other', typeLabel: 'Piping machine' }),
+    ]),
+    ['Piping machine'],
+  );
+  assert.deepEqual(customTypeOptions([]), []);
+});
+
+test('paused PM: machine status locks PM counting and grouping', () => {
+  assert.equal(pmPaused(machine({ status: 'in-storage' })), true);
+  assert.equal(pmPaused(machine({ status: 'retired' })), true);
+  assert.equal(pmPaused(machine({ status: 'running' })), false);
+  assert.equal(pmPaused(machine({ status: 'down' })), false);
+  assert.equal(pmPaused(null), false);
+
+  const machinesList = [
+    machine({ id: 'live', status: 'running' }),
+    machine({ id: 'stored', status: 'in-storage' }),
+    machine({ id: 'gone', status: 'retired' }),
+  ];
+  const tasks = [
+    { id: 't-live', title: 'Live overdue', machineId: 'live', intervalDays: 7, lastDoneAt: '2026-10-01', active: true },
+    { id: 't-stored', title: 'Stored overdue', machineId: 'stored', intervalDays: 7, lastDoneAt: '2026-10-01', active: true },
+    { id: 't-gone', title: 'Retired due soon', machineId: 'gone', intervalDays: 10, lastDoneAt: '2026-10-15', active: true },
+    { id: 't-inactive', title: 'Inactive', machineId: 'stored', intervalDays: 7, lastDoneAt: '2026-10-01', active: false },
+  ];
+  const groups = groupPMTasks(tasks, TODAY, machinesList);
+  assert.deepEqual(
+    groups.overdue.map((task) => task.id),
+    ['t-live'],
+  );
+  assert.deepEqual(groups.dueSoon, []);
+  assert.deepEqual(groups.upcoming, []);
+  assert.deepEqual(
+    groups.paused.map((task) => task.id).sort(),
+    ['t-gone', 't-stored'],
+  );
+
+  const counts = dashboardCounts({ pmTasks: tasks, machines: machinesList }, TODAY);
+  assert.equal(counts.pmOverdue, 1, 'paused tasks never count as overdue');
+  assert.equal(counts.pmDueSoon, 0, 'paused tasks never count as due soon');
+
+  const attention = needsAttention(
+    {
+      pmTasks: [
+        { id: 't-live', title: 'Live overdue PM', machineId: 'live', intervalDays: 7, lastDoneAt: '2026-10-01', active: true, createdAt: '2026-10-01T00:00:00.000Z' },
+        { id: 't-stored', title: 'Stored overdue PM', machineId: 'stored', intervalDays: 7, lastDoneAt: '2026-10-01', active: true, createdAt: '2026-10-01T00:00:00.000Z' },
+      ],
+      machines: machinesList,
+    },
+    TODAY,
+  );
+  assert.deepEqual(attention.map((item) => item.id), ['t-live']);
+
+  // Back to running: the stored machine's task counts as overdue again.
+  const running = machinesList.map((entry) =>
+    entry.id === 'stored' ? { ...entry, status: 'running' } : entry,
+  );
+  const resumed = groupPMTasks([tasks[1]], TODAY, running);
+  assert.deepEqual(
+    resumed.overdue.map((task) => task.id),
+    ['t-stored'],
+  );
+  assert.deepEqual(resumed.paused, []);
+});
+
+test('paused PM: dashboards without machines keep the old behaviour', () => {
+  const counts = dashboardCounts(
+    {
+      pmTasks: [
+        { id: 't1', machineId: 'm1', intervalDays: 7, lastDoneAt: '2026-10-01', active: true },
+        { id: 't2', machineId: 'm1', intervalDays: 10, lastDoneAt: '2026-10-13', active: true },
+      ],
+    },
+    TODAY,
+  );
+  assert.equal(counts.pmOverdue, 1);
+  assert.equal(counts.pmDueSoon, 1);
+  const groups = groupPMTasks(
+    [{ id: 't1', machineId: 'm1', intervalDays: 7, lastDoneAt: '2026-10-01', active: true }],
+    TODAY,
+  );
+  assert.deepEqual(groups.paused, []);
+  assert.equal(groups.overdue.length, 1);
 });

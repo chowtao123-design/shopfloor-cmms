@@ -155,13 +155,13 @@ test('PUT update bumps version and seq and keeps created_by', async () => {
 
 test('updated_by always comes from the session user, never from the body', async () => {
   const id = uuid();
-  await put(anna, 'machines', id, { name: 'Shared machine', type: 'other' });
+  await put(anna, 'machines', id, { name: 'Shared machine', type: 'other', typeLabel: 'Seaming station' });
   const spoof = await api(ben, `/api/records/machines/${id}`, {
     method: 'PUT',
-    body: { data: { name: 'Renamed by Ben', type: 'other' }, updatedBy: 'not-a-user', createdAt: '1999-01-01T00:00:00.000Z' },
+    body: { data: { name: 'Renamed by Ben', type: 'other', typeLabel: 'Seaming station' }, updatedBy: 'not-a-user', createdAt: '1999-01-01T00:00:00.000Z' },
   });
   assert.equal(spoof.res.status, 400, 'spoof fields are rejected, not applied');
-  const clean = await put(ben, 'machines', id, { name: 'Renamed by Ben', type: 'other' });
+  const clean = await put(ben, 'machines', id, { name: 'Renamed by Ben', type: 'other', typeLabel: 'Seaming station' });
   assert.equal(clean.res.status, 200);
   const benRow = handle.store.getUserByUsername('ben');
   const annaRow = handle.store.getUserByUsername('anna');
@@ -240,7 +240,7 @@ test('DELETE makes a tombstone that stays visible in the changes feed', async ()
 
 test('delete with a stale baseVersion saves and flags the conflict', async () => {
   const id = uuid();
-  await put(ben, 'machines', id, { name: 'To drop', type: 'other' });
+  await put(ben, 'machines', id, { name: 'To drop', type: 'other', typeLabel: 'Drop tester' });
   const del = await api(ben, `/api/records/machines/${id}?baseVersion=42`, { method: 'DELETE' });
   assert.equal(del.res.status, 200);
   assert.equal(del.body.record.deleted, true);
@@ -622,4 +622,69 @@ test('import-v1 is admin-only, counts created/skipped, and keeps history', async
   });
   assert.equal(repaired.res.status, 200);
   assert.deepEqual(repaired.body, { created: 1, skipped: 2 });
+});
+test('machine types accept the v2.1 enum, the legacy sewing and typeLabel rules', async () => {
+  // New garment types are storable; the legacy sewing value stays valid.
+  for (const type of ['single-needle', 'overlock-5', 'bartack', 'pressing', 'sewing']) {
+    const id = uuid();
+    const { res, body } = await put(anna, 'machines', id, { name: `Sewing ${type}`, type });
+    assert.equal(res.status, 200, `type ${type} must be accepted`);
+    assert.equal(body.record.data.type, type);
+    assert.equal(body.record.data.typeLabel, undefined, 'no custom label for builtin types');
+  }
+
+  // In storage is a valid machine status.
+  const storedId = uuid();
+  const stored = await put(anna, 'machines', storedId, {
+    name: 'Bartack #15',
+    type: 'bartack',
+    status: 'in-storage',
+  });
+  assert.equal(stored.res.status, 200);
+  assert.equal(stored.body.record.data.status, 'in-storage');
+
+  // type === 'other' requires a trimmed typeLabel of 2-40 characters.
+  const customOk = await put(anna, 'machines', uuid(), {
+    name: 'Piping station P2',
+    type: 'other',
+    typeLabel: '  Piping machine  ',
+    status: 'in-storage',
+  });
+  assert.equal(customOk.res.status, 200);
+  assert.equal(customOk.body.record.data.typeLabel, 'Piping machine', 'label is trimmed');
+
+  const badOther = [
+    ['missing label', { name: 'X', type: 'other' }],
+    ['empty label', { name: 'X', type: 'other', typeLabel: '   ' }],
+    ['one-character label', { name: 'X', type: 'other', typeLabel: 'o' }],
+    ['41-character label', { name: 'X', type: 'other', typeLabel: `${'x'.repeat(40)}1` }],
+    ['non-string label', { name: 'X', type: 'other', typeLabel: 5 }],
+  ];
+  for (const [label, data] of badOther) {
+    const { res } = await put(anna, 'machines', uuid(), data);
+    assert.equal(res.status, 400, `${label}: expected 400`);
+  }
+
+  // A stored custom machine keeps its label across updates.
+  const customId = uuid();
+  await put(ben, 'machines', customId, { name: 'Bias binder B1', type: 'other', typeLabel: 'Bias binder' });
+  const renamed = await put(ben, 'machines', customId, {
+    name: 'Bias binder B1 (east)',
+    type: 'other',
+    typeLabel: 'Bias binder',
+  });
+  assert.equal(renamed.res.status, 200);
+  assert.equal(renamed.body.record.data.typeLabel, 'Bias binder');
+
+  // typeLabel on a builtin type is stripped, not rejected.
+  const stripped = await put(anna, 'machines', uuid(), {
+    name: 'Juki DDL-8700 #31',
+    type: 'single-needle',
+    typeLabel: 'Leftover label',
+  });
+  assert.equal(stripped.res.status, 200);
+  assert.equal(stripped.body.record.data.typeLabel, undefined, 'server strips labels for builtin types');
+
+  const badStatus = await put(anna, 'machines', uuid(), { name: 'X', status: 'parked' });
+  assert.equal(badStatus.res.status, 400);
 });

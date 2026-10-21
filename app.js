@@ -1,8 +1,10 @@
 import * as db from './db.js';
 import {
   BACKUP_STORES,
+  DEFAULT_MACHINE_TYPE,
   LABELS,
   MACHINE_STATUSES,
+  MACHINE_TYPE_GROUPS,
   MACHINE_TYPES,
   PRIORITIES,
   WORK_ORDER_KINDS,
@@ -10,6 +12,7 @@ import {
   applyWorkOrderSave,
   applyWorkOrderStatus,
   completePMTask,
+  customTypeOptions,
   dashboardCounts,
   daysBetween,
   filterWorkOrders,
@@ -18,10 +21,12 @@ import {
   groupPMTasks,
   isISODate,
   isLowStock,
+  machineTypeLabel,
   needsAttention,
   openBreakdownCount,
   openJobCount,
   pmDueDate,
+  pmPaused,
   pmState,
   searchParts,
   searchWorkOrders,
@@ -237,6 +242,43 @@ function selectFrom(values, selected, labeler = (value) => value) {
   return select;
 }
 
+/**
+ * Machine type <select> with <optgroup>s (SPEC-v2.md 15.1, 15.2): builtin
+ * groups, "Your types" (custom types in use, before Other), Other, and the
+ * legacy `sewing` value only when the edited machine already has it.
+ * Values inside "Your types" are the custom type labels themselves.
+ */
+function machineTypeSelect(selected, customTypes = []) {
+  const select = h('select', {});
+  const offered = new Set();
+  const addGroup = (label, entries) => {
+    const rows = entries.filter(([value]) => value !== '' && !offered.has(value));
+    if (rows.length === 0) return;
+    const group = h('optgroup', { label });
+    for (const [value, text] of rows) {
+      offered.add(value);
+      const option = h('option', { value }, text);
+      if (value === selected) option.selected = true;
+      group.append(option);
+    }
+    select.append(group);
+  };
+  for (const entry of MACHINE_TYPE_GROUPS) {
+    if (entry.group === 'Other') addGroup('Your types', customTypes.map((t) => [t, t]));
+    const options = entry.options.slice();
+    if (entry.group === 'Sewing machines' && selected === 'sewing') {
+      options.push(['sewing', LABELS.machineType.sewing]);
+    }
+    addGroup(entry.group, options);
+  }
+  if (selected !== '' && !offered.has(selected)) {
+    // The machine's own custom label lost the de-dup or is not listed yet;
+    // still offer it so the select shows what is stored.
+    addGroup('Your types', [[selected, selected]]);
+  }
+  return select;
+}
+
 function emptyState(title, message, actions = []) {
   return h(
     'div',
@@ -381,7 +423,7 @@ function machinePicker(selectedMachineId) {
   const listId = `machine-options-${++fieldCounter}`;
   const options = h('datalist', { id: listId });
   for (const machine of orderedMachines()) {
-    options.append(h('option', { value: machine.name }, machine.location || machine.type || ''));
+    options.append(h('option', { value: machine.name }, machine.location || machineTypeLabel(machine)));
   }
   const selected = machineById(selectedMachineId);
   const input = h('input', {
@@ -528,7 +570,8 @@ async function persistWorkOrderSave(existing, incoming, options = {}) {
   await persistStockMoves(result, existing);
   if (options.setMachineDown) {
     const machine = machineById(result.order.machineId);
-    if (machine && machine.status !== 'down' && machine.status !== 'retired') {
+    // Never auto-change machines that are in storage or retired (SPEC-v2.md 15.3).
+    if (machine && machine.status !== 'down' && !pmPaused(machine)) {
       await sync.saveRecord('machines', { ...machine, status: 'down', updatedAt: now }, machine.version);
     }
   }
@@ -682,7 +725,7 @@ function machineRow(machine) {
       h(
         'div',
         { class: 'row-sub' },
-        [LABELS.machineType[machine.type] || machine.type, machine.location]
+        [machineTypeLabel(machine), machine.location]
           .filter(Boolean)
           .join(' · '),
         editedTag(machine),
@@ -868,7 +911,7 @@ function machinesTableColumns() {
     {
       key: 'type',
       label: 'Type',
-      value: (machine) => LABELS.machineType[machine.type] || machine.type,
+      value: (machine) => machineTypeLabel(machine),
     },
     { key: 'location', label: 'Location', value: (machine) => machine.location },
     {
@@ -1411,8 +1454,12 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
 
 /* ---------- Machines ---------- */
 
+const MACHINE_FILTERS = ['all', 'running', 'down', 'in-storage', 'retired'];
+
 function renderMachines(route) {
   setTitle('Machines');
+  const requested = route.params.get('status') || 'all';
+  const statusFilter = MACHINE_FILTERS.includes(requested) ? requested : 'all';
   const listHost = h('div', { class: 'list' });
   const tableHost = h('div', { class: 'table-wrap' });
   let searchQuery = '';
@@ -1421,9 +1468,10 @@ function renderMachines(route) {
     if (typeof nextQuery === 'string') searchQuery = nextQuery;
     const needle = searchQuery.trim().toLowerCase();
     const machines = state.machines
+      .filter((machine) => statusFilter === 'all' || machine.status === statusFilter)
       .filter((machine) => {
         if (!needle) return true;
-        return [machine.name, machine.type, machine.model, machine.serial, machine.location]
+        return [machine.name, machineTypeLabel(machine), machine.model, machine.serial, machine.location]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(needle));
       })
@@ -1431,11 +1479,11 @@ function renderMachines(route) {
     if (machines.length === 0) {
       listHost.replaceChildren(
         emptyState(
-          needle ? 'No matching machines' : 'No machines yet',
+          needle || statusFilter !== 'all' ? 'No matching machines' : 'No machines yet',
           needle
             ? 'Try a different search.'
             : 'Add sewing machines, cutters, building items and anything else you maintain.',
-          needle
+          needle || statusFilter !== 'all'
             ? []
             : [h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine')],
         ),
@@ -1458,12 +1506,29 @@ function renderMachines(route) {
   }
 
   update();
+  const chips = h(
+    'div',
+    { class: 'chips', role: 'group', 'aria-label': 'Filter machines by status' },
+    MACHINE_FILTERS.map((value) =>
+      h(
+        'a',
+        {
+          class: `chip${value === statusFilter ? ' is-active' : ''}`,
+          href: value === 'all' ? '#/machines' : `#/machines?status=${value}`,
+          'aria-pressed': value === statusFilter ? 'true' : 'false',
+        },
+        value === 'all' ? 'All' : LABELS.machineStatus[value],
+      ),
+    ),
+  );
+
   return page(
     pageHead(
       'Machines',
       h('a', { class: 'btn btn-primary btn-small', href: '#/machines/new' }, '+ Add machine'),
     ),
     searchBox('Search machines', (value) => update(value)),
+    chips,
     listHost,
     tableHost,
   );
@@ -1484,7 +1549,8 @@ function renderMachineForm(route) {
   }
   const base = existing || {
     name: '',
-    type: 'sewing',
+    type: DEFAULT_MACHINE_TYPE,
+    typeLabel: '',
     model: '',
     serial: '',
     location: '',
@@ -1500,18 +1566,45 @@ function renderMachineForm(route) {
     placeholder: 'e.g. Juki DDL-8700 #12',
     value: base.name || '',
   });
-  const typeSelect = selectFrom(MACHINE_TYPES, base.type || 'sewing', (value) => LABELS.machineType[value]);
+  const typeSelect = machineTypeSelect(
+    existing && existing.type === 'other' && existing.typeLabel
+      ? existing.typeLabel
+      : base.type || DEFAULT_MACHINE_TYPE,
+    customTypeOptions(state.machines),
+  );
+  const typeLabelInput = h('input', {
+    type: 'text',
+    required: true,
+    maxlength: '40',
+    autocomplete: 'off',
+    placeholder: 'e.g. Piping machine',
+    value: existing && existing.type === 'other' && existing.typeLabel ? existing.typeLabel : '',
+  });
+  const typeLabelField = field('Machine type', typeLabelInput, 'Your own name for this kind of machine.');
   const modelInput = h('input', { type: 'text', value: base.model || '' });
   const serialInput = h('input', { type: 'text', value: base.serial || '' });
   const locationInput = h('input', { type: 'text', value: base.location || '' });
   const statusSelect = selectFrom(MACHINE_STATUSES, base.status || 'running', (value) => LABELS.machineStatus[value]);
   const notesInput = h('textarea', { rows: 4, value: base.notes || '' });
 
+  typeLabelField.hidden = typeSelect.value !== 'other';
+  const syncTypeLabelField = (focus) => {
+    const show = typeSelect.value === 'other';
+    if (show && typeLabelField.hidden && focus) {
+      typeLabelField.hidden = false;
+      typeLabelInput.focus();
+      return;
+    }
+    typeLabelField.hidden = !show;
+  };
+  typeSelect.addEventListener('change', () => syncTypeLabelField(true));
+
   const save = h('button', { class: 'btn btn-primary', type: 'submit' }, existing ? 'Save changes' : 'Add machine');
   form.append(
     errorBox,
     field('Name', nameInput),
     h('div', { class: 'grid-2' }, field('Type', typeSelect), field('Status', statusSelect)),
+    typeLabelField,
     h('div', { class: 'grid-2' }, field('Model', modelInput), field('Serial number', serialInput)),
     field('Location', locationInput, 'Line, room, roof, etc.'),
     field('Notes', notesInput),
@@ -1536,12 +1629,31 @@ function renderMachineForm(route) {
       nameInput.focus();
       return;
     }
+    const selectedType = typeSelect.value;
+    let type = selectedType;
+    let typeLabel = '';
+    if (!MACHINE_TYPES.includes(selectedType)) {
+      // A "Your types" option: its value is the custom type label.
+      type = 'other';
+      typeLabel = selectedType.trim();
+    }
+    if (type === 'other') {
+      const label = type === selectedType ? typeLabelInput.value.trim() : typeLabel;
+      if (label.trim().length < 2 || label.trim().length > 40) {
+        errorBox.textContent = 'Enter a machine type (2 to 40 characters).';
+        if (typeLabelField.hidden) typeSelect.focus();
+        else typeLabelInput.focus();
+        return;
+      }
+      typeLabel = label.trim();
+    }
     const now = nowISO();
     const record = {
       ...base,
       id: existing ? existing.id : uid(),
       name,
-      type: typeSelect.value,
+      type,
+      typeLabel,
       model: modelInput.value.trim(),
       serial: serialInput.value.trim(),
       location: locationInput.value.trim(),
@@ -1612,7 +1724,7 @@ function renderMachineDetail(route) {
     'dl',
     { class: 'detail-grid' },
     h('dt', {}, 'Type'),
-    h('dd', {}, LABELS.machineType[machine.type] || machine.type),
+    h('dd', {}, machineTypeLabel(machine)),
     h('dt', {}, 'Status'),
     h('dd', {}, statusPill(machine.status, LABELS.machineStatus)),
     h('dt', {}, 'Model'),
@@ -2166,8 +2278,10 @@ async function markPMTaskDone(task) {
 function pmTaskRow(task) {
   const today = todayISO();
   const due = pmDueDate(task, today);
-  const state = pmState(task, today);
-  const lateDays = state === 'overdue' ? Math.max(0, daysBetween(due, today) || 0) : 0;
+  const stateName = pmState(task, today);
+  const machine = machineById(task.machineId);
+  const paused = pmPaused(machine);
+  const lateDays = !paused && stateName === 'overdue' ? Math.max(0, daysBetween(due, today) || 0) : 0;
   return h(
     'div',
     { class: 'pm-row' },
@@ -2184,11 +2298,13 @@ function pmTaskRow(task) {
         editedTag(task),
       ),
     ),
-    h(
-      'button',
-      { class: 'btn btn-primary btn-small', type: 'button', onclick: () => markPMTaskDone(task) },
-      'Mark done',
-    ),
+    paused
+      ? statusPill(machine.status, LABELS.machineStatus)
+      : h(
+          'button',
+          { class: 'btn btn-primary btn-small', type: 'button', onclick: () => markPMTaskDone(task) },
+          'Mark done',
+        ),
   );
 }
 
@@ -2206,10 +2322,25 @@ function pmGroupSection(title, tasks) {
   );
 }
 
+/** Paused group (SPEC-v2.md 15.3): a collapsible <details>, closed by default. */
+function pausedPMGroupSection(title, tasks) {
+  return h(
+    'details',
+    { class: 'pm-group pm-group-paused' },
+    h(
+      'summary',
+      { class: 'pm-group-head' },
+      h('h3', {}, title),
+      h('span', { class: 'chip-count' }, String(tasks.length)),
+    ),
+    h('div', { class: 'list' }, ...tasks.map(pmTaskRow)),
+  );
+}
+
 function renderPM() {
   setTitle('PM');
   const today = todayISO();
-  const groups = groupPMTasks(state.pmTasks, today);
+  const groups = groupPMTasks(state.pmTasks, today, state.machines);
   const activeCount = state.pmTasks.filter((task) => task.active !== false).length;
   if (activeCount === 0) {
     return page(
@@ -2226,6 +2357,9 @@ function renderPM() {
     groups.overdue.length ? pmGroupSection('Overdue', groups.overdue) : null,
     groups.dueSoon.length ? pmGroupSection('Due soon', groups.dueSoon) : null,
     groups.upcoming.length ? pmGroupSection('Upcoming', groups.upcoming) : null,
+    groups.paused.length
+      ? pausedPMGroupSection('Paused – machine in storage or retired', groups.paused)
+      : null,
   );
 }
 
@@ -2540,6 +2674,7 @@ function renderHome() {
 
   const pmDueWeek = state.pmTasks
     .filter((task) => task.active !== false)
+    .filter((task) => !pmPaused(machineById(task.machineId)))
     .filter((task) => {
       if (pmState(task, today) === 'overdue') return true;
       const days = daysBetween(today, pmDueDate(task, today));

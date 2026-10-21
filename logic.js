@@ -1,24 +1,74 @@
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
-export const MACHINE_TYPES = ['sewing', 'quilting', 'down-filling', 'cutter', 'building', 'other'];
-export const MACHINE_STATUSES = ['running', 'down', 'retired'];
+/**
+ * Machine types (SPEC-v2.md 15.1): garment-specific groups used by the form's
+ * <select> with <optgroup>. `sewing` is a legacy stored value that is offered
+ * only when the edited machine already has it; it is not in any group.
+ */
+export const MACHINE_TYPE_GROUPS = [
+  {
+    group: 'Sewing machines',
+    options: [
+      ['single-needle', 'Single needle lockstitch'],
+      ['double-needle', 'Double needle'],
+      ['binder', 'Binder'],
+      ['bartack', 'Bartack'],
+      ['buttonhole', 'Buttonhole'],
+      ['button-sew', 'Button sew'],
+      ['snap-attach', 'Snap / button attach'],
+      ['overlock-5', '5-thread overlock (safety stitch)'],
+      ['overlock-4', '4-thread overlock'],
+      ['overlock-3', '3-thread overlock'],
+      ['coverstitch', 'Coverstitch'],
+      ['flatlock', 'Flatlock'],
+      ['blindstitch', 'Blind stitch'],
+      ['feed-off-arm', 'Feed-off-arm'],
+      ['zigzag', 'Zigzag'],
+    ],
+  },
+  {
+    group: 'Production equipment',
+    options: [
+      ['quilting', 'Automated quilting'],
+      ['down-filling', 'Down filling'],
+      ['cutter', 'Cutter (Gerber)'],
+      ['pressing', 'Pressing / fusing'],
+    ],
+  },
+  {
+    group: 'Facility',
+    options: [['building', 'Building item (drains, gutters, lighting)']],
+  },
+  {
+    group: 'Other',
+    options: [['other', 'Other (type your own)']],
+  },
+];
+
+/** All storable machine type values, including the legacy `sewing`. */
+export const MACHINE_TYPES = [
+  ...MACHINE_TYPE_GROUPS.flatMap((entry) => entry.options.map(([value]) => value)),
+  'sewing',
+];
+
+/** Default type for a new machine (SPEC-v2.md 15.1). */
+export const DEFAULT_MACHINE_TYPE = 'single-needle';
+
+export const MACHINE_STATUSES = ['running', 'down', 'in-storage', 'retired'];
 export const WORK_ORDER_KINDS = ['breakdown', 'pm', 'facility', 'install', 'other'];
 export const PRIORITIES = ['low', 'normal', 'urgent'];
 export const WORK_ORDER_STATUSES = ['open', 'in-progress', 'waiting-parts', 'waiting-tech', 'done'];
 export const PM_STATES = ['overdue', 'due-soon', 'ok'];
 
 export const LABELS = {
-  machineType: {
-    sewing: 'Sewing',
-    quilting: 'Quilting',
-    'down-filling': 'Down filling',
-    cutter: 'Cutter',
-    building: 'Building',
-    other: 'Other',
-  },
+  machineType: Object.fromEntries([
+    ...MACHINE_TYPE_GROUPS.flatMap((entry) => entry.options),
+    ['sewing', 'Sewing (general)'],
+  ]),
   machineStatus: {
     running: 'Running',
     down: 'Down',
+    'in-storage': 'In storage',
     retired: 'Retired',
   },
   kind: {
@@ -48,6 +98,47 @@ export const LABELS = {
 };
 
 export const BACKUP_STORES = ['machines', 'parts', 'workOrders', 'pmTasks'];
+
+/**
+ * Display label for a machine's type (SPEC-v2.md 15.2): the custom `typeLabel`
+ * when `type === 'other'`, otherwise the built-in label.
+ */
+export function machineTypeLabel(machine) {
+  if (!machine) return '';
+  if (machine.type === 'other') {
+    const label = typeof machine.typeLabel === 'string' ? machine.typeLabel.trim() : '';
+    return label || LABELS.machineType.other;
+  }
+  return LABELS.machineType[machine.type] || machine.type || '';
+}
+
+/**
+ * Distinct custom ("Other") machine types already in use (SPEC-v2.md 15.2):
+ * the `typeLabel` values of all non-deleted machines with `type === 'other'`,
+ * de-duplicated case-insensitively (most common spelling wins, first-seen
+ * wins a tie), sorted A–Z.
+ */
+export function customTypeOptions(machines = []) {
+  const byKey = new Map();
+  for (const machine of machines) {
+    if (!machine || machine.deleted === true || machine.type !== 'other') continue;
+    const label = typeof machine.typeLabel === 'string' ? machine.typeLabel.trim() : '';
+    if (label === '') continue;
+    const key = label.toLowerCase();
+    if (!byKey.has(key)) byKey.set(key, new Map());
+    const spellings = byKey.get(key);
+    spellings.set(label, (spellings.get(label) || 0) + 1);
+  }
+  const labels = [];
+  for (const spellings of byKey.values()) {
+    let best = null;
+    for (const [label, count] of spellings) {
+      if (best === null || count > best.count) best = { label, count };
+    }
+    labels.push(best.label);
+  }
+  return labels.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
 
 export const WORK_ORDER_CSV_COLUMNS = [
   'reportedAt',
@@ -131,10 +222,28 @@ export function pmState(task, today = todayISO()) {
   return 'ok';
 }
 
-export function groupPMTasks(tasks, today = todayISO()) {
+/**
+ * PM is paused for machines that are `in-storage` or `retired`
+ * (SPEC-v2.md 15.3): their tasks never count as overdue/due soon anywhere.
+ */
+export function pmPaused(machine) {
+  return Boolean(machine && (machine.status === 'in-storage' || machine.status === 'retired'));
+}
+
+/**
+ * Group active PM tasks (SPEC-v2.md 15.3). Tasks on machines that are
+ * `in-storage` or `retired` go to `paused`; they are excluded from
+ * overdue/dueSoon/upcoming until the machine runs again.
+ */
+export function groupPMTasks(tasks, today = todayISO(), machines = []) {
+  const machinesById = new Map(machines.map((machine) => [machine.id, machine]));
   const active = tasks.filter((task) => task.active !== false);
-  const groups = { overdue: [], dueSoon: [], upcoming: [] };
+  const groups = { overdue: [], dueSoon: [], upcoming: [], paused: [] };
   for (const task of active) {
+    if (pmPaused(machinesById.get(task.machineId))) {
+      groups.paused.push(task);
+      continue;
+    }
     const state = pmState(task, today);
     if (state === 'overdue') groups.overdue.push(task);
     else if (state === 'due-soon') groups.dueSoon.push(task);
@@ -148,6 +257,7 @@ export function groupPMTasks(tasks, today = todayISO()) {
   groups.overdue.sort(byDue);
   groups.dueSoon.sort(byDue);
   groups.upcoming.sort(byDue);
+  groups.paused.sort(byDue);
   return groups;
 }
 
@@ -392,14 +502,19 @@ export function sortRows(rows, key, dir = 'asc') {
   return indexed.map((entry) => entry.row);
 }
 
-export function dashboardCounts({ workOrders = [], pmTasks = [], parts = [] } = {}, today = todayISO()) {
+export function dashboardCounts(
+  { workOrders = [], pmTasks = [], parts = [], machines = [] } = {},
+  today = todayISO(),
+) {
+  const machinesById = new Map(machines.map((machine) => [machine.id, machine]));
+  const counted = pmTasks.filter((task) => !pmPaused(machinesById.get(task.machineId)));
   return {
     openJobs: workOrders.filter((order) => order.status !== 'done').length,
     waiting: workOrders.filter(
       (order) => order.status === 'waiting-parts' || order.status === 'waiting-tech',
     ).length,
-    pmOverdue: pmTasks.filter((task) => pmState(task, today) === 'overdue').length,
-    pmDueSoon: pmTasks.filter((task) => pmState(task, today) === 'due-soon').length,
+    pmOverdue: counted.filter((task) => pmState(task, today) === 'overdue').length,
+    pmDueSoon: counted.filter((task) => pmState(task, today) === 'due-soon').length,
     lowStock: parts.filter(isLowStock).length,
   };
 }
@@ -410,10 +525,12 @@ export function needsAttention(
   limit = 10,
 ) {
   const machineNames = new Map(machines.map((machine) => [machine.id, machine.name]));
+  const machinesById = new Map(machines.map((machine) => [machine.id, machine]));
   const items = [];
 
   for (const task of pmTasks) {
     if (pmState(task, today) !== 'overdue') continue;
+    if (pmPaused(machinesById.get(task.machineId))) continue;
     items.push({
       type: 'pm',
       id: task.id,

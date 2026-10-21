@@ -546,6 +546,13 @@ a.row:hover {
   color: var(--progress-fg);
 }
 
+/* In storage: neutral slate, distinct from Retired (SPEC-v2.md 15.3). */
+.status-in-storage {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  box-shadow: inset 0 0 0 1px var(--neutral-fg);
+}
+
 .status-neutral {
   background: var(--neutral-bg);
   color: var(--neutral-fg);
@@ -892,6 +899,19 @@ details.more[open] > summary {
 .pm-group-head h3 {
   margin: 0;
   font-size: 1rem;
+}
+
+/* Paused PM group: collapsed <details> by default (SPEC-v2.md 15.3). */
+details.pm-group-paused > summary {
+  cursor: pointer;
+}
+
+details.pm-group-paused > summary .pm-group-head {
+  margin-bottom: 0;
+}
+
+details.pm-group-paused[open] > summary {
+  margin-bottom: 0.5rem;
 }
 
 .pm-row {

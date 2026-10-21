@@ -27,8 +27,34 @@ export const STOCK_REASONS = ['job-done', 'job-reopened', 'manual', 'import'];
 /** v1 fields that live in `records` columns and are ignored inside `data`. */
 const EXCLUDED_KEYS = new Set(['id', 'createdAt', 'updatedAt']);
 
-const MACHINE_TYPES = ['sewing', 'quilting', 'down-filling', 'cutter', 'building', 'other'];
-const MACHINE_STATUSES = ['running', 'down', 'retired'];
+// SPEC-v2.md 15.1: garment machine types; `sewing` is a legacy value kept for
+// v1 records and imports. 15.2: `typeLabel` (custom type) rules. 15.3 adds
+// the `in-storage` machine status.
+const MACHINE_TYPES = [
+  'single-needle',
+  'double-needle',
+  'binder',
+  'bartack',
+  'buttonhole',
+  'button-sew',
+  'snap-attach',
+  'overlock-5',
+  'overlock-4',
+  'overlock-3',
+  'coverstitch',
+  'flatlock',
+  'blindstitch',
+  'feed-off-arm',
+  'zigzag',
+  'quilting',
+  'down-filling',
+  'cutter',
+  'pressing',
+  'building',
+  'other',
+  'sewing',
+];
+const MACHINE_STATUSES = ['running', 'down', 'in-storage', 'retired'];
 const WORK_ORDER_KINDS = ['breakdown', 'pm', 'facility', 'install', 'other'];
 const WORK_ORDER_PRIORITIES = ['low', 'normal', 'urgent'];
 const WORK_ORDER_STATUSES = ['open', 'in-progress', 'waiting-parts', 'waiting-tech', 'done'];
@@ -162,6 +188,7 @@ const FIELD_SPECS = {
     fields: {
       name: { type: 'string', nonEmpty: true },
       type: { type: 'enum', values: MACHINE_TYPES },
+      typeLabel: { type: 'string' },
       model: { type: 'string' },
       serial: { type: 'string' },
       location: { type: 'string' },
@@ -169,6 +196,23 @@ const FIELD_SPECS = {
       notes: { type: 'string' },
     },
     defaults: () => ({}),
+    // SPEC-v2.md 15.2: typeLabel is required (trimmed, 2–40 chars) when
+    // type is 'other' and must be stripped for every other type.
+    finalize: (data) => {
+      const label = typeof data.typeLabel === 'string' ? data.typeLabel.trim() : '';
+      if (data.type === 'other') {
+        if (label === '') {
+          throw bad('machines.typeLabel is required when type is "other"');
+        }
+        if (label.length < 2 || label.length > 40) {
+          throw bad('machines.typeLabel must be 2–40 characters');
+        }
+        data.typeLabel = label;
+      } else {
+        delete data.typeLabel;
+      }
+      return data;
+    },
   },
   parts: {
     required: ['name'],
@@ -277,6 +321,7 @@ export function validateRecordData(storeName, raw, { isCreate = true, part = 're
       throw bad(`"${key}" is required for store "${storeName}"`);
     }
   }
+  if (spec.finalize) spec.finalize(data);
   if (isCreate) {
     for (const [key, value] of Object.entries(spec.defaults())) {
       if (data[key] === undefined) data[key] = value;
