@@ -1145,3 +1145,143 @@ details.more[open] > summary {
     scroll-behavior: auto !important;
   }
 }
+
+/* ==========================================================================
+   M8a: Tablet and desktop breakpoints (mobile-first).
+   Everything above is the phone layout (< 768px) and stays unchanged.
+   ========================================================================== */
+
+/* Base (< 768px): sidebar is desktop-only, keep the phone layout as-is. */
+.sidebar {
+  display: none;
+}
+
+.nav-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  padding: 0.02rem 0.42rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tablet: 768–1023px — wider content, Home counters in 3 columns. */
+@media (min-width: 768px) {
+  .app-header,
+  .page {
+    max-width: 960px;
+  }
+
+  .counters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Desktop: 1024px and up — fixed left sidebar replaces tab bar + FAB. */
+@media (min-width: 1024px) {
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 10;
+    width: 232px;
+    padding: 1rem 0.85rem;
+    overflow-y: auto;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    box-shadow: 2px 0 14px rgb(16 24 40 / 6%);
+  }
+
+  .sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.25rem 0.35rem 0.75rem;
+  }
+
+  .sidebar-app-name {
+    font-size: 0.95rem;
+    font-weight: 750;
+  }
+
+  .sidebar-new {
+    width: 100%;
+    margin-bottom: 0.6rem;
+  }
+
+  .sidebar-link {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-height: 44px;
+    padding: 0.5rem 0.7rem;
+    border-radius: 10px;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 0.92rem;
+    font-weight: 650;
+  }
+
+  .sidebar-link:hover {
+    background: var(--surface-2);
+  }
+
+  .sidebar-link[aria-current="page"] {
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .sidebar-link[aria-current="page"] .nav-count {
+    background: var(--surface);
+  }
+
+  /* Visible keyboard focus on sidebar links and list rows. */
+  .sidebar-link:focus-visible,
+  a.row:focus-visible,
+  .attention-item:focus-visible,
+  .pm-row .row-title:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  /* The bottom tab bar and the floating button are replaced by the sidebar. */
+  .tabbar,
+  .fab {
+    display: none !important;
+  }
+
+  /* Make room for the fixed sidebar; the tab bar is gone so drop its padding. */
+  body {
+    margin-left: 232px;
+    padding-bottom: 1.5rem;
+  }
+
+  .app-header,
+  .page {
+    max-width: 1200px;
+  }
+
+  .counters {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  /* Home: "Needs attention" and "PM due this week" side by side. */
+  .home-columns {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.25rem;
+    align-items: start;
+  }
+}

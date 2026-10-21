@@ -2105,6 +2105,26 @@ function renderHome() {
       )
     : h('div', { class: 'card' }, h('p', { class: 'muted', style: { margin: 0 } }, 'All clear — nothing overdue, urgent or low right now.'));
 
+  const pmDueWeek = state.pmTasks
+    .filter((task) => task.active !== false)
+    .filter((task) => {
+      if (pmState(task, today) === 'overdue') return true;
+      const days = daysBetween(today, pmDueDate(task, today));
+      return days !== null && days >= 0 && days <= 7;
+    })
+    .sort(
+      (a, b) =>
+        pmDueDate(a, today).localeCompare(pmDueDate(b, today)) ||
+        String(a.title).localeCompare(String(b.title)),
+    );
+  const pmWeekHost = pmDueWeek.length
+    ? h('div', { class: 'list' }, ...pmDueWeek.map(pmTaskRow))
+    : h(
+        'div',
+        { class: 'card' },
+        h('p', { class: 'muted', style: { margin: 0 } }, 'Nothing due in the next 7 days.'),
+      );
+
   return page(
     pageHead('Today'),
     backupReminder(today),
@@ -2122,8 +2142,12 @@ function renderHome() {
       counterTile('PM due soon', counts.pmDueSoon, '#/pm', counts.pmDueSoon > 0 ? 'is-warn' : ''),
       counterTile('Low stock', counts.lowStock, '#/parts?low=1', counts.lowStock > 0 ? 'is-alert' : ''),
     ),
-    sectionTitle('Needs attention'),
-    attentionHost,
+    h(
+      'div',
+      { class: 'home-columns' },
+      h('section', { class: 'home-column' }, sectionTitle('Needs attention'), attentionHost),
+      h('section', { class: 'home-column' }, sectionTitle('PM due this week'), pmWeekHost),
+    ),
   );
 }
 
@@ -2343,15 +2367,30 @@ function renderSettings() {
 
 /* ---------- Routing ---------- */
 
+function updateNavCounts() {
+  const counts = dashboardCounts(state, todayISO());
+  const values = {
+    jobs: counts.openJobs,
+    parts: counts.lowStock,
+    pm: counts.pmOverdue,
+  };
+  for (const badge of document.querySelectorAll('.sidebar .nav-count')) {
+    const value = Math.max(0, Number(values[badge.dataset.count]) || 0);
+    badge.textContent = String(value);
+    badge.hidden = value === 0;
+  }
+}
+
 async function render() {
   const route = routeInfo();
   const [root, second, third] = route.segments;
   const tab = root || 'home';
 
-  for (const link of document.querySelectorAll('.tab')) {
+  for (const link of document.querySelectorAll('.tab, .sidebar a[data-tab]')) {
     if (link.dataset.tab === tab) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
+  updateNavCounts();
   if (tab !== 'settings' && tab !== 'help') storageSet(LAST_TAB_KEY, tab);
 
   let content;
