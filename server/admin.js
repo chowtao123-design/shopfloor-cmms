@@ -1,9 +1,12 @@
 'use strict';
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 import * as auth from './auth.js';
+import { BACKUP_NAME_RE, formatBackupStamp, isValidBackupName } from './backup.js';
 import { importV1 } from './records.js';
 import { openStore } from './store.js';
 
@@ -17,11 +20,16 @@ const USAGE = `Usage:
   node server/admin.js enable-user <username>
   node server/admin.js list-users
   node server/admin.js import-v1 <file> --as <username>
+  node server/admin.js restore <backup-file> [--yes]
 
 Accounts live in the SQLite database under DATA_DIR (default: ./data).
 Passwords are read hidden from the terminal, or as one line from stdin
 when --password-stdin is given. import-v1 reads a v1 JSON backup and
-attributes the imported records to the given admin user.`;
+attributes the imported records to the given admin user.
+
+restore copies a backup from DATA_DIR/backups over the live database.
+Stop the Shop Maintenance Log server first; restore asks for --yes to
+confirm. The current database is kept as backups/pre-restore-<timestamp>.db.`;
 
 function usageError() {
   console.error(USAGE);
@@ -233,6 +241,101 @@ async function cmdImportV1(args) {
   }
 }
 
+/** Recorded backup row for `name` in the given database file, or null. */
+function recordedBackup(dbFile, name) {
+  let db = null;
+  try {
+    db = new DatabaseSync(dbFile);
+  } catch {
+    return null;
+  }
+  try {
+    if (!isValidBackupName(db, name)) return null;
+    return db.prepare('SELECT file, created_at, bytes, kind FROM backups WHERE file = ?').get(name) ?? null;
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+function verifySQLiteFile(file) {
+  let handle;
+  try {
+    handle = new DatabaseSync(file);
+  } catch (err) {
+    throw new Error(`"${file}" is not a readable SQLite database: ${err.message}`);
+  }
+  try {
+    handle.prepare('SELECT count(*) AS tables FROM sqlite_master').get();
+  } catch (err) {
+    throw new Error(`"${file}" is not a usable SQLite backup: ${err.message}`);
+  } finally {
+    handle.close();
+  }
+}
+
+function checkpointWal(dbFile) {
+  let db;
+  try {
+    db = new DatabaseSync(dbFile);
+  } catch {
+    return;
+  }
+  try {
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  } finally {
+    db.close();
+  }
+}
+
+async function cmdRestore(args) {
+  let yes = false;
+  const positional = [];
+  for (const arg of args) {
+    if (arg === '--yes') yes = true;
+    else if (arg.startsWith('--')) throw new Error(`unknown option "${arg}"`);
+    else positional.push(arg);
+  }
+  if (positional.length !== 1) return usageError();
+  const target = positional[0];
+  const name = path.basename(target);
+  if (!BACKUP_NAME_RE.test(name)) {
+    throw new Error(`"${target}" is not a valid backup file name`);
+  }
+  const dataDb = path.join(DATA_DIR, 'maint.db');
+  const backupsDir = path.join(DATA_DIR, 'backups');
+  const source = target === name ? path.join(backupsDir, name) : target;
+  if (!fs.existsSync(source)) throw new Error(`backup file not found: ${source}`);
+  if (!fs.existsSync(dataDb)) {
+    throw new Error(`no current database at ${dataDb}; restore needs an existing data dir`);
+  }
+  const recorded = recordedBackup(dataDb, name);
+  if (recorded === null) {
+    throw new Error(`"${name}" is not recorded in the backups table; only server-created backups can be restored`);
+  }
+  verifySQLiteFile(source);
+  if (!yes) {
+    console.log('Restore overwrites the live database. Stop the Shop Maintenance Log');
+    console.log('server before restoring, then re-run with --yes to confirm:');
+    console.log(`  node server/admin.js restore ${name} --yes`);
+    console.log(`Current database: ${path.resolve(dataDb)}`);
+    console.log(`Backup: ${path.resolve(source)} (${recorded.created_at}, ${recorded.bytes} bytes)`);
+    return 1;
+  }
+  checkpointWal(dataDb);
+  fs.mkdirSync(backupsDir, { recursive: true });
+  const preRestore = path.join(backupsDir, `pre-restore-${formatBackupStamp()}.db`);
+  fs.copyFileSync(dataDb, preRestore);
+  fs.copyFileSync(source, dataDb);
+  fs.rmSync(`${dataDb}-wal`, { force: true });
+  fs.rmSync(`${dataDb}-shm`, { force: true });
+  console.log(`Saved the current database as backups/${path.basename(preRestore)}`);
+  console.log(`Restored "${name}" over the live database`);
+  console.log('Removed stale -wal/-shm files. Start the server to use the restored data.');
+  return 0;
+}
+
 async function main(argv) {
   const [command, ...args] = argv;
   switch (command) {
@@ -248,6 +351,8 @@ async function main(argv) {
       return cmdListUsers(args);
     case 'import-v1':
       return cmdImportV1(args);
+    case 'restore':
+      return cmdRestore(args);
     case '--help':
     case 'help':
       console.log(USAGE);

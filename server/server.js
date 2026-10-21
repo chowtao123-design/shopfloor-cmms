@@ -26,6 +26,13 @@ import {
   verifyPassword,
 } from './auth.js';
 import {
+  BackupRateLimitError,
+  createBackup,
+  isValidBackupName,
+  listBackups,
+  startBackupSchedule,
+} from './backup.js';
+import {
   ApiError,
   STORES,
   applyStockMoves,
@@ -356,6 +363,68 @@ async function importV1Handler(req, res, ctx) {
   sendJson(req, res, 200, counts);
 }
 
+async function createBackupHandler(req, res, ctx) {
+  let meta;
+  try {
+    meta = await createBackup({
+      db: ctx.store.db,
+      dataDir: ctx.store.dataDir,
+      createdBy: { id: ctx.user.id, username: ctx.user.username },
+      kind: 'manual',
+      keep: ctx.config.backupKeep,
+    });
+  } catch (err) {
+    if (err instanceof BackupRateLimitError) {
+      sendJson(req, res, err.status, errorResponse(err.code, err.message), {
+        'Retry-After': String(err.retryAfterSeconds),
+      });
+      return;
+    }
+    throw err;
+  }
+  sendJson(req, res, 200, meta);
+}
+
+function listBackupsHandler(req, res, ctx) {
+  sendJson(req, res, 200, listBackups(ctx.store.db));
+}
+
+/** Stream a recorded backup file as an attachment (SPEC-v2.md section 7). */
+function streamBackupFile(req, res, filePath, filename) {
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    stat = null;
+  }
+  if (stat === null || !stat.isFile()) {
+    notFound(req, res);
+    return;
+  }
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+    'Content-Length': String(stat.size),
+    'Cache-Control': 'no-cache',
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+  const source = fs.createReadStream(filePath);
+  source.on('error', (err) => res.destroy(err));
+  source.pipe(res);
+}
+
+function downloadBackupHandler(req, res, ctx, params) {
+  if (!isValidBackupName(ctx.store.db, params.file)) {
+    notFound(req, res);
+    return;
+  }
+  streamBackupFile(req, res, path.join(ctx.store.dataDir, 'backups', params.file), params.file);
+}
+
 function ipOf(req) {
   return (req.socket && req.socket.remoteAddress) || 'unknown';
 }
@@ -518,6 +587,14 @@ const ROUTES = [
   compileRoute('DELETE', '/api/records/:store/:id', { auth: true }, deleteRecordHandler),
   compileRoute('GET', '/api/history/:store/:id', { auth: true }, historyHandler),
   compileRoute('POST', '/api/stock-moves', { auth: true }, stockMovesHandler),
+  compileRoute('POST', '/api/backups', { auth: true }, createBackupHandler),
+  compileRoute('GET', '/api/backups', { auth: true }, listBackupsHandler),
+  compileRoute(
+    'GET',
+    '/api/backups/:file',
+    { auth: true, admin: true, adminMessage: 'Only admins can download backups' },
+    downloadBackupHandler
+  ),
   compileRoute(
     'POST',
     '/api/import-v1',
@@ -706,10 +783,17 @@ export async function startServer(options = {}) {
 
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : config.port;
+  const backupSchedule = startBackupSchedule({
+    db: store.db,
+    dataDir: store.dataDir,
+    at: config.backupDailyAt,
+    keep: config.backupKeep,
+  });
   let closed = false;
   const close = async () => {
     if (closed) return;
     closed = true;
+    backupSchedule.stop();
     if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
     await new Promise((resolve) => server.close(() => resolve()));
     store.close();
