@@ -245,3 +245,94 @@ part below minQty. 4 PM tasks (one overdue, one due soon). 6 work orders in mixe
 
 Commit after each milestone with message `M<n>: <summary>`. Run `node --test tests/` before
 every commit; do not commit with failing tests.
+
+---
+
+## 13. v1.1 addendum: Desktop mode + Help page (2026-10-20)
+
+v1.0 is built and committed. This addendum adds two features. Everything in sections 1–12 still
+applies (no frameworks, no CDN, no network calls, no innerHTML with user text, no
+alert/confirm/prompt, logic in `logic.js` with tests). Do not change data model or business rules.
+
+### 13.1 Desktop mode (responsive layout, not a separate app)
+
+Same pages and routes; layout adapts by viewport width using CSS media queries.
+
+| Width | Layout |
+|---|---|
+| < 768 px | Unchanged v1.0 phone layout (bottom tab bar, FAB, single column). Must not regress. |
+| 768–1023 px (tablet) | Bottom tab bar kept; content max width 960 px; Home counters in 3 columns; forms in 2 columns. |
+| ≥ 1024 px (desktop) | **Left sidebar navigation** replaces the bottom tab bar (same items + Help + Settings, with text labels and counts: open jobs, PM overdue, low stock). Content area max width 1200 px. |
+
+Desktop (≥ 1024 px) specifics:
+1. **Sidebar:** fixed left, 220–240 px wide, app name at top, nav items, active item highlighted
+   with `aria-current="page"`. Bottom tab bar and the floating "+ Log repair" button are hidden;
+   a "+ Log repair" primary button sits at the top of the sidebar instead.
+2. **Lists become tables** on Jobs, Machines and Parts: sortable by clicking column headers
+   (sort is client-side, `aria-sort` set on the active header). Columns:
+   - Jobs: Status, Title, Machine, Kind, Priority, Reported, Age (days), Downtime
+   - Machines: Name, Type, Location, Status, Open jobs, Next PM due
+   - Parts: Name, Part #, Qty, Min, Location, Supplier (low-stock rows marked with text "Low", not colour only)
+   Tables sit in an `overflow-x: auto` wrapper. Put sort comparison in `logic.js` (`sortRows(rows, key, dir)`)
+   and unit-test it (strings case-insensitive, numbers numeric, empty values last in both directions).
+3. **List + detail split view** on Jobs, Machines and Parts: clicking a row opens the detail in a
+   right-hand pane (about 45% width) while the list stays visible; the URL still changes to the
+   detail route so links and the back button keep working. Below 1024 px, detail stays a full page as today.
+4. **Home:** counters in one row of 5; "Needs attention" and "PM due this week" side by side.
+5. **Keyboard shortcuts (desktop only, ignored while typing in an input):** `n` new work order,
+   `/` focus the page's search box, `g` then `h/j/m/p` go to Home/Jobs/Machines/Parts/PM
+   (`g` then `k` for PM). List shortcuts on the Help page.
+6. Hover and visible focus states on all rows and buttons.
+
+### 13.2 Help page (`#/help`)
+
+Purpose: someone who receives the link (a coworker, supervisor, recruiter) understands the app
+without asking the owner. Plain English, short sections, no jargon without a definition.
+
+Reachable from: a "?" Help icon button in the header (all widths), the sidebar (desktop), a
+"New here? Read the guide" link in the Home empty state, and a link at the top of Settings.
+
+Sections (use `<h2>` per section; in-page table of contents with anchor links at the top):
+1. **What this app is**: a maintenance log for one technician: repairs, machines, parts and
+   preventive maintenance in one place, built for use on a phone on the shop floor.
+2. **Your data stays on this device**: no account, no cloud. Sharing the link shares the empty
+   app, **not your records**. To hand records to someone, use Settings → Export backup and send
+   the file; they use Settings → Import. Clearing browser data erases records, so export regularly.
+3. **Quick start (5 steps)**: add machines (or load sample data) → log a repair → update its
+   status → add parts and set a minimum quantity → add PM tasks.
+4. **Glossary** (definition list `<dl>`): Work order / job, Breakdown, PM (preventive
+   maintenance) with an example, PM interval, Overdue / Due soon (within 3 days), each job status
+   (Open, In progress, Waiting for parts, Waiting for technician, Done), Downtime, Labour minutes,
+   Low stock / minimum quantity, Building item (drains, gutters, lighting logged like a machine).
+5. **How to…**: log a repair in under a minute; close a job and deduct parts (stock is deducted
+   once when a job is marked Done and restored if reopened); mark a PM done; find a part; see a
+   machine's history; export to Excel (CSV); back up and restore.
+6. **Install on your phone**: Android Chrome (menu → Add to Home screen / Install app) and iPhone
+   Safari (Share → Add to Home Screen). Works offline after the first visit.
+7. **Desktop tips**: sidebar, sortable tables, split view, keyboard shortcuts table.
+8. **FAQ**: "I shared the link and my coworker sees nothing" (data is per device, send a backup);
+   "Will I lose data if I update the app?" (no, updates keep data; still export backups);
+   "Can two people use the same log?" (not in this version; planned).
+
+Help content is static text in `help.js` (exported function that builds the page with DOM
+helpers, no innerHTML), so it is easy to edit later. Add `help.js` to the service-worker cache list.
+
+### 13.3 Acceptance criteria (v1.1)
+
+- [ ] `node --test tests/` passes, including new `sortRows` tests.
+- [ ] At 390 px: identical behaviour to v1.0 (bottom tabs, FAB on Home and Jobs only, no back
+      arrow on top-level tabs, no horizontal page scroll). **Regression check required.**
+- [ ] At 1280 px: sidebar visible, bottom tab bar and FAB hidden, tables shown, clicking a row
+      opens the split detail pane, no horizontal page scroll.
+- [ ] At 800 px: tablet layout, no horizontal page scroll.
+- [ ] `#/help` renders all 8 sections with working table-of-contents anchors at all widths.
+- [ ] Help is reachable from header, sidebar, Home empty state and Settings.
+- [ ] Keyboard shortcuts work on desktop and do nothing while typing in a field.
+- [ ] Service worker `CACHE_VERSION` bumped; `help.js` cached.
+- [ ] No external URLs, no innerHTML/alert/confirm/prompt (same checks as v1.0).
+
+### 13.4 Milestones
+
+- **M7 Help page** (smaller, independent): `help.js`, route, links, SW cache. Commit `M7: ...`.
+- **M8 Desktop layout**: sidebar, tablet/desktop breakpoints, tables with `sortRows` + tests,
+  split view, Home desktop grid, shortcuts. Commit `M8: ...`.
