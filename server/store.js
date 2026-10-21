@@ -1,5 +1,6 @@
 'use strict';
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -169,6 +170,93 @@ export function openStore(dataDir) {
         )
         .get();
       return Number(row.value);
+    },
+    createUser({ username, displayName, role, passwordHash }) {
+      const id = crypto.randomUUID();
+      db.prepare(
+        'INSERT INTO users (id, username, display_name, password_hash, role, disabled, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)'
+      ).run(id, username, displayName, passwordHash, role, new Date().toISOString());
+      return this.getUserById(id);
+    },
+    getUserByUsername(username) {
+      const row = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+      return row === undefined ? null : row;
+    },
+    getUserById(id) {
+      const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+      return row === undefined ? null : row;
+    },
+    listUsers() {
+      return db.prepare('SELECT * FROM users ORDER BY created_at, username').all();
+    },
+    updateUser(id, fields) {
+      const columns = {
+        displayName: 'display_name',
+        role: 'role',
+        disabled: 'disabled',
+        passwordHash: 'password_hash',
+      };
+      const sets = [];
+      const values = [];
+      for (const [field, column] of Object.entries(columns)) {
+        if (fields[field] === undefined) continue;
+        sets.push(`${column} = ?`);
+        values.push(fields[field]);
+      }
+      if (sets.length > 0) {
+        values.push(id);
+        db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+      }
+      return this.getUserById(id);
+    },
+    deleteUserSessions(userId) {
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    },
+    createSession({ tokenHash, userId, createdAt, expiresAt, lastSeenAt }) {
+      db.prepare(
+        'INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(tokenHash, userId, createdAt, expiresAt, lastSeenAt);
+    },
+    getSessionWithUser(tokenHash) {
+      const row = db
+        .prepare(
+          `SELECT s.token_hash, s.created_at AS session_created_at, s.expires_at, s.last_seen_at,
+                  u.id AS user_id, u.username, u.display_name, u.role, u.disabled
+           FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`
+        )
+        .get(tokenHash);
+      return row === undefined ? null : row;
+    },
+    touchSession(tokenHash, { expiresAt, lastSeenAt } = {}) {
+      const sets = [];
+      const values = [];
+      if (expiresAt !== undefined) {
+        sets.push('expires_at = ?');
+        values.push(expiresAt);
+      }
+      if (lastSeenAt !== undefined) {
+        sets.push('last_seen_at = ?');
+        values.push(lastSeenAt);
+      }
+      if (sets.length === 0) return;
+      values.push(tokenHash);
+      db.prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE token_hash = ?`).run(...values);
+    },
+    deleteSessionByTokenHash(tokenHash) {
+      return db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash).changes > 0;
+    },
+    getLoginAttempt(key) {
+      const row = db.prepare('SELECT key, count, window_start FROM login_attempts WHERE key = ?').get(key);
+      return row === undefined ? null : row;
+    },
+    setLoginAttempt(key, count, windowStart) {
+      db.prepare(
+        `INSERT INTO login_attempts (key, count, window_start) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET count = excluded.count, window_start = excluded.window_start`
+      ).run(key, count, windowStart);
+    },
+    deleteLoginAttempt(key) {
+      db.prepare('DELETE FROM login_attempts WHERE key = ?').run(key);
     },
     close() {
       if (db.open) db.close();

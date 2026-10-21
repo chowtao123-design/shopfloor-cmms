@@ -343,22 +343,30 @@ test('double slashes and trailing slashes are rejected', async () => {
 // JSON body limit: 1 MB (SPEC-v2.md 6.9)
 // ---------------------------------------------------------------------------
 
-test('POST /api/login stub answers 501 (implemented in S2)', async () => {
+test('POST /api/login answers 401 invalid_credentials for an unknown user', async () => {
+  const res = await fetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Requested-With': 'maint-log' },
+    body: JSON.stringify({ username: 'ada', password: 'hunter2222' }),
+  });
+  assert.equal(res.status, 401);
+  assertApiError(await res.json(), 'invalid_credentials');
+});
+
+test('POST /api/login without X-Requested-With is rejected with 403 forbidden', async () => {
   const res = await fetch(`${base}/api/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: 'ada', password: 'hunter2222' }),
   });
-  assert.equal(res.status, 501);
-  const body = await res.json();
-  assert.equal(body.error, 'not_implemented');
-  assert.equal(typeof body.message, 'string');
+  assert.equal(res.status, 403);
+  assertApiError(await res.json(), 'forbidden');
 });
 
 test('POST /api/login rejects invalid JSON with 400', async () => {
   const res = await fetch(`${base}/api/login`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'X-Requested-With': 'maint-log' },
     body: '{not json',
   });
   assert.equal(res.status, 400);
@@ -369,7 +377,7 @@ test('POST with a declared Content-Length over 1 MB returns 413', async () => {
   const oversized = 'x'.repeat(BODY_LIMIT_BYTES + 1);
   const res = await fetch(`${base}/api/login`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'X-Requested-With': 'maint-log' },
     body: oversized,
   });
   assert.equal(res.status, 413);
@@ -384,7 +392,7 @@ test('POST that streams more than 1 MB without Content-Length returns 413', asyn
   } // 5 x 256 KB > 1 MB, sent with chunked transfer-encoding (no Content-Length)
   const res = await rawRequest('/api/login', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-requested-with': 'maint-log' },
     writeChunks,
   });
   assert.equal(res.status, 413);
@@ -397,10 +405,11 @@ test('POST bodies up to exactly 1 MB are accepted (boundary)', async () => {
   assert.equal(Buffer.byteLength(body), BODY_LIMIT_BYTES);
   const res = await fetch(`${base}/api/login`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'X-Requested-With': 'maint-log' },
     body,
   });
-  assert.equal(res.status, 501); // parsed fine, stub answers
+  assert.equal(res.status, 400); // parsed fine: validation, not the body limit, answers
+  assertApiError(await res.json(), 'bad_request');
 });
 
 // ---------------------------------------------------------------------------

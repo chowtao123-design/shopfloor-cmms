@@ -6,6 +6,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+  burnPasswordCheck,
+  checkCsrf,
+  checkDisplayName,
+  checkPassword,
+  checkRole,
+  checkUsername,
+  clearSessionCookie,
+  clearUsernameFailures,
+  createSession,
+  deleteSessionByToken,
+  findSessionToken,
+  hashPassword,
+  loginRetryAfterSeconds,
+  recordLoginFailure,
+  sessionCookie,
+  validateSession,
+  verifyPassword,
+} from './auth.js';
 import { openStore } from './store.js';
 
 /**
@@ -94,8 +113,14 @@ function send(req, res, status, headers, body) {
   else res.end(body);
 }
 
-function sendJson(req, res, status, payload) {
-  send(req, res, status, { 'Content-Type': 'application/json; charset=utf-8' }, JSON.stringify(payload));
+function sendJson(req, res, status, payload, extraHeaders = {}) {
+  send(
+    req,
+    res,
+    status,
+    { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders },
+    JSON.stringify(payload)
+  );
 }
 
 function notFound(req, res) {
@@ -226,30 +251,229 @@ async function serveStatic(req, res, resolved) {
 }
 
 // ---------------------------------------------------------------------------
-// API routing (SPEC-v2.md section 7; auth arrives in milestone S2)
+// API routing (SPEC-v2.md sections 6, 7)
 // ---------------------------------------------------------------------------
 
-const API_HANDLERS = {
-  'GET /api/health': (req, res) => {
-    sendJson(req, res, 200, { ok: true, version: SERVER_VERSION });
-  },
-  // Stub: real login arrives in milestone S2. Present now so the JSON body
-  // limit has a real POST route to enforce (and test) before S2.
-  'POST /api/login': async (req, res) => {
-    await readJsonBody(req);
-    sendJson(req, res, 501, errorResponse('not_implemented', 'Login arrives in milestone S2'));
-  },
+function publicUser(row) {
+  return { id: row.id, username: row.username, displayName: row.display_name, role: row.role };
+}
+
+function publicUserWithDisabled(row) {
+  return { ...publicUser(row), disabled: Number(row.disabled) === 1 };
+}
+
+function isJsonObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function ipOf(req) {
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
+const healthHandler = (req, res) => {
+  sendJson(req, res, 200, { ok: true, version: SERVER_VERSION });
 };
 
-async function handleApi(req, res, decodedPath) {
-  const key = `${req.method} ${decodedPath}`;
-  let handler = API_HANDLERS[key];
-  if (!handler && req.method === 'HEAD') handler = API_HANDLERS[`GET ${decodedPath}`];
-  if (!handler) {
+async function loginHandler(req, res, ctx) {
+  const body = await readJsonBody(req);
+  if (!isJsonObject(body)) {
+    throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
+  }
+  const { username, password } = body;
+  if (typeof username !== 'string' || username.trim() === '' || typeof password !== 'string' || password === '') {
+    throw new HttpError(400, 'bad_request', 'username and password are required strings');
+  }
+  const ip = ipOf(req);
+  const retryAfterSeconds = loginRetryAfterSeconds(ctx.store, username, ip);
+  if (retryAfterSeconds > 0) {
+    sendJson(
+      req,
+      res,
+      429,
+      errorResponse(
+        'rate_limited',
+        `Too many failed sign-in attempts; try again in about ${Math.max(1, Math.ceil(retryAfterSeconds / 60))} minutes`
+      ),
+      { 'Retry-After': String(retryAfterSeconds) }
+    );
+    return;
+  }
+  const user = ctx.store.getUserByUsername(username.trim());
+  if (user === null) burnPasswordCheck(password);
+  const ok = user !== null && Number(user.disabled) !== 1 && verifyPassword(user.password_hash, password);
+  if (!ok) {
+    recordLoginFailure(ctx.store, username, ip);
+    sendJson(req, res, 401, errorResponse('invalid_credentials', 'Invalid username or password'));
+    return;
+  }
+  clearUsernameFailures(ctx.store, username);
+  const session = createSession(ctx.store, user.id, ctx.sessionDays);
+  sendJson(req, res, 200, publicUser(user), {
+    'Set-Cookie': sessionCookie(session.token, ctx.sessionDays, ctx.scheme === 'https'),
+  });
+}
+
+function logoutHandler(req, res, ctx) {
+  const token = findSessionToken(req);
+  if (token !== null) deleteSessionByToken(ctx.store, token);
+  sendJson(req, res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookie(ctx.scheme === 'https') });
+}
+
+function meHandler(req, res, ctx) {
+  sendJson(req, res, 200, publicUser(ctx.user));
+}
+
+function listUsersHandler(req, res, ctx) {
+  sendJson(req, res, 200, ctx.store.listUsers().map(publicUserWithDisabled));
+}
+
+async function createUserHandler(req, res, ctx) {
+  const body = await readJsonBody(req);
+  if (!isJsonObject(body)) {
+    throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
+  }
+  const checks = [
+    checkUsername(body.username),
+    checkDisplayName(body.displayName),
+    checkRole(body.role),
+    checkPassword(body.password),
+  ];
+  const failed = checks.find((check) => !check.ok);
+  if (failed) {
+    throw new HttpError(400, 'bad_request', failed.message);
+  }
+  const [username, displayName, role, password] = checks.map((check) => check.value);
+  if (ctx.store.getUserByUsername(username) !== null) {
+    throw new HttpError(409, 'username_taken', `Username "${username}" is already in use`);
+  }
+  const user = ctx.store.createUser({
+    username,
+    displayName,
+    role,
+    passwordHash: hashPassword(password),
+  });
+  sendJson(req, res, 201, publicUserWithDisabled(user));
+}
+
+async function patchUserHandler(req, res, ctx, params) {
+  const body = await readJsonBody(req);
+  if (!isJsonObject(body)) {
+    throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
+  }
+  const existing = ctx.store.getUserById(params.id);
+  if (existing === null) {
+    throw new HttpError(404, 'not_found', 'No such user');
+  }
+  if (
+    'username' in body &&
+    (typeof body.username !== 'string' || body.username.trim() !== existing.username)
+  ) {
+    throw new HttpError(400, 'bad_request', 'Usernames cannot be changed');
+  }
+  const fields = {};
+  if (body.displayName !== undefined) {
+    const displayName = checkDisplayName(body.displayName);
+    if (!displayName.ok) throw new HttpError(400, 'bad_request', displayName.message);
+    fields.displayName = displayName.value;
+  }
+  if (body.role !== undefined) {
+    const role = checkRole(body.role);
+    if (!role.ok) throw new HttpError(400, 'bad_request', role.message);
+    fields.role = role.value;
+  }
+  if (body.disabled !== undefined) {
+    if (typeof body.disabled !== 'boolean') {
+      throw new HttpError(400, 'bad_request', 'disabled must be a boolean');
+    }
+    fields.disabled = body.disabled ? 1 : 0;
+  }
+  if (body.password !== undefined) {
+    const password = checkPassword(body.password);
+    if (!password.ok) throw new HttpError(400, 'bad_request', password.message);
+    fields.passwordHash = hashPassword(password.value);
+  }
+  if (Object.keys(fields).length === 0) {
+    throw new HttpError(400, 'bad_request', 'Provide at least one of displayName, role, disabled, password');
+  }
+  const user = ctx.store.updateUser(existing.id, fields);
+  if (fields.disabled === 1) ctx.store.deleteUserSessions(existing.id);
+  sendJson(req, res, 200, publicUserWithDisabled(user));
+}
+
+function compileRoute(method, pathPattern, options, handler) {
+  const keys = [];
+  const source = pathPattern
+    .split('/')
+    .map((segment) => {
+      if (segment.startsWith(':')) {
+        keys.push(segment.slice(1));
+        return '([^/]+)';
+      }
+      return segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    })
+    .join('/');
+  return { method, regex: new RegExp(`^${source}$`), keys, ...options, handler };
+}
+
+const ROUTES = [
+  compileRoute('GET', '/api/health', { auth: false }, healthHandler),
+  compileRoute('POST', '/api/login', { auth: false }, loginHandler),
+  compileRoute('POST', '/api/logout', { auth: true }, logoutHandler),
+  compileRoute('GET', '/api/me', { auth: true }, meHandler),
+  compileRoute('GET', '/api/users', { auth: true }, listUsersHandler),
+  compileRoute('POST', '/api/users', { auth: true, admin: true }, createUserHandler),
+  compileRoute('PATCH', '/api/users/:id', { auth: true, admin: true }, patchUserHandler),
+];
+
+function matchRoute(method, apiPath) {
+  for (const route of ROUTES) {
+    if (route.method !== method) continue;
+    const match = route.regex.exec(apiPath);
+    if (match === null) continue;
+    const params = {};
+    route.keys.forEach((key, index) => {
+      params[key] = match[index + 1];
+    });
+    return { route, params };
+  }
+  return null;
+}
+
+function requireUser(req, ctx) {
+  const token = findSessionToken(req);
+  if (token === null) return null;
+  return validateSession(ctx.store, token, ctx.sessionDays);
+}
+
+async function handleApi(req, res, decodedPath, ctx) {
+  const effectiveMethod = req.method === 'HEAD' ? 'GET' : req.method;
+  const matched = matchRoute(effectiveMethod, decodedPath);
+  if (matched === null) {
     sendJson(req, res, 404, errorResponse('not_found', `No such API route: ${req.method} ${decodedPath}`));
     return;
   }
-  await handler(req, res);
+  const { route, params } = matched;
+  const context = { ...ctx, user: null };
+  if (route.auth) {
+    const user = requireUser(req, context);
+    if (user === null) {
+      sendJson(req, res, 401, errorResponse('login_required', 'Sign in to use the API'));
+      return;
+    }
+    context.user = user;
+  }
+  if (effectiveMethod !== 'GET') {
+    const csrfError = checkCsrf(req);
+    if (csrfError !== null) {
+      sendJson(req, res, 403, errorResponse('forbidden', csrfError));
+      return;
+    }
+  }
+  if (route.admin && context.user.role !== 'admin') {
+    sendJson(req, res, 403, errorResponse('forbidden', 'Only admins can manage users'));
+    return;
+  }
+  await route.handler(req, res, context, params);
 }
 
 /** Decode the request path; returns the decoded pathname or null when the raw
@@ -268,7 +492,7 @@ function decodeRequestPath(rawUrl) {
   }
 }
 
-export function createRequestHandler() {
+export function createRequestHandler(context = {}) {
   return function requestListener(req, res) {
     Promise.resolve()
       .then(async () => {
@@ -278,7 +502,7 @@ export function createRequestHandler() {
           return;
         }
         if (decodedPath === '/api' || decodedPath.startsWith('/api/')) {
-          await handleApi(req, res, decodedPath);
+          await handleApi(req, res, decodedPath, context);
           return;
         }
         const resolved = resolveStatic(req.url);
@@ -355,9 +579,16 @@ export async function startServer(options = {}) {
     }
   }
 
+  const scheme = useTls ? 'https' : 'http';
+  const requestHandler = createRequestHandler({
+    store,
+    scheme,
+    sessionDays: config.sessionDays,
+    config,
+  });
   const server = useTls
-    ? https.createServer({ cert: tlsOptions.cert, key: tlsOptions.key }, createRequestHandler())
-    : http.createServer(createRequestHandler());
+    ? https.createServer({ cert: tlsOptions.cert, key: tlsOptions.key }, requestHandler)
+    : http.createServer(requestHandler);
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -369,7 +600,6 @@ export async function startServer(options = {}) {
 
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : config.port;
-  const scheme = useTls ? 'https' : 'http';
   let closed = false;
   const close = async () => {
     if (closed) return;
