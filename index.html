@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#d9541a" />
+    <meta name="description" content="Offline shop maintenance log for work orders, machines, parts and preventive maintenance." />
+    <title>Shop Maintenance Log</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#app-main">Skip to content</a>
+    <header class="app-header">
+      <button id="back-button" class="icon-button back-button" type="button" aria-label="Go back" hidden>
+        <span aria-hidden="true">‹</span>
+      </button>
+      <div class="header-title">
+        <span class="brand-mark" aria-hidden="true">ML</span>
+        <h1 id="page-title">Shop Maintenance Log</h1>
+      </div>
+      <a class="icon-button" href="#/settings" id="settings-link" aria-label="Settings">
+        <span aria-hidden="true">⚙</span>
+      </a>
+    </header>
+
+    <main id="app-main" tabindex="-1"></main>
+
+    <a class="fab" id="fab" href="#/jobs/new" hidden>+ Log repair</a>
+
+    <nav class="tabbar" aria-label="Main navigation">
+      <a class="tab" href="#/home" data-tab="home">Home</a>
+      <a class="tab" href="#/jobs" data-tab="jobs">Jobs</a>
+      <a class="tab" href="#/machines" data-tab="machines">Machines</a>
+      <a class="tab" href="#/parts" data-tab="parts">Parts</a>
+      <a class="tab" href="#/pm" data-tab="pm">PM</a>
+    </nav>
+
+    <div id="dialog-root"></div>
+    <div id="toast-root" class="toast-root" aria-live="polite"></div>
+
+    <noscript>This app needs JavaScript enabled.</noscript>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
