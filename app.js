@@ -596,7 +596,7 @@ function dataTableRow(columns, row, href) {
         }
       },
     },
-    ...columns.map((column) => h('td', {}, tableCellContent(column, row))),
+    ...columns.map((column) => h('td', { 'data-col': column.key }, tableCellContent(column, row))),
   );
 }
 
@@ -621,6 +621,7 @@ function buildDataTable(pageKey, columns, rows, hrefForRow, onResort) {
             'th',
             {
               scope: 'col',
+              'data-col': column.key,
               ...(isActive ? { 'aria-sort': sortState.dir === 'asc' ? 'ascending' : 'descending' } : {}),
             },
             h(

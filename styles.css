@@ -1338,7 +1338,21 @@ details.more[open] > summary {
   }
 
   .data-table td {
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
+  }
+
+  /* Split view: the list pane is ~55% wide, so keep only the columns needed to pick a row. */
+  .split-list .data-table [data-col="kind"],
+  .split-list .data-table [data-col="priority"],
+  .split-list .data-table [data-col="reported"],
+  .split-list .data-table [data-col="downtime"],
+  .split-list .data-table [data-col="type"],
+  .split-list .data-table [data-col="location"],
+  .split-list .data-table [data-col="nextPM"],
+  .split-list .data-table [data-col="partNumber"],
+  .split-list .data-table [data-col="min"],
+  .split-list .data-table [data-col="supplier"] {
+    display: none;
   }
 
   .th-sort {

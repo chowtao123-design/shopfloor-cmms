@@ -1,7 +1,7 @@
 // Service worker: cache-first app shell so the log works offline.
 // Bump CACHE_VERSION whenever any shell file changes.
 
-const CACHE_VERSION = 5;
+const CACHE_VERSION = 6;
 const CACHE_NAME = `maint-log-v${CACHE_VERSION}`;
 
 const APP_SHELL = [
