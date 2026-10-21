@@ -1,5 +1,6 @@
 import * as db from './db.js';
 import {
+  BACKUP_STORES,
   LABELS,
   MACHINE_STATUSES,
   MACHINE_TYPES,
@@ -9,6 +10,7 @@ import {
   applyWorkOrderSave,
   applyWorkOrderStatus,
   completePMTask,
+  dashboardCounts,
   daysBetween,
   filterWorkOrders,
   formatDate,
@@ -16,6 +18,7 @@ import {
   groupPMTasks,
   isISODate,
   isLowStock,
+  needsAttention,
   openBreakdownCount,
   openJobCount,
   pmDueDate,
@@ -26,8 +29,11 @@ import {
   shouldOfferMachineRunning,
   sortWorkOrdersNewest,
   todayISO,
+  validateBackup,
   workOrderAgeDays,
+  workOrdersToCSV,
 } from './logic.js';
+import { buildSampleData } from './seed.js';
 
 const appMain = document.getElementById('app-main');
 const pageTitle = document.getElementById('page-title');
@@ -61,6 +67,14 @@ function storageSet(key, value) {
     localStorage.setItem(key, value);
   } catch {
     // Storage can be unavailable in private browsing; the app still works.
+  }
+}
+
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // See storageSet.
   }
 }
 
@@ -2007,23 +2021,305 @@ function renderPMTaskForm(route) {
   return page(pageHead(editing ? 'Edit PM task' : 'Add PM task'), form);
 }
 
-/* ---------- Placeholders until later milestones ---------- */
+/* ---------- Home ---------- */
+
+function counterTile(label, value, href, tone = '') {
+  return h(
+    'a',
+    { class: `counter${tone ? ` ${tone}` : ''}`, href },
+    h('span', { class: 'counter-value' }, String(value)),
+    h('span', { class: 'counter-label' }, label),
+  );
+}
+
+function backupReminder(today) {
+  const last = storageGet(LAST_BACKUP_KEY);
+  if (!last) {
+    return h(
+      'div',
+      { class: 'backup-note' },
+      'No backup yet. ',
+      h('a', { href: '#/settings' }, 'Export one in Settings'),
+      '.',
+    );
+  }
+  const days = daysBetween(String(last).slice(0, 10), today);
+  if (days === null || days < 7) return null;
+  return h(
+    'div',
+    { class: 'backup-note' },
+    `Last backup ${days} day${days === 1 ? '' : 's'} ago. `,
+    h('a', { href: '#/settings' }, 'Export a fresh backup'),
+    '.',
+  );
+}
 
 function renderHome() {
   setTitle('Home');
+  const today = todayISO();
+  const counts = dashboardCounts(state, today);
+  const hasAnyData =
+    state.machines.length > 0 ||
+    state.parts.length > 0 ||
+    state.workOrders.length > 0 ||
+    state.pmTasks.length > 0;
+
+  if (!hasAnyData) {
+    return page(
+      pageHead('Today'),
+      emptyState('Set up your shop', 'Add your machines, then log your first repair.', [
+        h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine'),
+        h('button', { class: 'btn', type: 'button', onclick: loadSampleData }, 'Load sample data'),
+      ]),
+    );
+  }
+
+  const attention = needsAttention(state, today, 10);
+  const attentionHost = attention.length
+    ? h(
+        'div',
+        { class: 'list' },
+        ...attention.map((item) => {
+          const href =
+            item.type === 'pm'
+              ? `#/pm/${encodeURIComponent(item.id)}`
+              : item.type === 'job'
+                ? `#/jobs/${encodeURIComponent(item.id)}`
+                : `#/parts/${encodeURIComponent(item.id)}`;
+          return h(
+            'a',
+            { class: `attention-item type-${item.type}`, href },
+            h(
+              'div',
+              { class: 'row-main' },
+              h('div', { class: 'row-title' }, item.title),
+              h('div', { class: 'row-sub' }, item.subtitle),
+            ),
+            h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+          );
+        }),
+      )
+    : h('div', { class: 'card' }, h('p', { class: 'muted', style: { margin: 0 } }, 'All clear — nothing overdue, urgent or low right now.'));
+
   return page(
     pageHead('Today'),
-    emptyState('Set up your shop', 'Add your machines, then log your first repair.', [
-      h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine'),
-    ]),
+    backupReminder(today),
+    h(
+      'div',
+      { class: 'counters' },
+      counterTile('Open jobs', counts.openJobs, '#/jobs?filter=active', counts.openJobs > 0 ? 'is-warn' : ''),
+      counterTile(
+        'Waiting (parts/tech)',
+        counts.waiting,
+        '#/jobs?filter=waiting',
+        counts.waiting > 0 ? 'is-warn' : '',
+      ),
+      counterTile('PM overdue', counts.pmOverdue, '#/pm', counts.pmOverdue > 0 ? 'is-alert' : ''),
+      counterTile('PM due soon', counts.pmDueSoon, '#/pm', counts.pmDueSoon > 0 ? 'is-warn' : ''),
+      counterTile('Low stock', counts.lowStock, '#/parts?low=1', counts.lowStock > 0 ? 'is-alert' : ''),
+    ),
+    sectionTitle('Needs attention'),
+    attentionHost,
   );
+}
+
+/* ---------- Settings ---------- */
+
+function formatBackupStamp(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const dayPart = String(iso).slice(0, 10);
+  return `${formatDate(dayPart)} ${hh}:${mm}`;
+}
+
+function downloadFile(filename, contentType, content) {
+  const blob = new Blob([content], { type: contentType });
+  const url = URL.createObjectURL(blob);
+  const link = h('a', { href: url, download: filename });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function exportBackup() {
+  const payload = {
+    schemaVersion: 1,
+    exportedAt: nowISO(),
+    machines: state.machines,
+    parts: state.parts,
+    workOrders: state.workOrders,
+    pmTasks: state.pmTasks,
+  };
+  downloadFile(
+    `maint-log-backup-${todayISO()}.json`,
+    'application/json',
+    JSON.stringify(payload, null, 2),
+  );
+  storageSet(LAST_BACKUP_KEY, nowISO());
+  toast('Backup exported to your downloads.');
+  render();
+}
+
+function exportWorkOrderCSV() {
+  if (state.workOrders.length === 0) {
+    toast('No work orders to export yet.', 'warn');
+    return;
+  }
+  downloadFile(
+    `work-orders-${todayISO()}.csv`,
+    'text/csv;charset=utf-8',
+    workOrdersToCSV(state.workOrders, state.machines, state.parts),
+  );
+  toast(`Exported ${state.workOrders.length} work order${state.workOrders.length === 1 ? '' : 's'} to CSV.`);
+}
+
+async function importBackupFile(file, statusHost) {
+  statusHost.textContent = `Reading ${file.name}…`;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const check = validateBackup(parsed);
+    if (!check.ok) {
+      statusHost.textContent = check.error;
+      return;
+    }
+    const c = check.counts;
+    const yes = await showConfirm({
+      title: 'Replace all data with this backup?',
+      message: `It holds ${c.machines} machine${c.machines === 1 ? '' : 's'}, ${c.parts} part${
+        c.parts === 1 ? '' : 's'
+      }, ${c.workOrders} work order${c.workOrders === 1 ? '' : 's'} and ${c.pmTasks} PM task${
+        c.pmTasks === 1 ? '' : 's'
+      }. Everything currently on this device is erased first. This cannot be undone.`,
+      confirmText: 'Import backup',
+      cancelText: 'Cancel',
+      danger: true,
+    });
+    if (!yes) {
+      statusHost.textContent = 'Import cancelled.';
+      return;
+    }
+    await db.replaceAll({
+      machines: parsed.machines,
+      parts: parsed.parts,
+      workOrders: parsed.workOrders,
+      pmTasks: parsed.pmTasks,
+    });
+    await refreshState();
+    toast(`Imported ${c.machines} machines, ${c.parts} parts, ${c.workOrders} work orders, ${c.pmTasks} PM tasks.`);
+    render();
+  } catch (error) {
+    statusHost.textContent = 'Could not read that file. Is it a JSON backup exported from this app?';
+    console.error(error);
+  }
+}
+
+async function loadSampleData() {
+  const hasData = BACKUP_STORES.some((store) => state[store].length > 0);
+  if (hasData) {
+    const yes = await showConfirm({
+      title: 'Load example data?',
+      message:
+        'Example data for a small garment factory (8 machines, 6 parts, 6 work orders, 4 PM tasks) is added alongside your current data. Nothing is erased.',
+      confirmText: 'Load example data',
+      cancelText: 'Cancel',
+    });
+    if (!yes) return;
+  }
+  try {
+    const sample = buildSampleData(new Date());
+    for (const store of BACKUP_STORES) await db.bulkPut(store, sample[store]);
+    await refreshState();
+    toast('Example data loaded. Erase it any time in Settings.');
+    render();
+  } catch (error) {
+    toast('Could not load the example data.', 'warn');
+    console.error(error);
+  }
+}
+
+async function eraseAllData() {
+  await db.clearAll();
+  storageRemove(LAST_BACKUP_KEY);
+  await refreshState();
+  toast('All data erased from this device.');
+  render();
 }
 
 function renderSettings() {
   setTitle('Settings');
+  const lastBackup = storageGet(LAST_BACKUP_KEY);
+
+  const importStatus = h('p', { class: 'field-hint', role: 'status' });
+  const fileInput = h('input', { type: 'file', accept: '.json,application/json', class: 'sr-only' });
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    fileInput.value = '';
+    if (file) await importBackupFile(file, importStatus);
+  });
+
+  const eraseInput = h('input', {
+    type: 'text',
+    placeholder: 'Type ERASE to confirm',
+    autocomplete: 'off',
+    'aria-label': 'Type ERASE to confirm erasing all data',
+  });
+  const eraseConfirm = h('button', { class: 'btn btn-danger', type: 'button', disabled: true }, 'Erase everything');
+  eraseInput.addEventListener('input', () => {
+    eraseConfirm.disabled = eraseInput.value.trim() !== 'ERASE';
+  });
+  eraseInput.id = `erase-input-${++fieldCounter}`;
+  eraseConfirm.addEventListener('click', async () => {
+    if (eraseInput.value.trim() !== 'ERASE') return;
+    eraseConfirm.disabled = true;
+    try {
+      await eraseAllData();
+    } catch (error) {
+      toast('Could not erase. Please try again.', 'warn');
+      console.error(error);
+    }
+  });
+  const erasePanel = h(
+    'div',
+    { class: 'card erases', hidden: true },
+    h('label', { class: 'field-label', for: eraseInput.id }, 'Type ERASE to confirm'),
+    eraseInput,
+    eraseConfirm,
+  );
+  const eraseReveal = h('button', { class: 'btn btn-danger', type: 'button' }, 'Erase all data…');
+  eraseReveal.addEventListener('click', () => {
+    erasePanel.hidden = false;
+    eraseInput.focus();
+  });
+
   return page(
     pageHead('Settings'),
-    emptyState('Settings arrive in M5', 'Backup, import and sample data are being built.', []),
+    h('p', { class: 'muted' }, 'All data lives on this device only. Keep a backup copy somewhere safe.'),
+    h(
+      'p',
+      { class: 'field-hint' },
+      `Last backup: ${lastBackup ? formatBackupStamp(lastBackup) : 'Never'}`,
+    ),
+    sectionTitle('Backup'),
+    h(
+      'div',
+      { class: 'settings-actions' },
+      h('button', { class: 'btn', type: 'button', onclick: exportBackup }, 'Export backup (JSON)', h('small', {}, 'Everything on this device in one file')),
+      h('button', { class: 'btn', type: 'button', onclick: () => fileInput.click() }, 'Import backup', fileInput, h('small', {}, 'Replace all data from a backup file')),
+      h('button', { class: 'btn', type: 'button', onclick: exportWorkOrderCSV }, 'Export work orders (CSV)', h('small', {}, 'For Excel or email')),
+    ),
+    importStatus,
+    sectionTitle('Data'),
+    h(
+      'div',
+      { class: 'settings-actions' },
+      h('button', { class: 'btn', type: 'button', onclick: loadSampleData }, 'Load sample data', h('small', {}, 'Example machines, parts, jobs and PM tasks')),
+      eraseReveal,
+    ),
+    erasePanel,
   );
 }
 

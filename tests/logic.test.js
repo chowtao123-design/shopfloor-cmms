@@ -26,6 +26,7 @@ import {
   validateBackup,
   workOrdersToCSV,
 } from '../logic.js';
+import { buildSampleData } from '../seed.js';
 
 const TODAY = '2026-10-20';
 
@@ -452,4 +453,59 @@ test('backup validation checks schema version and store lists', () => {
     ok: true,
     counts: { machines: 0, parts: 0, workOrders: 0, pmTasks: 0 },
   });
+});
+
+test('sample data matches the composition in the spec', () => {
+  const data = buildSampleData(new Date(2026, 9, 20, 9, 0));
+  const machineCounts = {};
+  for (const machine of data.machines) machineCounts[machine.type] = (machineCounts[machine.type] || 0) + 1;
+  assert.equal(data.machines.length, 8);
+  assert.deepEqual(machineCounts, {
+    sewing: 3,
+    quilting: 1,
+    'down-filling': 1,
+    cutter: 1,
+    building: 2,
+  });
+
+  assert.equal(data.parts.length, 6);
+  assert.equal(data.parts.filter(isLowStock).length, 1);
+  assert.equal(data.parts.find(isLowStock).id, 'sample-p-bobbin');
+
+  assert.equal(data.pmTasks.length, 4);
+  const states = data.pmTasks.map((task) => pmState(task, TODAY));
+  assert.equal(states.filter((state) => state === 'overdue').length, 1);
+  assert.equal(states.filter((state) => state === 'due-soon').length, 1);
+  assert.equal(states.filter((state) => state === 'ok').length, 2);
+
+  assert.equal(data.workOrders.length, 6);
+  const statuses = new Set(data.workOrders.map((order) => order.status));
+  for (const status of ['open', 'in-progress', 'waiting-parts', 'waiting-tech', 'done']) {
+    assert.ok(statuses.has(status), `sample must include a ${status} work order`);
+  }
+  const machineIds = new Set(data.machines.map((machine) => machine.id));
+  for (const order of data.workOrders) {
+    assert.ok(machineIds.has(order.machineId), 'sample work orders must point at sample machines');
+    assert.deepEqual(order.photos, []);
+  }
+  const usedPartOrder = data.workOrders.find((order) => order.partsUsed.length > 0);
+  assert.equal(usedPartOrder.status, 'done');
+  assert.equal(usedPartOrder.stockDeducted, true);
+
+  const partIds = new Set(data.parts.map((part) => part.id));
+  for (const part of data.parts) {
+    for (const id of part.machineIds) assert.ok(machineIds.has(id), 'part fits a sample machine');
+  }
+  assert.equal(partIds.size, data.parts.length, 'sample part ids are unique');
+
+  const allIds = [
+    ...data.machines.map((item) => item.id),
+    ...data.parts.map((item) => item.id),
+    ...data.workOrders.map((item) => item.id),
+    ...data.pmTasks.map((item) => item.id),
+  ];
+  assert.equal(new Set(allIds).size, allIds.length, 'sample ids are unique across stores');
+  for (const collection of [data.machines, data.parts, data.workOrders, data.pmTasks]) {
+    for (const record of collection) assert.ok(record.createdAt && record.updatedAt);
+  }
 });
