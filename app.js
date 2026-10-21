@@ -8,9 +8,13 @@ import {
   WORK_ORDER_STATUSES,
   applyWorkOrderSave,
   applyWorkOrderStatus,
+  completePMTask,
+  daysBetween,
   filterWorkOrders,
   formatDate,
   formatPartsUsed,
+  groupPMTasks,
+  isISODate,
   isLowStock,
   openBreakdownCount,
   openJobCount,
@@ -1227,7 +1231,11 @@ function renderMachineDetail(route) {
           'div',
           { class: 'list' },
           ...pmTasks.map((task) => {
-            const stateName = pmState(task);
+            const inactive = task.active === false;
+            const stateName = inactive ? null : pmState(task);
+            const dueLabel = inactive
+              ? `Paused · next due ${formatDate(pmDueDate(task))}`
+              : `${stateName === 'ok' ? 'Due' : LABELS.pmState[stateName]} ${formatDate(pmDueDate(task))}`;
             return h(
               'a',
               { class: 'row', href: `#/pm/${encodeURIComponent(task.id)}` },
@@ -1235,13 +1243,11 @@ function renderMachineDetail(route) {
                 'div',
                 { class: 'row-main' },
                 h('div', { class: 'row-title' }, task.title),
-                h(
-                  'div',
-                  { class: 'row-sub' },
-                  `${pmState(task) === 'ok' ? 'Due' : LABELS.pmState[stateName]} ${formatDate(pmDueDate(task))} · every ${task.intervalDays} days`,
-                ),
+                h('div', { class: 'row-sub' }, `${dueLabel} · every ${task.intervalDays} days`),
               ),
-              statusPill(stateName, LABELS.pmState),
+              inactive
+                ? statusPill('neutral', { neutral: 'Paused' })
+                : statusPill(stateName, LABELS.pmState),
             );
           }),
         )
@@ -1692,12 +1698,316 @@ function renderPartForm(route) {
   return page(pageHead(editing ? 'Edit part' : 'Add part'), form);
 }
 
-/* ---------- Placeholders until later milestones ---------- */
+/* ---------- PM ---------- */
+
+async function markPMTaskDone(task) {
+  const now = nowISO();
+  const { task: updatedTask, workOrder } = completePMTask(task, {
+    id: uid(),
+    today: todayISO(),
+    now,
+  });
+  try {
+    await db.put('pmTasks', updatedTask);
+    await db.put('workOrders', workOrder);
+    await refreshState();
+    toast(`PM done: ${task.title}. Logged as a done PM job; next due ${formatDate(pmDueDate(updatedTask))}.`);
+    render();
+  } catch (error) {
+    toast('Could not record the PM. Please try again.', 'warn');
+    console.error(error);
+  }
+}
+
+function pmTaskRow(task) {
+  const today = todayISO();
+  const due = pmDueDate(task, today);
+  const state = pmState(task, today);
+  const lateDays = state === 'overdue' ? Math.max(0, daysBetween(due, today) || 0) : 0;
+  return h(
+    'div',
+    { class: 'pm-row' },
+    h(
+      'div',
+      { class: 'row-main' },
+      h('a', { class: 'row-title inline-link', href: `#/pm/${encodeURIComponent(task.id)}` }, task.title),
+      h(
+        'div',
+        { class: 'row-sub' },
+        `${machineName(task.machineId)} · Due ${formatDate(due)}${
+          lateDays > 0 ? ` · ${lateDays} day${lateDays === 1 ? '' : 's'} late` : ''
+        } · every ${Math.max(1, Math.floor(Number(task.intervalDays) || 1))} days`,
+      ),
+    ),
+    h(
+      'button',
+      { class: 'btn btn-primary btn-small', type: 'button', onclick: () => markPMTaskDone(task) },
+      'Mark done',
+    ),
+  );
+}
+
+function pmGroupSection(title, tasks) {
+  return h(
+    'section',
+    { class: 'pm-group' },
+    h(
+      'div',
+      { class: 'pm-group-head' },
+      h('h3', {}, title),
+      h('span', { class: 'chip-count' }, String(tasks.length)),
+    ),
+    h('div', { class: 'list' }, ...tasks.map(pmTaskRow)),
+  );
+}
 
 function renderPM() {
   setTitle('PM');
-  return page(pageHead('PM'), emptyState('PM arrives in M4', 'Preventive maintenance is being built.', []));
+  const today = todayISO();
+  const groups = groupPMTasks(state.pmTasks, today);
+  const activeCount = state.pmTasks.filter((task) => task.active !== false).length;
+  if (activeCount === 0) {
+    return page(
+      pageHead('PM', h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task')),
+      emptyState(
+        'No PM tasks yet',
+        'Set up recurring checks such as "Oil hook and check timing" so they show up here before something breaks.',
+        [h('a', { class: 'btn btn-primary', href: '#/pm/new' }, '+ Add PM task')],
+      ),
+    );
+  }
+  return page(
+    pageHead('PM', h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task')),
+    groups.overdue.length ? pmGroupSection('Overdue', groups.overdue) : null,
+    groups.dueSoon.length ? pmGroupSection('Due soon', groups.dueSoon) : null,
+    groups.upcoming.length ? pmGroupSection('Upcoming', groups.upcoming) : null,
+  );
 }
+
+function renderPMTaskDetail(route) {
+  const task = pmTaskById(route.segments[1]);
+  setTitle(task ? task.title : 'PM task not found');
+  if (!task) {
+    return page(
+      pageHead('PM task not found'),
+      emptyState('That PM task does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/pm' }, 'Back to PM'),
+      ]),
+    );
+  }
+
+  const today = todayISO();
+  const due = pmDueDate(task, today);
+  const inactive = task.active === false;
+  const machine = machineById(task.machineId);
+
+  async function deleteTask() {
+    const yes = await showConfirm({
+      title: 'Delete this PM task?',
+      message: `"${task.title}" will be removed. PM work orders already logged will stay in the Jobs tab.`,
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      danger: true,
+    });
+    if (!yes) return;
+    await db.del('pmTasks', task.id);
+    await refreshState();
+    toast('PM task deleted.');
+    navigate('#/pm');
+  }
+
+  const details = h(
+    'dl',
+    { class: 'detail-grid' },
+    h('dt', {}, 'Machine'),
+    h(
+      'dd',
+      {},
+      machine
+        ? h('a', { class: 'inline-link', href: `#/machines/${encodeURIComponent(machine.id)}` }, machine.name)
+        : 'Unknown machine',
+    ),
+    h('dt', {}, 'State'),
+    h(
+      'dd',
+      {},
+      inactive ? statusPill('neutral', { neutral: 'Paused' }) : statusPill(pmState(task, today), LABELS.pmState),
+    ),
+    h('dt', {}, 'Interval'),
+    h('dd', {}, `Every ${Math.max(1, Math.floor(Number(task.intervalDays) || 1))} days`),
+    h('dt', {}, 'Last done'),
+    h('dd', {}, task.lastDoneAt ? formatDate(task.lastDoneAt) : 'Never'),
+    h('dt', {}, 'Next due'),
+    h('dd', {}, formatDate(due)),
+    h('dt', {}, 'Instructions'),
+    h('dd', { class: 'pre' }, task.instructions || '—'),
+  );
+
+  return page(
+    h(
+      'div',
+      { class: 'detail-head' },
+      h('div', {}, h('h2', {}, task.title), h('div', { class: 'row-sub' }, machineName(task.machineId))),
+      inactive ? statusPill('neutral', { neutral: 'Paused' }) : statusPill(pmState(task, today), LABELS.pmState),
+    ),
+    h(
+      'div',
+      { class: 'button-row' },
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: () => markPMTaskDone(task) }, 'Mark done'),
+      h('a', { class: 'btn btn-small', href: `#/pm/${encodeURIComponent(task.id)}/edit` }, 'Edit task'),
+    ),
+    h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
+    h(
+      'div',
+      { class: 'form-actions', style: { marginTop: '1.5rem' } },
+      h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteTask }, 'Delete PM task'),
+    ),
+  );
+}
+
+function renderPMTaskForm(route) {
+  const id = route.segments[1];
+  const editing = Boolean(id && id !== 'new');
+  const existing = editing ? pmTaskById(id) : null;
+  setTitle(editing ? 'Edit PM task' : 'Add PM task');
+  if (editing && !existing) {
+    return page(
+      pageHead('PM task not found'),
+      emptyState('That PM task does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/pm' }, 'Back to PM'),
+      ]),
+    );
+  }
+  if (state.machines.length === 0) {
+    return page(
+      pageHead('Add PM task'),
+      emptyState('Add a machine first', 'Every PM task belongs to a machine or building item.', [
+        h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine'),
+      ]),
+    );
+  }
+
+  const base = existing || {
+    title: '',
+    machineId: '',
+    intervalDays: 30,
+    lastDoneAt: null,
+    instructions: '',
+    active: true,
+  };
+
+  const form = h('form', { class: 'form', novalidate: true });
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+  const titleInput = h('input', {
+    type: 'text',
+    required: true,
+    autocomplete: 'off',
+    placeholder: 'e.g. Oil hook and check timing',
+    value: base.title || '',
+  });
+  const machineSelect = h('select', {}, h('option', { value: '' }, 'Select machine'));
+  for (const machine of orderedMachines()) {
+    const option = h('option', { value: machine.id }, machine.name);
+    if (machine.id === base.machineId) option.selected = true;
+    machineSelect.append(option);
+  }
+  const intervalInput = h('input', {
+    type: 'number',
+    min: 1,
+    step: 1,
+    inputmode: 'numeric',
+    value: String(Math.max(1, Math.floor(Number(base.intervalDays) || 30))),
+  });
+  const lastDoneInput = h('input', { type: 'date', value: base.lastDoneAt || '' });
+  const instructionsInput = h('textarea', {
+    rows: 4,
+    placeholder: 'Checklist text, e.g. Oil hook; check timing; wipe feed dogs.',
+    value: base.instructions || '',
+  });
+  const activeId = `pm-active-${++fieldCounter}`;
+  const activeCheckbox = h('input', { type: 'checkbox' });
+  activeCheckbox.id = activeId;
+  activeCheckbox.checked = base.active !== false;
+
+  const save = h('button', { class: 'btn btn-primary', type: 'submit' }, existing ? 'Save changes' : 'Add PM task');
+  form.append(
+    errorBox,
+    field('Title', titleInput),
+    field('Machine', machineSelect),
+    field('Interval (days)', intervalInput, 'The task is due again this many days after it was last done.'),
+    field('Last done', lastDoneInput, 'Leave empty if this task has never been done; it will be due today.'),
+    field('Instructions', instructionsInput),
+    h('div', { class: 'check-row' }, activeCheckbox, h('label', { for: activeId }, 'Task is active')),
+    h('div', { class: 'field-hint' }, 'Paused tasks never count as due or overdue.'),
+    h(
+      'div',
+      { class: 'form-actions' },
+      save,
+      h(
+        'a',
+        { class: 'btn', href: existing ? `#/pm/${encodeURIComponent(existing.id)}` : '#/pm' },
+        'Cancel',
+      ),
+    ),
+  );
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const title = titleInput.value.trim();
+    if (!title) {
+      errorBox.textContent = 'Enter a title for the PM task.';
+      titleInput.focus();
+      return;
+    }
+    if (!machineSelect.value) {
+      errorBox.textContent = 'Pick a machine.';
+      machineSelect.focus();
+      return;
+    }
+    const interval = Math.floor(Number(intervalInput.value));
+    if (!Number.isFinite(interval) || interval < 1) {
+      errorBox.textContent = 'The interval must be at least 1 day.';
+      intervalInput.focus();
+      return;
+    }
+    const lastDone = lastDoneInput.value;
+    if (lastDone && !isISODate(lastDone)) {
+      errorBox.textContent = 'Enter a valid last-done date or leave it empty.';
+      lastDoneInput.focus();
+      return;
+    }
+    const now = nowISO();
+    const record = {
+      ...base,
+      id: existing ? existing.id : uid(),
+      title,
+      machineId: machineSelect.value,
+      intervalDays: interval,
+      lastDoneAt: lastDone || null,
+      instructions: instructionsInput.value.trim(),
+      active: activeCheckbox.checked,
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+    };
+    save.disabled = true;
+    try {
+      await db.put('pmTasks', record);
+      await refreshState();
+      toast(existing ? 'PM task saved.' : 'PM task added.');
+      navigate(`#/pm/${encodeURIComponent(record.id)}`);
+    } catch (error) {
+      errorBox.textContent = 'Could not save. Please try again.';
+      console.error(error);
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  return page(pageHead(editing ? 'Edit PM task' : 'Add PM task'), form);
+}
+
+/* ---------- Placeholders until later milestones ---------- */
 
 function renderHome() {
   setTitle('Home');
@@ -1763,8 +2073,15 @@ async function render() {
       isDetail = true;
     }
   } else if (root === 'pm') {
-    content = renderPM(route);
-    isDetail = Boolean(second);
+    if (!second) content = renderPM(route);
+    else if (second === 'new') content = renderPMTaskForm(route);
+    else if (third === 'edit') {
+      content = renderPMTaskForm(route);
+      isDetail = true;
+    } else {
+      content = renderPMTaskDetail(route);
+      isDetail = true;
+    }
   } else if (root === 'settings') {
     content = renderSettings();
   } else {
