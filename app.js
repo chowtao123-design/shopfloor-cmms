@@ -34,6 +34,7 @@ import {
   workOrdersToCSV,
 } from './logic.js';
 import { buildSampleData } from './seed.js';
+import { renderHelp } from './help.js';
 
 const appMain = document.getElementById('app-main');
 const pageTitle = document.getElementById('page-title');
@@ -2072,6 +2073,7 @@ function renderHome() {
       emptyState('Set up your shop', 'Add your machines, then log your first repair.', [
         h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine'),
         h('button', { class: 'btn', type: 'button', onclick: loadSampleData }, 'Load sample data'),
+        h('a', { class: 'btn', href: '#/help' }, 'New here? Read the guide'),
       ]),
     );
   }
@@ -2306,6 +2308,12 @@ function renderSettings() {
 
   return page(
     pageHead('Settings'),
+    h(
+      'p',
+      { class: 'field-hint' },
+      h('a', { href: '#/help' }, 'How this app works'),
+      ' — a short guide with a glossary and FAQ.',
+    ),
     h('p', { class: 'muted' }, 'All data lives on this device only. Keep a backup copy somewhere safe.'),
     h(
       'p',
@@ -2344,7 +2352,7 @@ async function render() {
     if (link.dataset.tab === tab) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  if (tab !== 'settings') storageSet(LAST_TAB_KEY, tab);
+  if (tab !== 'settings' && tab !== 'help') storageSet(LAST_TAB_KEY, tab);
 
   let content;
   let isDetail = false;
@@ -2388,6 +2396,9 @@ async function render() {
       content = renderPMTaskDetail(route);
       isDetail = true;
     }
+  } else if (root === 'help') {
+    setTitle('Help');
+    content = renderHelp(h);
   } else if (root === 'settings') {
     content = renderSettings();
   } else {

@@ -1032,6 +1032,109 @@ details.more[open] > summary {
   margin-top: 0.5rem;
 }
 
+/* ---------- Help page ---------- */
+
+.help-toc {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.8rem 0.95rem;
+  margin: 0.9rem 0 0.4rem;
+}
+
+.help-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.help-toc li + li {
+  margin-top: 0.3rem;
+}
+
+.help-section {
+  scroll-margin-top: 4.5rem;
+  margin-top: 1.7rem;
+}
+
+.help-section > h2 {
+  margin: 0 0 0.45rem;
+  font-size: 1.25rem;
+  line-height: 1.25;
+}
+
+.help-section > p {
+  margin: 0.4rem 0;
+}
+
+.help-section > p:first-of-type {
+  margin-top: 0;
+}
+
+.help-list,
+.help-steps {
+  margin: 0.5rem 0 0;
+  padding-left: 1.3rem;
+}
+
+.help-list li,
+.help-steps li {
+  margin: 0.4rem 0;
+}
+
+.help-glossary {
+  margin: 0.4rem 0 0;
+}
+
+.help-glossary dt {
+  font-weight: 700;
+  margin-top: 0.75rem;
+}
+
+.help-glossary dd {
+  margin: 0.15rem 0 0;
+}
+
+.help-question {
+  margin: 1.1rem 0 0.2rem;
+  font-size: 1rem;
+}
+
+.help-question:first-of-type {
+  margin-top: 0.5rem;
+}
+
+.help-shortcuts {
+  border-collapse: collapse;
+  margin: 0.55rem 0 0;
+}
+
+.help-shortcuts th {
+  text-align: left;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.help-shortcuts th,
+.help-shortcuts td {
+  padding: 0.35rem 0.9rem 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.help-shortcuts kbd {
+  display: inline-block;
+  min-width: 1.7rem;
+  padding: 0.08rem 0.38rem;
+  text-align: center;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

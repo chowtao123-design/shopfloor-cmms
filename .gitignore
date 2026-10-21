@@ -1,4 +1,3 @@
-.opencode-build.log
-.opencode-build-glm.log
+.opencode-build*.log
 .tmp/
 node_modules/
