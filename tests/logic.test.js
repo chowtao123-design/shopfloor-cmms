@@ -11,6 +11,7 @@ import {
   dashboardCounts,
   daysBetween,
   deductStock,
+  filterWorkOrders,
   groupPMTasks,
   isLowStock,
   needsAttention,
@@ -252,6 +253,21 @@ test('rule 5: low stock uses qtyOnHand <= minQty and minQty > 0', () => {
   assert.equal(isLowStock({ qtyOnHand: 6, minQty: 5 }), false);
   assert.equal(isLowStock({ qtyOnHand: 0, minQty: 0 }), false);
   assert.equal(isLowStock({ qtyOnHand: 1, minQty: 0 }), false);
+});
+
+test('work order status filters treat active as everything not done', () => {
+  const orders = [
+    order({ id: 'a', status: 'open' }),
+    order({ id: 'b', status: 'in-progress' }),
+    order({ id: 'c', status: 'waiting-parts' }),
+    order({ id: 'd', status: 'waiting-tech' }),
+    order({ id: 'e', status: 'done' }),
+  ];
+  assert.deepEqual(filterWorkOrders(orders, 'active').map((item) => item.id), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(filterWorkOrders(orders, 'waiting').map((item) => item.id), ['c', 'd']);
+  assert.deepEqual(filterWorkOrders(orders, 'done').map((item) => item.id), ['e']);
+  assert.deepEqual(filterWorkOrders(orders, 'all').map((item) => item.id), ['a', 'b', 'c', 'd', 'e']);
+  assert.deepEqual(filterWorkOrders(orders, undefined).map((item) => item.id), ['a', 'b', 'c', 'd', 'e']);
 });
 
 test('rule 6: machine down offer applies to open breakdown jobs only', () => {

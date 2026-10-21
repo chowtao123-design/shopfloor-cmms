@@ -308,6 +308,17 @@ export function applyWorkOrderStatus(existing, status, parts, today = todayISO()
   return applyWorkOrderSave(existing, { ...existing, status }, parts, today);
 }
 
+export function filterWorkOrders(workOrders, filter) {
+  if (!filter || filter === 'all') return workOrders.slice();
+  if (filter === 'active') return workOrders.filter((order) => order.status !== 'done');
+  if (filter === 'waiting') {
+    return workOrders.filter(
+      (order) => order.status === 'waiting-parts' || order.status === 'waiting-tech',
+    );
+  }
+  return workOrders.filter((order) => order.status === filter);
+}
+
 export function openJobCount(workOrders, machineId) {
   return workOrders.filter((order) => order.machineId === machineId && order.status !== 'done')
     .length;
