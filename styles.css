@@ -1939,3 +1939,22 @@ body.logged-out #back-button {
   color: var(--muted);
   text-decoration: line-through;
 }
+
+/* Phone: when everything is synced, show only the green dot so the page title keeps its room.
+   The full text stays available to screen readers via the visually-hidden full label. */
+@media (max-width: 767px) {
+  .sync-pill.is-ok {
+    padding: 0.15rem 0.45rem;
+  }
+  .sync-pill.is-ok .sync-pill-compact {
+    display: none !important;
+  }
+  .sync-pill.is-ok .sync-pill-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
