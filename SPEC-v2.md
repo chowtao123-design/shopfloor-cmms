@@ -279,3 +279,81 @@ directly on import (one `stock` history entry, reason `import`).
   pill, sign out, stock moves from job close/reopen and ± buttons. Commit `S5: ...`.
 - **S6 Client UI:** edited-by tags, History section, conflict banners, Settings backups/users/
   import, Help updates, HTTP notice, SW cache bump, README team-server guide. Commit `S6: ...`.
+
+---
+
+## 15. v2.1 addendum: garment machine types, custom types, "In storage", UI polish (2026-10-21)
+
+Everything in sections 1–14 still applies. Change both client (`logic.js`, `app.js`, `seed.js`,
+`help.js`, `styles.css`) and server validation (`server/records.js`) so they agree.
+
+### 15.1 Machine types
+
+Replace the single `sewing` type with garment-specific types. `type` values and labels, grouped
+in the form's `<select>` with `<optgroup>`:
+
+| Group | value → label |
+|---|---|
+| Sewing machines | `single-needle` Single needle lockstitch · `double-needle` Double needle · `binder` Binder · `bartack` Bartack · `buttonhole` Buttonhole · `button-sew` Button sew · `snap-attach` Snap / button attach · `overlock-5` 5-thread overlock (safety stitch) · `overlock-4` 4-thread overlock · `overlock-3` 3-thread overlock · `coverstitch` Coverstitch · `flatlock` Flatlock · `blindstitch` Blind stitch · `feed-off-arm` Feed-off-arm · `zigzag` Zigzag |
+| Production equipment | `quilting` Automated quilting · `down-filling` Down filling · `cutter` Cutter (Gerber) · `pressing` Pressing / fusing |
+| Facility | `building` Building item (drains, gutters, lighting) |
+| Your types | one option per distinct custom type already in use (see 15.2) |
+| Other | `other` Other (type your own) |
+
+**Legacy:** `sewing` stays a valid stored value (label "Sewing (general)") so existing records and
+v1 imports keep working. It is listed in the select only when the machine being edited already
+has it. Default type for a new machine: `single-needle`.
+
+### 15.2 Custom types ("Other")
+
+- New optional machine field `typeLabel` (string, trimmed, 2–40 chars). Required when
+  `type === 'other'`; must be absent/empty otherwise (server strips it for other types).
+- Choosing **Other (type your own)** reveals a text input "Machine type" directly under the
+  select (label, required, maxlength 40, autofocus when revealed).
+- Custom types are remembered by being used: "Your types" lists the distinct `typeLabel`
+  values of all non-deleted machines (case-insensitive de-duplication, display the most common
+  spelling, sorted A–Z). Choosing one sets `type: 'other'` and that `typeLabel`. No separate
+  type-management screen in this version.
+- Display everywhere (cards, tables, detail, search, CSV): `machineTypeLabel(machine)` in
+  `logic.js` returns `typeLabel` for `other`, otherwise the built-in label. Search matches it.
+- Unit-test `machineTypeLabel`, `customTypeOptions(machines)` (de-dup, ordering, ignores
+  deleted and non-`other` machines) and server validation of `typeLabel`.
+
+### 15.3 Machine status "In storage"
+
+- Add `in-storage` (label "In storage") to machine statuses on client and server. Pill style:
+  neutral slate, distinct from Retired.
+- Automatic status offers (SPEC.md §7 rule 6) never change a machine that is `in-storage` or
+  `retired`.
+- **PM is paused** for machines that are `in-storage` or `retired`: their tasks are not counted as
+  overdue/due soon on Home, in sidebar counts, or "PM due this week". The PM tab shows them in a
+  final group "Paused – machine in storage or retired" (collapsed by default). Implement in
+  `logic.js` (`groupPMTasks(tasks, today, machines)` gains a `paused` group; `dashboardCounts`
+  respects it) with tests. Changing the machine back to Running resumes them; due dates are
+  unchanged (overdue shows immediately if it is past due).
+- Machines list filter chips: All · Running · Down · In storage · Retired.
+
+### 15.4 UI polish
+
+1. **User menu (all widths):** the popover is anchored to the user button: right edge aligned
+   with the button's right edge, 8 px below it, width 280 px (max `calc(100vw - 32px)`), padding
+   16 px. Content: display name (bold), `@username` and role on one muted line, divider, menu items
+   as full-width left-aligned rows 44 px tall with a small leading icon (inline SVG or text glyph):
+   Help, Settings, divider, **Sign out** (danger colour). `role="menu"`/`menuitem`, Esc and outside
+   click close it, Arrow Up/Down move focus, focus returns to the button on close.
+2. **Phone header (< 768 px):** user button shows a round initials avatar (e.g. "JC") instead of the
+   full name; the sync pill becomes a compact dot + short text (count only when pending); the page
+   title gets the remaining space and must not be truncated to a single letter for titles up to
+   about 16 characters at 390 px.
+3. **Desktop header (≥ 1024 px):** hide the header logo (the sidebar already shows the brand).
+4. **Status buttons in job detail:** wrap onto multiple lines (CSS grid, 2 columns on phone, auto
+   on wider) instead of a horizontally scrolling strip that cuts labels off.
+5. **Machine cards and rows** show a small type badge with `machineTypeLabel`.
+6. Keep everything else unchanged; no regressions to sections 13.3 and 14 checks.
+
+### 15.5 Milestones
+
+- **V21a Data:** types, custom types, in-storage, PM paused (logic.js + server/records.js +
+  seed.js + machine form/list/detail + tests). Commit `V21a: ...`.
+- **V21b UI polish:** 15.4 items 1–5, Help glossary update (machine types, In storage, paused PM),
+  SW cache bump. Commit `V21b: ...`.
