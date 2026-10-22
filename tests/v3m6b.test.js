@@ -323,3 +323,14 @@ test('sw.js: CACHE_VERSION bumped for the statistics shell and charts.js cached'
   assert.ok(version >= 20, `expected CACHE_VERSION >= 20, got ${version}`);
   assert.ok(src.includes("'./charts.js'"), 'charts.js is in the app shell');
 });
+test('every chart root carries the SVG namespace (without it the browser shows only text)', async () => {
+  const C = await import('../charts.js');
+  const rows = [{ label: 'A', value: 1 }, { label: 'B', value: 2 }];
+  const outputs = [
+    C.barChart(rows, { title: 'x' }),
+    C.horizontalBarChart(rows, { title: 'x' }),
+    C.lineChart([{ name: 's', points: [{ x: 'w1', y: 1 }, { x: 'w2', y: 2 }] }], { title: 'x' }),
+    C.barChart([], { title: 'empty' }),
+  ];
+  for (const svg of outputs) assert.match(String(svg), /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+});

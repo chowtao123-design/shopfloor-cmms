@@ -48,8 +48,8 @@ export function niceTicks(max, targetCount = 4) {
 
 /* ----- shared bits ----- */
 
-const FONT_AXIS = 'font-size="11" fill="var(--chart-text)"';
-const FONT_LABEL = 'font-size="12" font-weight="650" fill="var(--chart-text)"';
+const FONT_AXIS = 'font-size="14" fill="var(--chart-text)"';
+const FONT_LABEL = 'font-size="15" font-weight="650" fill="var(--chart-text)"';
 const FONT_EMPTY = 'font-size="14" fill="var(--chart-text)"';
 
 function textNode(x, y, content, attrs = `${FONT_AXIS} text-anchor="start"`) {
@@ -67,7 +67,7 @@ function valueOf(row) {
 }
 
 function emptyChart(title) {
-  return `<svg class="chart-svg" viewBox="0 0 640 160" role="img" aria-label="${
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 640 160" role="img" aria-label="${
     escapeSVGText(title)
   }: no data"><g><title>No data yet</title>${textNode(320, 84, 'No data yet', FONT_EMPTY)}</g></svg>`;
 }
@@ -83,7 +83,7 @@ export function barChart(rows, { title = 'Bar chart', unit = '' } = {}) {
   if (data.length === 0) return emptyChart(title);
   const width = 640;
   const height = 320;
-  const margins = { top: 12, right: 12, bottom: 48, left: 48 };
+  const margins = { top: 28, right: 12, bottom: 52, left: 52 }; // top room for the value above the tallest bar
   const plotWidth = width - margins.left - margins.right;
   const plotHeight = height - margins.top - margins.bottom;
   const ticks = niceTicks(Math.max(...data.map(valueOf)), 4);
@@ -108,7 +108,7 @@ export function barChart(rows, { title = 'Bar chart', unit = '' } = {}) {
     parts.push(
       `<g><title>${escapeSVGText(row.label)}: ${formatTickValue(value)}${escapeSVGText(unit)}</title>` +
         `<rect x="${barX.toFixed(2)}" y="${barY.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${barHeight.toFixed(2)}" rx="4" fill="var(--chart-c1)"/>` +
-        `${textNode(xCenter, baseline + 18, truncateLabel(row.label, 10), `${FONT_AXIS} text-anchor="middle"`)}${textNode(xCenter, barY - 6, `${formatTickValue(value)}${unit}`, `${FONT_LABEL} text-anchor="middle"`)}` +
+        `${textNode(xCenter, baseline + 18, truncateLabel(row.label, 13), `${FONT_AXIS} text-anchor="middle"`)}${textNode(xCenter, barY - 6, `${formatTickValue(value)}${unit}`, `${FONT_LABEL} text-anchor="middle"`)}` +
         `</g>`,
     );
   });
@@ -118,7 +118,7 @@ export function barChart(rows, { title = 'Bar chart', unit = '' } = {}) {
   const summary = data
     .map((row) => `${escapeSVGText(row.label)} ${formatTickValue(valueOf(row))}${escapeSVGText(unit)}`)
     .join('; ');
-  return `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeSVGText(title)}: ${summary}">${parts.join('')}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeSVGText(title)}: ${summary}">${parts.join('')}</svg>`;
 }
 
 /**
@@ -131,7 +131,7 @@ export function horizontalBarChart(rows, { title = 'Bar chart', unit = '' } = {}
   if (data.length === 0) return emptyChart(title);
   const rowHeight = 34;
   const width = 640;
-  const margins = { top: 10, right: 12, bottom: 26, left: 150 };
+  const margins = { top: 10, right: 44, bottom: 30, left: 200 };
   const plotWidth = width - margins.left - margins.right;
   const height = margins.top + data.length * rowHeight + margins.bottom;
   const ticks = niceTicks(Math.max(...data.map(valueOf)), 4);
@@ -153,7 +153,7 @@ export function horizontalBarChart(rows, { title = 'Bar chart', unit = '' } = {}
     const barY = y + (rowHeight - 20) / 2;
     parts.push(
       `<g><title>${escapeSVGText(row.label)}: ${formatTickValue(value)}${escapeSVGText(unit)}</title>` +
-        `${textNode(margins.left - 8, y + 15, truncateLabel(row.label, 18), `${FONT_AXIS} text-anchor="end"`)}${textNode(margins.left + barLength + 6, y + 15, `${formatTickValue(value)}${unit}`, FONT_LABEL)}` +
+        `${textNode(margins.left - 8, y + 15, truncateLabel(row.label, 24), `${FONT_AXIS} text-anchor="end"`)}${textNode(margins.left + barLength + 6, y + 15, `${formatTickValue(value)}${unit}`, FONT_LABEL)}` +
         `<rect x="${margins.left}" y="${barY.toFixed(2)}" width="${barLength.toFixed(2)}" height="20" rx="4" fill="var(--chart-c${Math.min(index, 5) + 1})"/>` +
         `</g>`,
     );
@@ -161,7 +161,7 @@ export function horizontalBarChart(rows, { title = 'Bar chart', unit = '' } = {}
   const summary = data
     .map((row) => `${escapeSVGText(row.label)} ${formatTickValue(valueOf(row))}${escapeSVGText(unit)}`)
     .join('; ');
-  return `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeSVGText(title)}: ${summary}">${parts.join('')}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeSVGText(title)}: ${summary}">${parts.join('')}</svg>`;
 }
 
 /**
@@ -177,7 +177,7 @@ export function lineChart(series, { title = 'Line chart', unit = '' } = {}) {
   if (lines.length === 0) return emptyChart(title);
   const width = 640;
   const height = 300;
-  const margins = { top: 34, right: 14, bottom: 44, left: 48 };
+  const margins = { top: 36, right: 48, bottom: 48, left: 52 }; // right room so the last date label is not clipped
   const plotWidth = width - margins.left - margins.right;
   const plotHeight = height - margins.top - margins.bottom;
   const buckets = lines[0].values.length;
@@ -237,5 +237,5 @@ export function lineChart(series, { title = 'Line chart', unit = '' } = {}) {
   const summary = lines
     .map((entry) => `${escapeSVGText(entry.name)} ${entry.values.reduce((sum, point) => sum + Math.max(0, Number(point && point.value) || 0), 0)}${escapeSVGText(unit)}`)
     .join('; ');
-  return `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeSVGText(title)}: ${summary}">${parts.join('')}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeSVGText(title)}: ${summary}">${parts.join('')}</svg>`;
 }
