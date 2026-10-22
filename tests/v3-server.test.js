@@ -757,10 +757,11 @@ test('branding logo: admin-only upload, image types only, no SVG, 512 KB limit',
     body: logoBytes,
   });
   assert.equal(set.res.status, 200);
-  assert.equal(set.body.logoUrl, '/api/branding/logo');
+  // Each upload gets its own URL (?v=<file id>) so browsers never show a cached old logo.
+  assert.match(set.body.logoUrl, /^\/api\/branding\/logo\?v=[\w-]+$/);
   assert.equal(set.body.name, 'Shopfloor CMMS');
 
-  const publicLogo = await fetch(`${base}/api/branding/logo`);
+  const publicLogo = await fetch(`${base}${set.body.logoUrl}`);
   assert.equal(publicLogo.status, 200, 'the logo is public (login screen needs it)');
   assert.equal(publicLogo.headers.get('content-type'), 'image/png');
   assert.equal(publicLogo.headers.get('x-content-type-options'), 'nosniff');
@@ -769,7 +770,7 @@ test('branding logo: admin-only upload, image types only, no SVG, 512 KB limit',
   assert.ok(Buffer.from(await publicLogo.arrayBuffer()).equals(logoBytes));
 
   const branding = await fetch(`${base}/api/branding`);
-  assert.equal((await branding.json()).logoUrl, '/api/branding/logo');
+  assert.equal((await branding.json()).logoUrl, set.body.logoUrl);
 
   // Replacing the logo keeps one logo only.
   const replace = await postBody(anna, '/api/branding/logo', {
@@ -777,7 +778,8 @@ test('branding logo: admin-only upload, image types only, no SVG, 512 KB limit',
     body: Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP'), Buffer.alloc(8)]),
   });
   assert.equal(replace.res.status, 200);
-  assert.equal(replace.body.logoUrl, '/api/branding/logo');
+  assert.match(replace.body.logoUrl, /^\/api\/branding\/logo\?v=[\w-]+$/);
+  assert.notEqual(replace.body.logoUrl, set.body.logoUrl, 'a new logo gets a new URL');
   const logoSetting = handle.store.getSetting('branding.logoFileId');
   assert.match(logoSetting, UUID_RE);
 

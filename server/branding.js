@@ -38,7 +38,8 @@ export function brandingPayload(store, version) {
   const logoFileId = store.getSetting(BRAND_LOGO_KEY);
   return {
     name,
-    logoUrl: logoFileId === null ? null : '/api/branding/logo',
+    // The file id in the query makes each new upload a new URL, so browsers never show a cached old logo.
+    logoUrl: logoFileId === null ? null : `/api/branding/logo?v=${encodeURIComponent(logoFileId)}`,
     version,
   };
 }

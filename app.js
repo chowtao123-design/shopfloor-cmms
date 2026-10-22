@@ -242,14 +242,21 @@ function applyBranding(payload) {
   const logoUrl = brandLogoUrl();
 
   if (sidebarAppName) sidebarAppName.textContent = brandName();
-  if (sidebarMark) sidebarMark.textContent = initialsOf(brandName()) || '··';
+  if (sidebarMark) {
+    sidebarMark.textContent = initialsOf(brandName()) || '··';
+    // The uploaded logo replaces the initials square; show one or the other, never both.
+    sidebarMark.hidden = Boolean(logoUrl);
+  }
   if (sidebarLogo) {
     sidebarLogo.hidden = !logoUrl;
     if (logoUrl && sidebarLogo.getAttribute('src') !== logoUrl) sidebarLogo.setAttribute('src', logoUrl);
   }
 
   if (headerBrandName) headerBrandName.textContent = brandName();
-  if (headerBrandMark) headerBrandMark.textContent = initialsOf(brandName()) || '··';
+  if (headerBrandMark) {
+    headerBrandMark.textContent = initialsOf(brandName()) || '··';
+    headerBrandMark.hidden = Boolean(logoUrl);
+  }
   if (headerBrandLogo) {
     headerBrandLogo.hidden = !logoUrl;
     if (logoUrl && headerBrandLogo.getAttribute('src') !== logoUrl) headerBrandLogo.setAttribute('src', logoUrl);
