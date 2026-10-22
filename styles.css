@@ -4310,3 +4310,26 @@ body.logged-out .ai-chat-fab {
   height: 0.95rem;
   vertical-align: -0.12rem;
 }
+
+/* Section title followed by an editor: the editor's own label repeats the title
+   ("Checklist / Checklist"), so keep it for screen readers only. */
+.section-title + .field > .editor-label:first-child {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+/* Empty hint lines left big gaps under labels. */
+.field-hint:empty {
+  display: none;
+}
+
+.downtime-details > summary {
+  cursor: pointer;
+  font-weight: 650;
+  padding-block: 0.5rem;
+}

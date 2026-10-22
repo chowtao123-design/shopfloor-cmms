@@ -822,7 +822,7 @@ function createPartsEditor(initialPartsUsed = []) {
     element: h(
       'div',
       { class: 'field' },
-      h('span', { class: 'field-label' }, 'Parts used'),
+      h('span', { class: 'field-label editor-label' }, 'Parts used'),
       hint,
       container,
       addButton,
@@ -2939,7 +2939,7 @@ function createAssigneeEditor(initialAssignees = []) {
   const element = h(
     'div',
     { class: 'field' },
-    h('span', { class: 'field-label' }, 'Assigned to'),
+    h('span', { class: 'field-label editor-label' }, 'Assigned to'),
     hint,
     listHost,
     h('div', { class: 'assignee-add' }, addSelect, addButton),
@@ -3062,7 +3062,7 @@ function createChecklistEditor(initialItems = []) {
   const element = h(
     'div',
     { class: 'field' },
-    h('span', { class: 'field-label' }, 'Checklist'),
+    h('span', { class: 'field-label editor-label' }, 'Checklist'),
     hint,
     listHost,
     h('div', { class: 'check-add' }, input, addButton),
@@ -3203,7 +3203,7 @@ function createLabourEditor(initialEntries = []) {
   const element = h(
     'div',
     { class: 'field' },
-    h('span', { class: 'field-label' }, 'Labour'),
+    h('span', { class: 'field-label editor-label' }, 'Labour'),
     hint,
     listHost,
     h('div', { class: 'labour-add' }, personSelect, dateInput, hoursInput),
@@ -3348,7 +3348,7 @@ function createAttachmentsEditor(initialAttachments = []) {
   const element = h(
     'div',
     { class: 'field' },
-    h('span', { class: 'field-label' }, 'Attachments'),
+    h('span', { class: 'field-label editor-label' }, 'Attachments'),
     statusBox,
     gridHost,
     ...(canUpload
@@ -3527,11 +3527,17 @@ function workOrderFormBody({
     checklistEditor.element,
     sectionTitle('Labour'),
     labourEditor.element,
+    // Old orders stored labour as plain minutes; only show that field when it holds a value.
+    // (form.append would print a null as the text "null", so spread an empty list instead.)
+    ...(toInteger(base.minutesSpent) > 0
+      ? [field('Labour minutes (older entry)', minutesInput, 'Also counts towards the total labour hours.')]
+      : []),
+    // Downtime is only needed for some orders: tucked away, open when it already has a value.
     h(
-      'div',
-      { class: 'grid-2' },
-      field('Labour minutes (before v3)', minutesInput, 'Also counts towards the total labour hours.'),
-      field('Machine downtime (minutes)', downtimeInput),
+      'details',
+      { class: 'more downtime-details', open: toInteger(base.downtimeMinutes) > 0 },
+      h('summary', {}, 'Machine downtime (optional)'),
+      field('Downtime (minutes)', downtimeInput, 'How long the machine could not run because of this problem.'),
     ),
     sectionTitle('Parts used'),
     partsEditor.element,
