@@ -34,6 +34,17 @@
   --danger-fg: #941d15;
   --neutral-bg: #e5e8eb;
   --neutral-fg: #46505b;
+
+  /* Statistics charts (SPEC-v3.md section 7): series colours from tokens so
+     light and dark themes both stay readable. */
+  --chart-c1: #d9541a;
+  --chart-c2: #0b63c5;
+  --chart-c3: #15622e;
+  --chart-c4: #744500;
+  --chart-c5: #562b8d;
+  --chart-c6: #104b93;
+  --chart-text: #58616d;
+  --chart-grid: #cbd1d8;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -66,6 +77,15 @@
     --danger-fg: #ffc0b9;
     --neutral-bg: #303740;
     --neutral-fg: #d4dbe3;
+
+    --chart-c1: #f07a3e;
+    --chart-c2: #76bdff;
+    --chart-c3: #b8f0c9;
+    --chart-c4: #ffe08b;
+    --chart-c5: #e4d2ff;
+    --chart-c6: #cce3ff;
+    --chart-text: #aeb7c1;
+    --chart-grid: #3a434d;
   }
 }
 
@@ -3531,4 +3551,259 @@ body.logged-out .global-search {
   overflow-wrap: normal;
   word-break: normal;
   white-space: nowrap;
+}
+
+/* ==========================================================================
+   V3-M6b: Statistics page (SPEC-v3.md section 7). Tiles, KPIs, hand-written
+   SVG charts and the tables behind them. Phones: tiles 2 per row, charts
+   scale with their viewBox, tables scroll inside their own container — no
+   page-level horizontal scroll.
+   ========================================================================== */
+
+/* Sub-tabs: Status monitor · Reports, on every screen size. */
+.stats-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  padding: 0.2rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  width: fit-content;
+  max-width: 100%;
+}
+
+.stats-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0.2rem 0.85rem;
+  border-radius: 8px;
+  color: var(--muted);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.stats-tab:hover {
+  color: var(--accent-strong);
+  background: var(--surface-2);
+}
+
+.stats-tab[aria-current="page"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Status tiles + "Today" strip: 2 per row on phones, 4 from 560 px. */
+.stats-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+}
+
+@media (min-width: 560px) {
+  .stats-tiles {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-height: 76px;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.stat-tile-value {
+  font-size: 1.6rem;
+  font-weight: 800;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-tile-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.stat-tile-link {
+  text-decoration: none;
+}
+
+a.stat-tile-link:hover {
+  border-color: var(--accent);
+}
+
+.stat-tile.is-alert {
+  border-left: 5px solid var(--danger);
+}
+
+.stat-tile.is-warn {
+  border-left: 5px solid var(--accent);
+}
+
+/* Reports: 2 KPI tiles per row on phones, 3 from 560 px, 6 on desktop. */
+.kpi-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+}
+
+@media (min-width: 560px) {
+  .kpi-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .kpi-tiles {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+/* Range selector: Last 30 / 90 / 365 days, on every screen size. */
+.stats-range {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.stats-range-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0.2rem 0.8rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.stats-range-btn:hover {
+  color: var(--accent-strong);
+  background: var(--surface-2);
+}
+
+.stats-range-btn.is-active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Statistics tables stay visible at every width and scroll inside their own
+   container, so the page itself never scrolls sideways. */
+.table-scroll {
+  max-width: 100%;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.stats-table {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.stats-table-wide {
+  min-width: 720px;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.stats-table thead th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  border-bottom: 2px solid var(--border-strong);
+}
+
+.stats-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.stats-table td {
+  overflow-wrap: anywhere;
+}
+
+.stats-table td[data-col="hours"],
+.stats-table td[data-col="down-since"],
+.stats-table td[data-col="mtbf"],
+.stats-table td[data-col="cost"] {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+/* Chart cards: SVG scales with its viewBox; the table toggle and CSV export
+   sit in the card head. */
+.chart-card {
+  margin-bottom: 0;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.9rem;
+}
+
+@media (min-width: 1024px) {
+  .chart-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+}
+
+.chart-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.chart-card-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.chart-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chart-host {
+  width: 100%;
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
 }

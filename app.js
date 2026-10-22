@@ -54,7 +54,22 @@ import {
   workOrderAgeDays,
   workOrdersToCSV,
 } from './logic.js';
-import { labourByContractor, labourByCoworker, rangeFor } from './logic-stats.js';
+import {
+  countByPriority,
+  countByStatus,
+  createdVsCompletedWeekly,
+  downNow,
+  downtimeByMachineType,
+  kpis,
+  labourByContractor,
+  labourByCoworker,
+  machineStatusCounts,
+  rangeFor,
+  tableToCSV,
+  todayStrip,
+  topMachinesByBreakdowns,
+} from './logic-stats.js';
+import { barChart, horizontalBarChart, lineChart } from './charts.js';
 import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
 import * as sync from './sync.js';
@@ -7094,6 +7109,478 @@ function renderSettings() {
   );
 }
 
+/* ---------- Statistics (SPEC-v3.md section 7, permissions section 13) ----------
+   All numbers come from the pure functions in logic-stats.js over the local
+   synced stores; charts are hand-written SVG from charts.js. The page is
+   read-only, so a sync-applied re-render never loses user input. */
+
+const STATS_TABS = [
+  { key: 'monitor', label: 'Status monitor', href: '#/statistics' },
+  { key: 'reports', label: 'Reports', href: '#/statistics/reports' },
+];
+
+function statsTabLinks(activeKey) {
+  return h(
+    'nav',
+    { class: 'stats-tabs', 'aria-label': 'Statistics views' },
+    ...STATS_TABS.map((tab) =>
+      h(
+        'a',
+        { class: 'stats-tab', href: tab.href, 'aria-current': tab.key === activeKey ? 'page' : null },
+        tab.label,
+      ),
+    ),
+  );
+}
+
+/* Mount chart markup (a string from charts.js) without innerHTML
+   (SPEC-v3.md section 11): parse it in an inert SVG document, then import
+   the node. Nothing in the markup run scripts on its own, and all text was
+   escaped when the string was built. */
+function svgFromMarkup(markup) {
+  const parsed = new DOMParser().parseFromString(String(markup), 'image/svg+xml');
+  const root = parsed.documentElement;
+  const broken = !root || root.nodeName !== 'svg' || parsed.querySelector('parsererror');
+  if (broken) {
+    console.warn('Chart markup could not be parsed.');
+    return h('p', { class: 'muted field-hint' }, 'The chart could not be shown.');
+  }
+  return document.importNode(root, true);
+}
+
+/* Local date and time for "Down since" (a datetime shows both, a bare ISO
+   date shows just the day). */
+function statsWhen(iso) {
+  const text = String(iso || '');
+  if (!text) return '—';
+  if (isISODate(text.slice(0, 10)) && text.length === 10) return formatDate(text);
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function assigneeNamesText(order) {
+  const names = ((order && order.assignees) || []).map(personName).filter(Boolean);
+  return names.length > 0 ? names.join(', ') : '—';
+}
+
+function kpiHoursLabel(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${Math.round(number * 10) / 10} h` : '—';
+}
+
+function statTile(label, value, tone = '') {
+  return h(
+    'div',
+    { class: `stat-tile${tone ? ` ${tone}` : ''}` },
+    h('span', { class: 'stat-tile-value' }, String(value)),
+    h('span', { class: 'stat-tile-label' }, label),
+  );
+}
+
+/* ---- Status monitor tab ---- */
+
+function renderStatisticsMonitor() {
+  setTitle('Statistics');
+  const counts = machineStatusCounts(state.machines);
+  const tiles = MACHINE_STATUSES.map((status) =>
+    h(
+      'a',
+      {
+        class: `stat-tile stat-tile-link${status === 'down' && counts.down > 0 ? ' is-alert' : ''}`,
+        href: `#/machines?status=${status}`,
+        title: `Show machines that are ${(LABELS.machineStatus[status] || status).toLowerCase()}`,
+      },
+      h('span', { class: 'stat-tile-value' }, String(counts[status] || 0)),
+      h('span', { class: 'stat-tile-label' }, LABELS.machineStatus[status] || status),
+    ),
+  );
+
+  const downRows = downNow(state.machines, state.workOrders, nowISO());
+  const downTable =
+    downRows.length === 0
+      ? emptyState('All machines are running', 'No machine is marked down right now.')
+      : h(
+          'div',
+          { class: 'table-scroll' },
+          h(
+            'table',
+            { class: 'data-table stats-table stats-table-wide' },
+            h(
+              'thead',
+              {},
+              h(
+                'tr',
+                {},
+                ...['Machine', 'Type', 'Down since', 'Service order', 'Assigned to', 'Hours down'].map((label) =>
+                  h('th', { scope: 'col' }, label),
+                ),
+              ),
+            ),
+            h(
+              'tbody',
+              {},
+              ...downRows.map((row) => {
+                const order = row.order;
+                return h(
+                  'tr',
+                  {},
+                  h(
+                    'td',
+                    { 'data-col': 'machine' },
+                    h('a', { href: `#/machines/${encodeURIComponent(row.machine.id)}` }, row.machine.name || '—'),
+                  ),
+                  h('td', { 'data-col': 'type' }, row.type || '—'),
+                  h('td', { 'data-col': 'down-since' }, statsWhen(row.downSince)),
+                  h(
+                    'td',
+                    { 'data-col': 'order' },
+                    order
+                      ? h(
+                          'a',
+                          { href: `#/jobs/${encodeURIComponent(order.id)}` },
+                          `${formatOrderNumber(order.number)} · ${order.title || 'Untitled'}`,
+                        )
+                      : '—',
+                  ),
+                  h('td', { 'data-col': 'assignees' }, order ? assigneeNamesText(order) : '—'),
+                  h('td', { 'data-col': 'hours' }, row.hoursDown === null ? '—' : `${row.hoursDown.toFixed(1)} h`),
+                );
+              }),
+            ),
+          ),
+        );
+
+  const strip = todayStrip(state.workOrders, state.pmTasks, state.machines, todayISO());
+
+  return page(
+    pageHead('Statistics'),
+    statsTabLinks('monitor'),
+    sectionTitle('Machines by status'),
+    h('div', { class: 'stats-tiles' }, ...tiles),
+    sectionTitle('Down now'),
+    downTable,
+    sectionTitle('Today'),
+    h(
+      'div',
+      { class: 'stats-tiles' },
+      statTile('Opened today', strip.openedToday),
+      statTile('Closed today', strip.closedToday),
+      statTile('Overdue now', strip.overdueNow, strip.overdueNow > 0 ? 'is-alert' : ''),
+      statTile('PM due today', strip.pmDueToday, strip.pmDueToday > 0 ? 'is-warn' : ''),
+    ),
+  );
+}
+
+/* ---- Reports tab ---- */
+
+const STATS_RANGE_KEY = 'maint-log:stats-range-days';
+const STATS_RANGE_CHOICES = [30, 90, 365];
+const DEFAULT_STATS_RANGE_DAYS = 30;
+
+function loadStatsRangeDays() {
+  const value = Number(storageGet(STATS_RANGE_KEY));
+  return STATS_RANGE_CHOICES.includes(value) ? value : DEFAULT_STATS_RANGE_DAYS;
+}
+
+/* A semantic table from plain {key,label} columns and plain-object rows; the
+   same columns feed tableToCSV for the Export CSV button. */
+function statsTable(columns, rows) {
+  return h(
+    'table',
+    { class: 'data-table stats-table' },
+    h('thead', {}, h('tr', {}, ...columns.map((column) => h('th', { scope: 'col' }, column.label)))),
+    h(
+      'tbody',
+      {},
+      ...rows.map((row) =>
+        h(
+          'tr',
+          {},
+          ...columns.map((column) => {
+            const value = row ? row[column.key] : null;
+            return h(
+              'td',
+              { 'data-col': column.key },
+              value === null || value === undefined || value === '' ? '—' : String(value),
+            );
+          }),
+        ),
+      ),
+    ),
+  );
+}
+
+/* One chart card: title, the SVG chart, a "Show table" toggle with an
+   accessible table of the same numbers, and an Export CSV button
+   (SPEC-v3.md section 7). */
+function chartCard({ title, markup, columns, rows, filename }) {
+  const chartHost = h('div', { class: 'chart-host' }, svgFromMarkup(markup));
+  const table = statsTable(columns, rows);
+  const tableHost = h('div', { class: 'table-scroll' }, table);
+  tableHost.hidden = true;
+  const toggle = h('button', { class: 'btn btn-small', type: 'button', 'aria-expanded': 'false' }, 'Show table');
+  toggle.addEventListener('click', () => {
+    const showTable = tableHost.hidden;
+    tableHost.hidden = !showTable;
+    chartHost.hidden = !showTable;
+    toggle.textContent = showTable ? 'Show chart' : 'Show table';
+    toggle.setAttribute('aria-expanded', showTable ? 'true' : 'false');
+  });
+  const exportButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Export CSV');
+  exportButton.addEventListener('click', () => {
+    downloadFile(filename, 'text/csv;charset=utf-8', tableToCSV(columns, rows));
+    toast(`Exported “${title}” to CSV.`);
+  });
+  return h(
+    'section',
+    { class: 'card chart-card' },
+    h(
+      'div',
+      { class: 'chart-card-head' },
+      h('h3', { class: 'chart-card-title' }, title),
+      h('div', { class: 'chart-card-actions' }, toggle, exportButton),
+    ),
+    chartHost,
+    tableHost,
+  );
+}
+
+function renderStatisticsReports() {
+  setTitle('Statistics');
+  const days = loadStatsRangeDays();
+  const range = rangeFor(days);
+  const values = kpis(
+    { workOrders: state.workOrders, pmTasks: state.pmTasks, machines: state.machines },
+    range,
+  );
+
+  const rangeSelector = h(
+    'div',
+    { class: 'stats-range', role: 'group', 'aria-label': 'Report range' },
+    ...STATS_RANGE_CHOICES.map((choice) =>
+      h(
+        'button',
+        {
+          class: `stats-range-btn${choice === days ? ' is-active' : ''}`,
+          type: 'button',
+          'aria-pressed': choice === days ? 'true' : 'false',
+          onclick: () => {
+            if (choice === days) return;
+            storageSet(STATS_RANGE_KEY, String(choice));
+            render();
+          },
+        },
+        `Last ${choice} days`,
+      ),
+    ),
+  );
+
+  /* Chart stores gate on the area permissions (SPEC-v3.md 13.3): a chart is
+     only built from stores this user can read. */
+  const showOrders = canViewArea('serviceOrders');
+  const showMachines = canViewArea('machines');
+  const showCoworkers = canViewArea('coworkers');
+  const showContractors = canViewArea('contractors');
+  const includeCost = canReadRates();
+
+  const cards = [];
+
+  if (showOrders) {
+    const byStatus = countByStatus(state.workOrders);
+    cards.push(
+      chartCard({
+        title: 'Service orders by status',
+        markup: barChart(
+          WORK_ORDER_STATUSES.map((status) => ({ label: LABELS.status[status], value: byStatus[status] })),
+          { title: 'Service orders by status', unit: '' },
+        ),
+        columns: [
+          { key: 'status', label: 'Status' },
+          { key: 'count', label: 'Service orders' },
+        ],
+        rows: WORK_ORDER_STATUSES.map((status) => ({
+          status: LABELS.status[status],
+          count: byStatus[status],
+        })),
+        filename: `statistics-orders-by-status-${todayISO()}.csv`,
+      }),
+    );
+
+    const weeks = createdVsCompletedWeekly(state.workOrders, range);
+    cards.push(
+      chartCard({
+        title: 'Created vs completed per week',
+        markup: lineChart(
+          [
+            {
+              name: 'Created',
+              values: weeks.map((week) => ({ label: formatDate(week.weekStart), value: week.created })),
+            },
+            {
+              name: 'Completed',
+              values: weeks.map((week) => ({ label: formatDate(week.weekStart), value: week.completed })),
+            },
+          ],
+          { title: 'Created vs completed per week' },
+        ),
+        columns: [
+          { key: 'week', label: 'Week starting' },
+          { key: 'created', label: 'Created' },
+          { key: 'completed', label: 'Completed' },
+        ],
+        rows: weeks.map((week) => ({
+          week: formatDate(week.weekStart),
+          created: week.created,
+          completed: week.completed,
+        })),
+        filename: `statistics-created-vs-completed-${todayISO()}.csv`,
+      }),
+    );
+
+    const byPriority = countByPriority(state.workOrders);
+    cards.push(
+      chartCard({
+        title: 'Service orders by priority',
+        markup: barChart(
+          PRIORITIES.map((priority) => ({ label: LABELS.priority[priority], value: byPriority[priority] })),
+          { title: 'Service orders by priority' },
+        ),
+        columns: [
+          { key: 'priority', label: 'Priority' },
+          { key: 'count', label: 'Service orders' },
+        ],
+        rows: PRIORITIES.map((priority) => ({
+          priority: LABELS.priority[priority],
+          count: byPriority[priority],
+        })),
+        filename: `statistics-orders-by-priority-${todayISO()}.csv`,
+      }),
+    );
+  }
+
+  if (showOrders && showMachines) {
+    const byType = downtimeByMachineType(state.workOrders, state.machines, range);
+    cards.push(
+      chartCard({
+        title: 'Downtime hours by machine type',
+        markup: horizontalBarChart(
+          byType.map((row) => ({ label: row.type, value: row.hours })),
+          { title: 'Downtime hours by machine type', unit: 'h' },
+        ),
+        columns: [
+          { key: 'type', label: 'Machine type' },
+          { key: 'hours', label: 'Downtime hours' },
+        ],
+        rows: byType.map((row) => ({ type: row.type, hours: row.hours })),
+        filename: `statistics-downtime-by-type-${todayISO()}.csv`,
+      }),
+    );
+
+    const topBreakdowns = topMachinesByBreakdowns(state.workOrders, state.machines, range, 10);
+    cards.push(
+      chartCard({
+        title: 'Top machines by breakdowns',
+        markup: horizontalBarChart(
+          topBreakdowns.map((row) => ({ label: row.machine.name, value: row.breakdowns })),
+          { title: 'Top machines by breakdowns' },
+        ),
+        columns: [
+          { key: 'machine', label: 'Machine' },
+          { key: 'breakdowns', label: 'Breakdowns' },
+          { key: 'downtime', label: 'Downtime hours' },
+          { key: 'mtbf', label: 'MTBF (days)' },
+        ],
+        rows: topBreakdowns.map((row) => ({
+          machine: row.machine.name,
+          breakdowns: row.breakdowns,
+          downtime: row.downtimeHours,
+          mtbf: row.mtbfDays,
+        })),
+        filename: `statistics-top-machines-${todayISO()}.csv`,
+      }),
+    );
+  }
+
+  if (showContractors) {
+    const contractors = labourByContractor(state.workOrders, state.contractors, range, { includeCost });
+    const contractorColumns = [
+      { key: 'contractor', label: 'Contractor' },
+      { key: 'trade', label: 'Trade' },
+      { key: 'orders', label: 'Service orders' },
+      { key: 'hours', label: 'Hours' },
+      // Cost only with the contractorRates permission (SPEC-v3.md 13.3).
+      ...(includeCost ? [{ key: 'cost', label: 'Cost' }] : []),
+    ];
+    cards.push(
+      chartCard({
+        title: 'Labour hours by outside contractor',
+        markup: horizontalBarChart(
+          contractors.slice(0, 10).map((row) => ({ label: row.contractor.company, value: row.hours })),
+          { title: 'Labour hours by outside contractor', unit: 'h' },
+        ),
+        columns: contractorColumns,
+        rows: contractors.map((row) => {
+          const entry = {
+            contractor: row.contractor.company,
+            trade: row.trade,
+            orders: row.orders,
+            hours: row.hours,
+          };
+          if (includeCost) entry.cost = row.cost === null ? '' : formatMoney(row.cost);
+          return entry;
+        }),
+        filename: `statistics-contractor-hours-${todayISO()}.csv`,
+      }),
+    );
+  }
+
+  if (showCoworkers) {
+    const coworkers = labourByCoworker(state.workOrders, state.coworkers, range);
+    cards.push(
+      chartCard({
+        title: 'Labour hours by coworker',
+        markup: horizontalBarChart(
+          coworkers.slice(0, 10).map((row) => ({ label: row.coworker.name, value: row.hours })),
+          { title: 'Labour hours by coworker', unit: 'h' },
+        ),
+        columns: [
+          { key: 'coworker', label: 'Coworker' },
+          { key: 'role', label: 'Role' },
+          { key: 'orders', label: 'Service orders' },
+          { key: 'hours', label: 'Hours' },
+        ],
+        rows: coworkers.map((row) => ({
+          coworker: row.coworker.name,
+          role: row.role,
+          orders: row.orders,
+          hours: row.hours,
+        })),
+        filename: `statistics-coworker-hours-${todayISO()}.csv`,
+      }),
+    );
+  }
+
+  return page(
+    pageHead('Statistics', rangeSelector),
+    statsTabLinks('reports'),
+    h('p', { class: 'muted field-hint' }, `Every number covers ${range.from} to ${range.to}, computed on this device from synced data.`),
+    sectionTitle('Key numbers'),
+    h(
+      'div',
+      { class: 'kpi-tiles' },
+      statTile('Open service orders', values.open),
+      statTile('Overdue', values.overdue, values.overdue > 0 ? 'is-alert' : ''),
+      statTile('MTTR', values.mttrHours === null ? '—' : `${values.mttrHours.toFixed(1)} h`),
+      statTile('PM compliance', values.pmCompliancePct === null ? '—' : `${values.pmCompliancePct}%`),
+      statTile('Downtime hours', kpiHoursLabel(values.downtimeHours)),
+      statTile('Labour hours', kpiHoursLabel(values.labourHours)),
+    ),
+    sectionTitle('Charts'),
+    h('div', { class: 'chart-grid' }, ...cards),
+  );
+}
+
 /* ---------- Routing ---------- */
 
 function updateNavCounts() {
@@ -7244,8 +7731,23 @@ async function render() {
       splitListRoot = 'contractors';
     }
   } else if (root === 'statistics') {
-    // The Statistics page arrives with M6.
-    content = renderComingSoon(tab);
+    // Statistics tabs (SPEC-v3.md section 7); the area itself is gated by
+    // the statistics permission (SPEC-v3.md 13.3).
+    if (!canViewArea('statistics')) {
+      setTitle('Statistics');
+      content = noAccessPage('Statistics', 'Statistics');
+    } else if (!second || second === 'monitor') {
+      content = renderStatisticsMonitor();
+    } else if (second === 'reports') {
+      content = renderStatisticsReports();
+    } else {
+      setTitle('Not found');
+      content = page(
+        emptyState('Page not found', 'That link does not exist.', [
+          h('a', { class: 'btn btn-primary', href: '#/statistics' }, 'Go to Statistics'),
+        ]),
+      );
+    }
   } else if (root === 'help') {
     setTitle('Help');
     content = renderHelp(h);
@@ -7517,24 +8019,6 @@ function maybeOpenPMDrawer(route) {
   return true;
 }
 
-/* ----- Placeholder page for the route that arrives with M6 ----- */
-
-const COMING_SOON_PAGES = {
-  statistics: {
-    title: 'Statistics',
-    blurb: 'Statistics arrive in a coming update: machine status, downtime, PM compliance and labour hours.',
-  },
-};
-
-function renderComingSoon(tab) {
-  const info = COMING_SOON_PAGES[tab] || { title: 'Coming soon', blurb: 'This page arrives in a coming update.' };
-  setTitle(info.title);
-  return page(
-    pageHead(info.title),
-    emptyState('Coming soon', info.blurb, [h('a', { class: 'btn btn-primary', href: '#/home' }, 'Go Home')]),
-  );
-}
-
 /* ----- Phone bottom-bar "More" sheet (SPEC-v3.md section 10) ----- */
 
 const NAV_ICONS = {
@@ -7607,7 +8091,8 @@ function openMoreSheet() {
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const items = [
     { label: 'Parts', icon: NAV_ICONS.parts, href: '#/parts' },
-    { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
+    // Statistics follows its own permission (SPEC-v3.md 13.3).
+    canViewArea('statistics') && { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
     // People follow the coworkers/contractors permissions (SPEC-v3.md 13.3).
     canViewArea('coworkers') && { label: 'Coworkers', icon: NAV_ICONS.coworkers, href: '#/coworkers' },
     canViewArea('contractors') && {
@@ -7888,10 +8373,13 @@ function setUpSidebarRail() {
 function applyNavPermissions() {
   const showCoworkers = canViewArea('coworkers');
   const showContractors = canViewArea('contractors');
+  const showStatistics = canViewArea('statistics');
   const coworkersLink = document.querySelector('.sidebar a[data-tab="coworkers"]');
   if (coworkersLink) coworkersLink.hidden = !showCoworkers;
   const contractorsLink = document.querySelector('.sidebar a[data-tab="contractors"]');
   if (contractorsLink) contractorsLink.hidden = !showContractors;
+  const statisticsLink = document.querySelector('.sidebar a[data-tab="statistics"]');
+  if (statisticsLink) statisticsLink.hidden = !showStatistics;
   const peopleGroup = document.querySelector('.sidebar-group');
   if (peopleGroup) peopleGroup.hidden = !(showCoworkers || showContractors);
 }

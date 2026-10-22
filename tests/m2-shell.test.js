@@ -93,14 +93,17 @@ test('app.js: renames and no leftover v2 wording in user-facing strings', () => 
   assert.match(src, /workOrders: 'Service order',/);
 });
 
-test('app.js: the statistics placeholder renders Coming soon; people pages arrive in M5', () => {
+test('app.js: statistics and the people pages are real routes (M5/M6b)', () => {
   const src = read('app.js');
-  assert.match(src, /function renderComingSoon\(tab\)/);
-  assert.match(src, /statistics: \{/);
   assert.match(src, /root === 'statistics'\)/);
   // The last-tab restore accepts the new tabs.
   assert.match(src, /'coworkers', 'contractors', 'statistics'\]\.includes\(last\)/);
-  // People are real pages now (V3-M5): their routes render, not placeholders.
+  // Statistics really renders since V3-M6b; no placeholder is left.
+  assert.match(src, /function renderStatisticsMonitor\(\)/);
+  assert.match(src, /function renderStatisticsReports\(\)/);
+  assert.doesNotMatch(src, /function renderComingSoon\(tab\)/);
+  assert.doesNotMatch(src, /blurb: 'Statistics arrive in a coming update/);
+  // People are real pages since V3-M5.
   assert.match(src, /function renderCoworkers\(route\)/);
   assert.match(src, /function renderContractors\(route\)/);
   assert.doesNotMatch(src, /blurb: 'Coworkers arrive in a coming update/);

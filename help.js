@@ -173,6 +173,9 @@ function helpGlossarySection(h) {
       ['Machine photos', 'Photos kept on the machine’s own page: add them under Photos and manuals on the machine form; they show as a gallery on the machine detail page.'],
       ['Manuals', 'PDF manuals kept on a machine’s page. The machine detail lists each manual with its file name and size, plus an Open link that opens it in a new tab.'],
       ['Paused PM', 'The PM tasks of a machine that is In storage or Retired are paused: they do not count as overdue or due soon, and they sit in the “Paused” group on the Preventive Maintenance page. Set the machine back to Running and the tasks resume with their due dates unchanged.'],
+      ['Status monitor', 'The live tab of the Statistics page: tiles counting machines by status (Running, Down, In storage, Retired — tap one to open the filtered Machines list), the “Down now” table of every machine that is down (how long, its oldest open breakdown order and who is assigned), longest first, and the Today strip with service orders opened today, closed today, overdue now and PM due today. It refreshes after every sync.'],
+      ['MTTR', 'Mean time to repair: the average hours from when a breakdown was reported to when it was completed, over the chosen Statistics report range. Shown as “—” when nothing was completed in the range.'],
+      ['PM compliance', 'The share of PM service orders completed in the Statistics report range that were finished on or before their due date at the time.'],
       ['Overdue', 'Past its due date and not done yet.'],
       ['Due soon', 'Due within the next 3 days.'],
       ['Open', 'Logged, but nobody has started on it yet.'],
@@ -245,6 +248,14 @@ function helpHowTo(h) {
         ' — People → Outside Contractors → + Add contractor: company, trade, contact person and the machines they service. Open a contractor to see the service orders they worked on and their hours.',
       ],
       [
+        'See what is down right now',
+        ' — Statistics → Status monitor: the tiles count machines by status (tap one to open the filtered Machines list), the “Down now” table lists every machine that is down with its type, down since, oldest open breakdown order, assignees and hours down (longest first, “All machines are running” when none is down), and the Today strip counts service orders opened and closed today, overdue now and PM due today.',
+      ],
+      [
+        'Read the statistics reports',
+        ' — Statistics → Reports and pick Last 30, 90 or 365 days: KPI tiles (open service orders, overdue, MTTR, PM compliance, downtime hours, labour hours) and charts for service orders by status and priority, created vs completed per week, downtime hours by machine type, top machines by breakdowns (with MTBF days), and labour hours by outside contractor and coworker. Every chart has a Show table toggle with the same numbers as an accessible table, and an Export CSV button; contractor costs show only for roles with the Contractor rates permission.',
+      ],
+      [
         'Call or copy a contact',
         ' — on a coworker or contractor page, phone numbers are call links and email addresses are mail links. The Copy button next to them copies the text; if copying is blocked, the text is selected so you can copy it yourself.',
       ],
@@ -310,7 +321,7 @@ function helpDesktop(h) {
     h(
       'p',
       {},
-      'On a wide screen (1024 px or more), the app shows a dark sidebar on the left in place of the bottom tab bar, lists turn into tables you can sort by clicking a column header, and opening a row shows its details in a pane beside the list. On Service Orders you can also switch between List, Board and Calendar views; filters and pagination sit above the table, and forms (new or edit) open in a panel that slides in from the right — Esc closes it after a “Discard changes?” check when anything is unsaved. The top bar has a global search box that finds service orders, machines, parts and people; pick a result with the arrow keys and press Enter. Coworkers and Outside Contractors live under People in the sidebar. The sidebar can be collapsed to an icon rail with the button at its top. On phones the bottom bar has Home, Orders, Prev. Maint., Machines and More; the Service Orders filters open as a sheet from the bottom.',
+      'On a wide screen (1024 px or more), the app shows a dark sidebar on the left in place of the bottom tab bar, lists turn into tables you can sort by clicking a column header, and opening a row shows its details in a pane beside the list. On Service Orders you can also switch between List, Board and Calendar views; filters and pagination sit above the table, and forms (new or edit) open in a panel that slides in from the right — Esc closes it after a “Discard changes?” check when anything is unsaved. The top bar has a global search box that finds service orders, machines, parts and people; pick a result with the arrow keys and press Enter. Statistics (Status monitor and Reports) sits between Preventive Maintenance and Machines in the sidebar; Coworkers and Outside Contractors live under People in the sidebar. The sidebar can be collapsed to an icon rail with the button at its top. On phones the bottom bar has Home, Orders, Prev. Maint., Machines and More; the Service Orders filters open as a sheet from the bottom.',
     ),
     h('p', {}, 'Keyboard shortcuts (desktop only — they never fire while you are typing in a text field):'),
     helpShortcutsTable(h),
