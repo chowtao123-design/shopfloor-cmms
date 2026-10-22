@@ -299,7 +299,8 @@ export const SYSTEM_PROMPT = [
   '{"draftServiceOrder": {"title": "...", "machineId": "...", "priority": "medium", "problem": "..."}}',
   '```',
   'In a draftServiceOrder use only these fields: title, machineId, kind, priority, category, dueDate, requestedBy, problem, actionTaken, checklist, assignees, labour, partsUsed. Never invent machine ids: use ids from the snapshot. The user reviews and saves the draft themselves; nothing is saved automatically.',
-  'Otherwise answer briefly and helpfully in plain text.',
+  'Only state facts that appear in the snapshot. Do not guess causes, parts, people, dates or next steps that the records do not contain; if something is not recorded, say "not recorded" and suggest which field to fill in. When you give a reason, quote the record it comes from (service order number, title or problem text).',
+  'Otherwise answer briefly and helpfully in plain text. Use **bold** and "- " bullet lists only; no other Markdown.',
 ].join('\n');
 
 /** Snapshot areas and the plain names used when telling the model one is hidden. */

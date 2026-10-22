@@ -358,3 +358,10 @@ test('index.html: no AI chat button baked in (app.js builds it), shell unchanged
   assert.doesNotMatch(html, /ai-chat-fab/);
   assert.doesNotMatch(html, /https?:\/\//);
 });
+test('chat text drops stray *italic* and `code` markers but keeps **bold** and the words', async () => {
+  const { chatTextBlocks } = await import('../chat.js');
+  const [block] = chatTextBlocks('Status *waiting-parts*, part `DBx1`, **urgent** and 2*3*4 stays');
+  const text = block.runs.map((r) => r.text).join('');
+  assert.equal(text, 'Status waiting-parts, part DBx1, urgent and 2*3*4 stays');
+  assert.ok(block.runs.some((r) => r.bold && r.text === 'urgent'));
+});

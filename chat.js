@@ -58,8 +58,10 @@ function boldRuns(text) {
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index];
     if (part === '') continue;
-    // Odd indexes sit between two ** markers and render bold.
-    runs.push({ text: part, bold: index % 2 === 1 });
+    // Odd indexes sit between two ** markers and render bold. Models also emit *italic*
+    // and `code` despite the prompt: keep the words, drop the stray markers.
+    const clean = part.replace(/(^|[^*\w])\*([^*\n]+?)\*(?=[^*\w]|$)/g, '$1$2').replace(/`([^`\n]+)`/g, '$1');
+    runs.push({ text: clean, bold: index % 2 === 1 });
   }
   return runs;
 }
