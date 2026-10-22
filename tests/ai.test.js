@@ -13,17 +13,21 @@ import { ApiError } from '../server/records.js';
 import { startServer } from '../server/server.js';
 import {
   OPENCODE_DISABLED_TOOLS,
+  SYSTEM_PROMPT,
+  aiSystemPrompt,
   buildContext,
   callOpenAICompatible,
   sendOpencodeMessage,
 } from '../server/ai.js';
 
 /**
- * V3-M7 server tests (SPEC-v3.md section 9): AI configuration with secrets
- * never returned, chat history scoped to the owner, rate limiting, the
- * opencode and OpenAI-compatible providers against fake providers started
- * with node:http on port 0, the read-only context builder, draft service
- * order parsing and provider failures mapping to a friendly 502.
+ * V3-M7/M7b server tests (SPEC-v3.md section 9 with section 13): AI
+ * configuration with secrets never returned, chat history scoped to the
+ * owner, rate limiting, the opencode and OpenAI-compatible providers
+ * against fake providers started with node:http on port 0, the read-only
+ * context builder (only areas the user's role can Read), the per-role
+ * system prompt, draft service order parsing and provider failures
+ * mapping to a friendly 502.
  */
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -48,6 +52,12 @@ let base;
 let anna; // admin
 let ben; // tech
 let cara; // tech, used for the rate-limit test
+let dave; // custom role: everyone read, parts and contractorRates none
+let eve; // custom role: contractors and machines read, contractorRates none
+let fred; // custom role: contractors and contractorRates read
+let gina; // custom role: everything read except serviceOrders
+let hal; // custom role: machines read, aiAssistant none
+let ivan; // custom role: serviceOrders read, machines none
 
 function setCookies(res) {
   if (typeof res.headers.getSetCookie === 'function') return res.headers.getSetCookie();
@@ -291,9 +301,55 @@ before(async () => {
     role: 'tech',
     passwordHash: auth.hashPassword('cara-password-1'),
   });
+  // Custom roles for the AI context tests (SPEC-v3.md sections 9 and 13):
+  // created through the store helpers, like the roles API would.
+  const customRole = (name, permissions) =>
+    handle.store.createRole({ name, permissions, updatedBy: null });
+  const customUser = (username, roleId) =>
+    handle.store.createUser({
+      username,
+      displayName: username,
+      roleId,
+      passwordHash: auth.hashPassword(`${username}-password-1`),
+    });
+  customUser('dave', customRole('AI No Parts', {
+    serviceOrders: 'read',
+    pm: 'read',
+    machines: 'read',
+    coworkers: 'read',
+    contractors: 'read',
+    aiAssistant: 'read',
+  }).id);
+  customUser('eve', customRole('AI No Rates', {
+    machines: 'read',
+    contractors: 'read',
+  }).id);
+  customUser('fred', customRole('AI Rates Reader', {
+    contractors: 'read',
+    contractorRates: 'read',
+  }).id);
+  customUser('gina', customRole('AI No Orders', {
+    pm: 'read',
+    machines: 'read',
+    parts: 'read',
+    coworkers: 'read',
+    contractors: 'read',
+  }).id);
+  customUser('hal', customRole('AI Mute', {
+    machines: 'read',
+  }).id);
+  customUser('ivan', customRole('AI Orders Only', {
+    serviceOrders: 'read',
+  }).id);
   anna = await login('anna', 'anna-password-1');
   ben = await login('ben', 'ben-password-1');
   cara = await login('cara', 'cara-password-1');
+  dave = await login('dave', 'dave-password-1');
+  eve = await login('eve', 'eve-password-1');
+  fred = await login('fred', 'fred-password-1');
+  gina = await login('gina', 'gina-password-1');
+  hal = await login('hal', 'hal-password-1');
+  ivan = await login('ivan', 'ivan-password-1');
   await createFixtures();
 });
 
@@ -462,9 +518,11 @@ Ask Ace Juki Service if it persists.`,
   assert.ok(system.content.includes('Broken take-up lever'), 'overdue order in the context');
   assert.ok(system.content.includes('Ace Juki Service'), 'contractor matched by keyword');
 
-  // Secrets and admin-only rates are never sent for a tech user (SPEC-v3.md 5, 9).
+  // Secrets are never sent. The old admin-only rate rule is replaced by the
+  // roles model (SPEC-v3.md 13.1): the Technician role has contractorRates
+  // Write, so ben's context does include the rate.
   const capturedText = JSON.stringify(captured.body);
-  assert.equal(capturedText.includes('126.5'), false, 'contractor hourlyRate hidden from techs');
+  assert.ok(capturedText.includes('126.5'), 'Technician role includes contractor hourlyRate');
   assert.equal(capturedText.includes('password_hash'), false);
   assert.equal(capturedText.includes('anna-password-1'), false);
   assert.equal(capturedText.includes('cara-password-1'), false);
@@ -695,11 +753,17 @@ test('AI chat rate limit: 20 per minute per user, then 429 with Retry-After', as
 // Context builder (unit-level, SPEC-v3.md section 9)
 // ---------------------------------------------------------------------------
 
-const techUser = { id: 'u-tech', username: 'ben', display_name: 'Ben Bolt', role: 'tech' };
-const adminUser = { id: 'u-admin', username: 'anna', display_name: 'Anna Admin', role: 'admin' };
+// Session-style user objects carrying {store, roleId} for can() (13.2).
+// Lazy: `handle` only exists once the before() hook has started the server.
+const contextUser = (username) => {
+  const row = handle.store.getUserByUsername(username);
+  return { ...row, roleId: row.role_id };
+};
+const techUser = () => contextUser('ben'); // Technician: write on every data area
+const adminUser = () => contextUser('anna'); // Administrator: everything
 
-test('buildContext: down machines, overdue orders, PM due, low stock; admin-only rate; no secrets', () => {
-  const tech = buildContext(handle.store, techUser, 'What is wrong with the Juki line?');
+test('buildContext: down machines, overdue orders, PM due, low stock; role-based rate; no secrets', () => {
+  const tech = buildContext(handle.store, techUser(), 'What is wrong with the Juki line?');
   assert.ok(tech.includes('Down machines'));
   assert.ok(tech.includes('Juki DDL-8700'));
   assert.ok(tech.includes('Overdue service orders'));
@@ -707,24 +771,24 @@ test('buildContext: down machines, overdue orders, PM due, low stock; admin-only
   assert.ok(tech.includes('PM Bernina looper oil'));
   assert.ok(tech.includes('Belt DIN 2'));
   assert.ok(tech.includes('Ace Juki Service'), 'contractor matched by keyword');
-  assert.equal(tech.includes('126.5'), false, 'hourlyRate hidden from techs');
+  assert.ok(tech.includes('126.5'), 'Technician role sees contractor hourlyRate');
   assert.equal(tech.includes('password_hash'), false);
   assert.equal(tech.includes('anna-password-1'), false);
   assert.ok(tech.length <= 12000);
 
-  const admin = buildContext(handle.store, adminUser, 'What is wrong with the Juki line?');
-  assert.ok(admin.includes('126.5'), 'admins see hourlyRate');
+  const admin = buildContext(handle.store, adminUser(), 'What is wrong with the Juki line?');
+  assert.ok(admin.includes('126.5'), 'Administrator sees hourlyRate');
   assert.ok(admin.length <= 12000);
 });
 
 test('buildContext: paused PM (retired machine) excluded from PM due', () => {
-  const context = buildContext(handle.store, techUser, 'Can anything slip?');
+  const context = buildContext(handle.store, techUser(), 'Can anything slip?');
   assert.ok(context.includes('PM Bernina looper oil'));
   assert.equal(context.includes('PM Pfaff press cleaning'), false, 'retired machine PM stays paused');
 });
 
 test('buildContext: keyword matches find related records across stores', () => {
-  const context = buildContext(handle.store, techUser, 'Where are the bernina belts?');
+  const context = buildContext(handle.store, techUser(), 'Where are the bernina belts?');
   assert.ok(context.includes('Records matching words of the question'));
   assert.ok(context.includes('Bernina 123 overlock'));
   assert.ok(context.includes('Belt DIN 2'));
@@ -740,7 +804,149 @@ test('buildContext: capped at 12000 characters even with many records', async ()
     });
     assert.equal(res.status, 200);
   }
-  const context = buildContext(handle.store, techUser, 'everything about filler machines and more words');
+  const context = buildContext(handle.store, techUser(), 'everything about filler machines and more words');
   assert.ok(context.length > 1000, 'cushion: context actually got big before capping');
   assert.ok(context.length <= 12000, `context must be capped, got ${context.length}`);
+});
+
+// ---------------------------------------------------------------------------
+// AI context respects roles (SPEC-v3.md sections 9 and 13)
+// ---------------------------------------------------------------------------
+
+test('buildContext: parts none means no parts data, even when the question names a part', () => {
+  const question = 'What about the Belt DIN 2 part?';
+  const daveContext = buildContext(handle.store, contextUser('dave'), question);
+  assert.equal(daveContext.includes('Belt DIN 2'), false, 'no part record for a parts-none role');
+  assert.equal(daveContext.includes('BD2'), false, 'no part number either');
+  assert.equal(daveContext.includes('Low-stock parts'), false, 'no low-stock section');
+  assert.ok(daveContext.includes('Juki DDL-8700'), 'machines are still readable');
+  // The same question does surface the part for a role that can read parts.
+  assert.ok(buildContext(handle.store, techUser(), question).includes('Belt DIN 2'));
+});
+
+test('buildContext: contractors readable without contractorRates shows no hourlyRate', () => {
+  const context = buildContext(handle.store, contextUser('eve'), 'Who services the Juki machines?');
+  assert.ok(context.includes('Ace Juki Service'), 'contractor visible to a contractors-read role');
+  assert.equal(context.includes('hourlyRate'), false, 'no rate key without contractorRates');
+  assert.equal(context.includes('126.5'), false, 'no rate value without contractorRates');
+});
+
+test('buildContext: contractorRates read includes hourlyRate', () => {
+  const context = buildContext(handle.store, contextUser('fred'), 'Who services the Juki machines and what do they charge?');
+  assert.ok(context.includes('Ace Juki Service'));
+  assert.ok(context.includes('hourlyRate'));
+  assert.ok(context.includes('126.5'));
+});
+
+test('buildContext: serviceOrders none means no service orders anywhere in the snapshot', () => {
+  const context = buildContext(handle.store, contextUser('gina'), 'Everything about the broken take-up lever on the Juki?');
+  assert.equal(context.includes('Open service orders'), false);
+  assert.equal(context.includes('Overdue service orders'), false);
+  assert.equal(context.includes('Broken take-up lever'), false, 'no keyword match on hidden orders');
+  assert.equal(context.includes('service order'), false, 'no matched-record entry either');
+  assert.ok(context.includes('Juki DDL-8700'), 'down machines are still readable');
+});
+
+test('buildContext: an order on a machine the user cannot read shows "a machine"', () => {
+  const context = buildContext(handle.store, contextUser('ivan'), 'What is broken on the line?');
+  assert.ok(context.includes('Overdue service orders'), 'service orders are readable');
+  assert.ok(context.includes('Broken take-up lever'));
+  assert.ok(context.includes('"machine":"a machine"'), 'machine replaced by a placeholder');
+  assert.ok(context.includes('"machineId":null'), 'no machine id leak');
+  assert.equal(context.includes('Juki DDL-8700'), false, 'no machine name leak');
+  assert.equal(context.includes('Down machines'), false, 'no machines section');
+});
+
+test('buildContext: Administrator sees everything', () => {
+  const context = buildContext(handle.store, adminUser(), 'Everything about the Juki line: orders, PM, parts, people, contractors and rates?');
+  for (const part of [
+    'Overdue service orders',
+    'Broken take-up lever',
+    'Down machines',
+    'Juki DDL-8700',
+    'PM tasks due within 7 days',
+    'PM Bernina looper oil',
+    'Low-stock parts',
+    'Belt DIN 2',
+    'Maria Thread',
+    'Ace Juki Service',
+    '126.5',
+  ]) {
+    assert.ok(context.includes(part), `Administrator context includes ${part}`);
+  }
+});
+
+test('aiSystemPrompt: names the areas hidden from the role, verbatim prompt otherwise', () => {
+  const adminPrompt = aiSystemPrompt(handle.store, adminUser());
+  assert.equal(adminPrompt, SYSTEM_PROMPT, 'nothing hidden, no extra note');
+  assert.equal(adminPrompt.includes('does not have access'), false);
+
+  const davePrompt = aiSystemPrompt(handle.store, contextUser('dave'));
+  assert.ok(davePrompt.startsWith(SYSTEM_PROMPT));
+  assert.ok(davePrompt.includes('does not have access'));
+  assert.ok(davePrompt.includes('parts and stock'), 'hidden parts named');
+  assert.ok(davePrompt.includes('contractor rates'), 'hidden rates named');
+
+  const evePrompt = aiSystemPrompt(handle.store, contextUser('eve'));
+  assert.ok(evePrompt.startsWith(SYSTEM_PROMPT));
+  assert.ok(evePrompt.includes('contractor rates'), 'rates hidden although contractors are readable');
+  assert.equal(evePrompt.includes('outside contractors'), false, 'readable areas are not named as hidden');
+  // Machines hidden but contractors readable: both notes in place.
+  assert.ok(aiSystemPrompt(handle.store, contextUser('ivan')).includes('machines'));
+
+  const techPrompt = aiSystemPrompt(handle.store, techUser());
+  assert.equal(techPrompt, SYSTEM_PROMPT, 'Technician reads every data area');
+});
+
+test('chat sends only readable areas in the context and the hidden-areas note in the prompt', async () => {
+  const set = await putAiConfig(anna, {
+    provider: 'openai-compatible',
+    openai: { baseURL: openaiFake.url, model: 'test-model', apiKey: OPENAI_API_KEY },
+  });
+  assert.equal(set.res.status, 200);
+  openaiFake.state.chatRequests.length = 0;
+  openaiFake.state.chatReply = { choices: [{ message: { content: 'Sure thing.' } }] };
+  const { res, body } = await chat(dave, 'Where are the bernina belts and what do they cost?');
+  assert.equal(res.status, 200, `chat must succeed, got ${JSON.stringify(body)}`);
+
+  const captured = openaiFake.state.chatRequests[0];
+  assert.ok(captured, 'fake provider saw the chat request');
+  const system = captured.body.messages[0];
+  assert.equal(system.role, 'system');
+  assert.ok(system.content.includes('does not have access'));
+  assert.ok(system.content.includes('parts and stock'));
+  assert.ok(system.content.includes('contractor rates'));
+  assert.ok(system.content.includes('Bernina 123 overlock'), 'readable machines stay in the context');
+  assert.equal(system.content.includes('Belt DIN 2'), false, 'no parts data for a parts-none role');
+  assert.equal(system.content.includes('126.5'), false, 'no rates for a rates-none role');
+});
+
+test('aiAssistant none: 403 on chat, status and history; Technician still allowed', async () => {
+  const status = await api(hal, '/api/ai/status');
+  assert.equal(status.res.status, 403);
+  assert.equal(status.body.error, 'forbidden');
+  assert.equal(status.body.area, 'aiAssistant');
+  assert.equal(status.body.needed, 'read');
+
+  const rejected = await api(hal, '/api/ai/chat', { method: 'POST', body: { message: 'hello there' } });
+  assert.equal(rejected.res.status, 403);
+  assert.equal(rejected.body.area, 'aiAssistant');
+
+  const history = await api(hal, '/api/ai/history');
+  assert.equal(history.res.status, 403);
+  assert.equal(history.body.area, 'aiAssistant');
+
+  // The chat 403 happens before the rate limit: hal burned no quota.
+  const cleared = await api(hal, '/api/ai/history', { method: 'DELETE' });
+  assert.equal(cleared.res.status, 403);
+
+  // Technician has aiAssistant Write and keeps access (settings Write is
+  // what /api/ai/config needs: Technician 403, Administrator 200).
+  const techStatus = await api(ben, '/api/ai/status');
+  assert.equal(techStatus.res.status, 200);
+  const techConfig = await api(ben, '/api/ai/config');
+  assert.equal(techConfig.res.status, 403);
+  assert.equal(techConfig.body.area, 'settings');
+  const adminConfig = await api(anna, '/api/ai/config');
+  assert.equal(adminConfig.res.status, 200);
 });

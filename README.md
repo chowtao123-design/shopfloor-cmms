@@ -232,9 +232,12 @@ How it behaves:
 - The server, not the browser, talks to the provider. Each question sends a
   short explanation of the app plus a **read-only** snapshot: open and overdue
   service orders, down machines, PM due within 7 days, low-stock parts and up
-  to 20 records matching the question. Contractor rates and other people's
-  chats stay out unless you are an admin. The assistant cannot change any
-  data.
+  to 20 records matching the question — but only the areas your role can Read
+  (a machine you cannot read shows as "a machine"; contractor hourly rates and
+  costs need the *Contractor rates & costs* permission). The assistant is told
+  which areas are hidden from you, so it answers "you do not have access to X"
+  instead of guessing. Other people's chats stay out, and the assistant cannot
+  change any data.
 - It may propose a **draft service order** as a JSON block; nothing is saved
   until you review it and press Save.
 - Limit: 20 messages per minute per user (then a short cool-down).

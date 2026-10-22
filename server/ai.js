@@ -3,6 +3,7 @@
 import crypto from 'node:crypto';
 
 import { ApiError, UUID_RE } from './records.js';
+import { can, storeArea } from './permissions.js';
 
 /**
  * AI assistant server parts (SPEC-v3.md section 9): provider
@@ -301,6 +302,40 @@ export const SYSTEM_PROMPT = [
   'Otherwise answer briefly and helpfully in plain text.',
 ].join('\n');
 
+/** Snapshot areas and the plain names used when telling the model one is hidden. */
+const CONTEXT_AREA_LABELS = [
+  ['serviceOrders', 'service orders'],
+  ['pm', 'preventive maintenance'],
+  ['machines', 'machines'],
+  ['parts', 'parts and stock'],
+  ['coworkers', 'coworkers'],
+  ['contractors', 'outside contractors'],
+];
+
+/**
+ * The system prompt for one signed-in user (SPEC-v3.md section 9 with
+ * 13): the shared prompt plus, when areas are hidden from the user's role,
+ * a note naming them so the assistant answers that the user does not have
+ * access to that area instead of guessing. Rates are a note of their own
+ * because contractors may be readable while rates are not.
+ */
+export function aiSystemPrompt(store, user) {
+  const who = { ...user, store };
+  const hidden = CONTEXT_AREA_LABELS.filter(([area]) => !can(who, area, 'read')).map(([, label]) => label);
+  const notes = [];
+  if (hidden.length > 0) {
+    notes.push(
+      `The signed-in user does not have access to the following areas of the app: ${hidden.join(', ')}. Nothing from those areas appears in the data snapshot. If a question needs one of them, answer that the user does not have access to that area instead of guessing.`
+    );
+  }
+  if (!can(who, 'contractorRates', 'read')) {
+    notes.push(
+      'Contractor hourly rates and costs are not available to this user; if asked about them, answer that the user does not have access to contractor rates instead of guessing.'
+    );
+  }
+  return notes.length === 0 ? SYSTEM_PROMPT : `${SYSTEM_PROMPT}\n${notes.join('\n')}`;
+}
+
 function pad2(value) {
   return String(value).padStart(2, '0');
 }
@@ -331,9 +366,14 @@ function machineLabel(machine) {
   return machine.data.name ?? machine.id;
 }
 
-function workOrderEntry(record, machines) {
+/**
+ * Service-order snapshot entry. When the user cannot read machines, a
+ * referenced machine shows up as 'a machine' without its details (SPEC-v3.md
+ * 13 with section 9: only areas the role can Read enter the context).
+ */
+function workOrderEntry(record, machines, machinesReadable) {
   const data = record.data;
-  const machine = machines.get(data.machineId) ?? null;
+  const machine = machinesReadable ? machines.get(data.machineId) ?? null : null;
   return {
     id: record.id,
     number: data.number ?? null,
@@ -341,8 +381,8 @@ function workOrderEntry(record, machines) {
     status: data.status,
     priority: data.priority,
     category: data.category,
-    machineId: data.machineId ?? null,
-    machine: machineLabel(machine),
+    machineId: machinesReadable ? data.machineId ?? null : null,
+    machine: machinesReadable ? machineLabel(machine) : 'a machine',
     dueDate: data.dueDate ?? null,
     problem: clip(data.problem, 400),
   };
@@ -375,14 +415,15 @@ function partEntry(record) {
   };
 }
 
-function pmTaskEntry(record, machines) {
+/** PM task entry; machine references follow machines readability like service orders. */
+function pmTaskEntry(record, machines, machinesReadable) {
   const data = record.data;
-  const machine = machines.get(data.machineId) ?? null;
+  const machine = machinesReadable ? machines.get(data.machineId) ?? null : null;
   return {
     id: record.id,
     title: clip(data.title, 120),
-    machineId: data.machineId ?? null,
-    machine: machineLabel(machine),
+    machineId: machinesReadable ? data.machineId ?? null : null,
+    machine: machinesReadable ? machineLabel(machine) : 'a machine',
     intervalDays: data.intervalDays ?? null,
     lastDoneAt: data.lastDoneAt ?? null,
     instructions: clip(data.instructions, 300),
@@ -403,8 +444,8 @@ function coworkerEntry(record) {
   };
 }
 
-/** Contractor entry; hourlyRate is included for admins only (SPEC-v3.md 5/9). */
-function contractorEntry(record, isAdmin) {
+/** Contractor entry; hourlyRate only with contractorRates Read (SPEC-v3.md 13.1). */
+function contractorEntry(record, includeRate) {
   const data = record.data;
   const entry = {
     id: record.id,
@@ -416,7 +457,7 @@ function contractorEntry(record, isAdmin) {
     machineIds: Array.isArray(data.machineIds) ? data.machineIds : undefined,
     active: data.active !== false,
   };
-  if (isAdmin) entry.hourlyRate = data.hourlyRate ?? null;
+  if (includeRate) entry.hourlyRate = data.hourlyRate ?? null;
   return entry;
 }
 
@@ -449,24 +490,33 @@ function questionKeywords(question) {
 
 /**
  * Build the read-only data snapshot for one question (SPEC-v3.md
- * section 9): open and overdue service orders, down machines, PM due
- * within 7 days, low-stock parts and up to 20 records matching keywords
- * of the question. Never reads users, sessions or files, and hides
- * contractors.hourlyRate from non-admins. Capped at CONTEXT_MAX_CHARS.
+ * section 9 with section 13): open and overdue service orders, down
+ * machines, PM due within 7 days, low-stock parts and up to 20 records
+ * matching keywords of the question. A store's records enter the snapshot
+ * only when the user's role can Read that store's area (`can(user,
+ * storeArea(store), 'read')`); service orders and PM tasks referencing a
+ * machine the user cannot read show 'a machine' without its details.
+ * Contractor hourlyRate (and any cost) needs `contractorRates` Read.
+ * Never reads users, sessions or files. Capped at CONTEXT_MAX_CHARS.
  *
  * @param {object} store open store handle
- * @param {{id: string, role: string}} user the signed-in user row
+ * @param {{id: string, roleId: string, store?: object}} user the signed-in user
  * @param {string} question the user's message
  */
 export function buildContext(store, user, question, { now = new Date() } = {}) {
-  const isAdmin = user.role === 'admin';
-  const workOrders = store.listRecords('workOrders');
-  const machinesList = store.listRecords('machines');
-  const parts = store.listRecords('parts');
-  const pmTasks = store.listRecords('pmTasks');
-  const coworkers = store.listRecords('coworkers');
-  const contractors = store.listRecords('contractors');
+  const who = { ...user, store };
+  const read = (storeName) => can(who, storeArea(storeName), 'read');
+  const readMachines = can(who, 'machines', 'read');
+  const includeRate = can(who, 'contractorRates', 'read');
+  const workOrders = read('workOrders') ? store.listRecords('workOrders') : [];
+  const machinesList = readMachines ? store.listRecords('machines') : [];
+  const parts = read('parts') ? store.listRecords('parts') : [];
+  const pmTasks = read('pmTasks') ? store.listRecords('pmTasks') : [];
+  const coworkers = read('coworkers') ? store.listRecords('coworkers') : [];
+  const contractors = read('contractors') ? store.listRecords('contractors') : [];
 
+  // Only machines the user can read: references to any other machine show
+  // as 'a machine' in the entries below (machinesReadable).
   const machines = new Map(machinesList.map((record) => [record.id, record]));
   const lines = [];
   const addSection = (title, entries, cap) => {
@@ -482,7 +532,7 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
   const openOrders = workOrders
     .filter((record) => record.data.status !== 'done')
     .map((record) => {
-      const entry = workOrderEntry(record, machines);
+      const entry = workOrderEntry(record, machines, readMachines);
       entry.overdue =
         typeof entry.dueDate === 'string' && entry.dueDate !== '' && entry.dueDate < today;
       return entry;
@@ -511,7 +561,7 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
           ? isoAddDays(record.data.lastDoneAt, Number(record.data.intervalDays) || 0)
           : today;
       if (dueDate === null || dueDate > in7Days) return null;
-      return { ...pmTaskEntry(record, machines), dueDate, overdue: dueDate < today };
+      return { ...pmTaskEntry(record, machines, readMachines), dueDate, overdue: dueDate < today };
     })
     .filter((entry) => entry !== null)
     .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
@@ -525,12 +575,12 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
   const keywords = questionKeywords(question);
   if (keywords.length > 0) {
     const searchable = [
-      ...workOrders.map((record) => ({ store: 'service order', entry: workOrderEntry(record, machines) })),
+      ...workOrders.map((record) => ({ store: 'service order', entry: workOrderEntry(record, machines, readMachines) })),
       ...machinesList.map((record) => ({ store: 'machine', entry: machineEntry(record) })),
       ...parts.map((record) => ({ store: 'part', entry: partEntry(record) })),
-      ...pmTasks.map((record) => ({ store: 'pm task', entry: pmTaskEntry(record, machines) })),
+      ...pmTasks.map((record) => ({ store: 'pm task', entry: pmTaskEntry(record, machines, readMachines) })),
       ...coworkers.map((record) => ({ store: 'coworker', entry: coworkerEntry(record) })),
-      ...contractors.map((record) => ({ store: 'contractor', entry: contractorEntry(record, isAdmin) })),
+      ...contractors.map((record) => ({ store: 'contractor', entry: contractorEntry(record, includeRate) })),
     ];
     const matches = [];
     for (const record of searchable) {
@@ -998,8 +1048,9 @@ export async function aiPostChat(ctx, req, body) {
       content: text,
       at: aiAt(),
     });
+    const system = aiSystemPrompt(store, user);
     const messages = [
-      { role: 'system', content: `${SYSTEM_PROMPT}\n\nRead-only data snapshot:\n${context}` },
+      { role: 'system', content: `${system}\n\nRead-only data snapshot:\n${context}` },
       ...prior,
       { role: 'user', content: text },
     ];
@@ -1019,7 +1070,7 @@ export async function aiPostChat(ctx, req, body) {
       at: aiAt(),
     });
     reply = await sendOpencodeMessage(config.opencode, sessionId, {
-      system: SYSTEM_PROMPT,
+      system: aiSystemPrompt(store, user),
       parts: [
         { type: 'text', text: `Read-only data snapshot:\n${context}` },
         { type: 'text', text },
