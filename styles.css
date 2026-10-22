@@ -3524,3 +3524,11 @@ body.logged-out .global-search {
     overflow-wrap: anywhere;
   }
 }
+
+/* Emails and phone numbers in tables: break at sensible points, never mid-word. */
+.data-table [data-col="email"],
+.data-table [data-col="phone"] {
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: nowrap;
+}
