@@ -447,7 +447,8 @@ test('styles.css: board, calendar, filter chips and priority badges exist', () =
 
 test('sw.js: CACHE_VERSION bumped for the new shell', () => {
   const src = read('sw.js');
-  assert.match(src, /const CACHE_VERSION = 13;/);
+  // At least the version this milestone shipped; later fixes bump it further.
+  assert.ok(Number(src.match(/const CACHE_VERSION = (\d+);/)?.[1]) >= 13);
 });
 
 test('help.js: documents the views, filters and the new form sections', () => {

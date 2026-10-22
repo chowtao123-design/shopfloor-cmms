@@ -173,7 +173,8 @@ test('manifest keeps the default app name', () => {
 test('sw.js: cache version bumped and the shell still caches the client files', () => {
   const src = read('sw.js');
   // Bumped with each shell change (13 in V3-M3).
-  assert.match(src, /CACHE_VERSION = 13;/);
+  // At least the version this milestone shipped; later fixes bump it further.
+  assert.ok(Number(src.match(/const CACHE_VERSION = (\d+);/)?.[1]) >= 13);
   for (const file of ['index.html', 'styles.css', 'app.js', 'help.js', 'db.js', 'sync.js']) {
     assert.match(src, new RegExp(`'\\./${file.replace('.', '\\.')}'`), file);
   }
