@@ -55,6 +55,19 @@ const toastRoot = document.getElementById('toast-root');
 const syncPill = document.getElementById('sync-pill');
 const userMenuButton = document.getElementById('user-menu-button');
 
+/* V3-M2 shell elements (SPEC-v3.md sections 8 and 10). */
+const sidebarToggle = document.getElementById('sidebar-toggle');
+const sidebarAppName = document.getElementById('sidebar-app-name');
+const sidebarLogo = document.getElementById('sidebar-logo');
+const sidebarMark = document.getElementById('sidebar-brand-mark');
+const headerBrandLogo = document.getElementById('header-brand-logo');
+const headerBrandName = document.getElementById('header-brand-name');
+const headerBrandMark = document.getElementById('header-brand-mark');
+const globalSearchBox = document.getElementById('global-search');
+const globalSearchInput = document.getElementById('global-search-input');
+const globalSearchResults = document.getElementById('global-search-results');
+const moreButton = document.getElementById('more-button');
+
 const DESKTOP_QUERY = '(min-width: 1024px)';
 const desktopMedia = window.matchMedia(DESKTOP_QUERY);
 // Phone header (SPEC-v2.md 15.4 item 2): same boundary as CSS max-width: 767.98px.
@@ -77,6 +90,7 @@ let userMenuElement = null;
 const LAST_BACKUP_KEY = 'maint-log:last-backup';
 const LAST_MACHINE_KEY = 'maint-log:last-machine';
 const LAST_TAB_KEY = 'maint-log:last-tab';
+const SIDEBAR_RAIL_KEY = 'maint-log:sidebar-rail';
 
 function storageGet(key) {
   try {
@@ -160,9 +174,81 @@ function showWarnings(warnings) {
   for (const warning of warnings || []) toast(warning, 'warn');
 }
 
+/* ---------- Branding (SPEC-v3.md section 8, client side) ----------
+   GET /api/branding is public; the name and logo show in the sidebar,
+   the tablet header and the login card, and feed document.title. The last
+   value is cached in IndexedDB (meta store) so it also works offline. */
+
+const DEFAULT_BRAND_NAME = 'Shopfloor CMMS';
+let branding = null;
+
+function brandName() {
+  return branding && branding.name ? branding.name : DEFAULT_BRAND_NAME;
+}
+
+function brandLogoUrl() {
+  return branding && branding.logoUrl ? branding.logoUrl : null;
+}
+
+function applyBranding(payload) {
+  if (!payload || typeof payload.name !== 'string') return;
+  branding = {
+    name: payload.name.trim() || DEFAULT_BRAND_NAME,
+    logoUrl: typeof payload.logoUrl === 'string' ? payload.logoUrl : null,
+  };
+  const logoUrl = brandLogoUrl();
+
+  if (sidebarAppName) sidebarAppName.textContent = brandName();
+  if (sidebarMark) sidebarMark.textContent = initialsOf(brandName()) || '··';
+  if (sidebarLogo) {
+    sidebarLogo.hidden = !logoUrl;
+    if (logoUrl && sidebarLogo.getAttribute('src') !== logoUrl) sidebarLogo.setAttribute('src', logoUrl);
+  }
+
+  if (headerBrandName) headerBrandName.textContent = brandName();
+  if (headerBrandMark) headerBrandMark.textContent = initialsOf(brandName()) || '··';
+  if (headerBrandLogo) {
+    headerBrandLogo.hidden = !logoUrl;
+    if (logoUrl && headerBrandLogo.getAttribute('src') !== logoUrl) headerBrandLogo.setAttribute('src', logoUrl);
+  }
+
+  decorateLoginCard();
+}
+
+/* The login card is rendered by login.js; branding is applied to it here. */
+function decorateLoginCard() {
+  if (!loginActive) return;
+  const heading = appMain.querySelector('.login-card h2');
+  if (!heading) return;
+  const logoUrl = brandLogoUrl();
+  const logo = logoUrl ? h('img', { class: 'brand-logo login-logo', src: logoUrl, alt: '' }) : null;
+  heading.replaceChildren(logo, brandName());
+}
+
+async function loadCachedBranding() {
+  try {
+    const cached = await db.getMeta('branding');
+    if (cached) applyBranding(cached);
+  } catch (error) {
+    console.warn('Could not read the cached branding:', error);
+  }
+}
+
+async function refreshBranding() {
+  try {
+    const response = await sync.api('GET', '/api/branding');
+    if (!response.ok || !response.data || typeof response.data.name !== 'string') return;
+    await db.setMeta('branding', response.data);
+    applyBranding(response.data);
+  } catch (error) {
+    // Offline or no server: keep the cached value (loaded on start).
+    console.warn('Could not load branding from the server:', error);
+  }
+}
+
 function setTitle(title) {
   pageTitle.textContent = title;
-  document.title = `${title} · Shop Maintenance Log`;
+  document.title = `${title} · ${brandName()}`;
 }
 
 async function refreshState() {
@@ -514,7 +600,7 @@ function createPartsEditor(initialPartsUsed = []) {
         {
           class: 'btn btn-small btn-ghost',
           type: 'button',
-          'aria-label': 'Remove part from this work order',
+          'aria-label': 'Remove part from this service order',
           onclick: () => row.remove(),
         },
         '×',
@@ -745,7 +831,7 @@ function machineRow(machine) {
       'div',
       { class: 'row-side' },
       statusPill(machine.status, LABELS.machineStatus),
-      h('span', {}, openCount === 1 ? '1 open job' : `${openCount} open jobs`),
+      h('span', {}, openCount === 1 ? '1 open service order' : `${openCount} open service orders`),
     ),
     h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
   );
@@ -979,7 +1065,7 @@ function partsTableColumns() {
 /* ---------- Work orders ---------- */
 
 function renderJobs(route) {
-  setTitle('Jobs');
+  setTitle('Service Orders');
   const requested = route.params.get('filter') || route.params.get('status') || 'active';
   const filter = ['active', 'all', ...WORK_ORDER_STATUSES, 'waiting'].includes(requested)
     ? requested
@@ -996,11 +1082,11 @@ function renderJobs(route) {
     if (orders.length === 0) {
       listHost.replaceChildren(
         emptyState(
-          searchQuery.trim() ? 'No matching jobs' : 'No jobs here',
+          searchQuery.trim() ? 'No matching service orders' : 'No service orders here',
           searchQuery.trim()
             ? 'Try a different search.'
             : 'Log a repair to keep track of what is open.',
-          filter === 'active' ? [h('a', { class: 'btn btn-primary', href: '#/jobs/new' }, '+ Log repair')] : [],
+          filter === 'active' ? [h('a', { class: 'btn btn-primary', href: '#/jobs/new' }, '+ Service order')] : [],
         ),
       );
       listHost.classList.remove('cards-only');
@@ -1022,7 +1108,7 @@ function renderJobs(route) {
 
   const chips = h(
     'div',
-    { class: 'chips', role: 'group', 'aria-label': 'Filter jobs by status' },
+    { class: 'chips', role: 'group', 'aria-label': 'Filter service orders by status' },
     ['active', 'open', 'in-progress', 'waiting', 'done', 'all'].map((value) => {
       const label =
         value === 'active'
@@ -1046,10 +1132,10 @@ function renderJobs(route) {
   );
 
   update();
-  const search = searchBox('Search jobs', (value) => update(value));
+  const search = searchBox('Search service orders', (value) => update(value));
 
   return page(
-    pageHead('Jobs', h('a', { class: 'btn btn-primary btn-small', href: '#/jobs/new' }, '+ Log repair')),
+    pageHead('Service Orders', h('a', { class: 'btn btn-primary btn-small', href: '#/jobs/new' }, '+ Service order')),
     search,
     chips,
     listHost,
@@ -1058,20 +1144,20 @@ function renderJobs(route) {
 }
 
 function renderJobNew(route) {
-  setTitle('Log repair');
+  setTitle('New service order');
   if (state.machines.length === 0) {
     return page(
-      pageHead('Log repair'),
+      pageHead('New service order'),
       emptyState(
         'Add a machine first',
-        'Every work order belongs to a machine or building item.',
+        'Every service order belongs to a machine or building item.',
         [h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine')],
       ),
     );
   }
   const preset = route.params.get('machine');
   return page(
-    pageHead('Log repair'),
+    pageHead('New service order'),
     workOrderForm({
       existing: null,
       quick: true,
@@ -1082,12 +1168,12 @@ function renderJobNew(route) {
 
 function renderJobDetail(route) {
   const order = workOrderById(route.segments[1]);
-  setTitle(order ? order.title : 'Job not found');
+  setTitle(order ? order.title : 'Service order not found');
   if (!order) {
     return page(
-      pageHead('Job not found'),
-      emptyState('That work order does not exist.', 'It may have been deleted.', [
-        h('a', { class: 'btn btn-primary', href: '#/jobs' }, 'Back to Jobs'),
+      pageHead('Service order not found'),
+      emptyState('That service order does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/jobs' }, 'Back to Service Orders'),
       ]),
     );
   }
@@ -1125,7 +1211,7 @@ function renderJobDetail(route) {
 
   async function deleteOrder() {
     const yes = await showConfirm({
-      title: 'Delete this work order?',
+      title: 'Delete this service order?',
       message: `"${order.title}" will be removed. This cannot be undone.`,
       confirmText: 'Delete',
       cancelText: 'Cancel',
@@ -1134,7 +1220,7 @@ function renderJobDetail(route) {
     if (!yes) return;
     await sync.deleteRecord('workOrders', order.id, order.version);
     await refreshState();
-    toast('Work order deleted.');
+    toast('Service order deleted.');
     navigate('#/jobs');
   }
 
@@ -1199,7 +1285,7 @@ function renderJobDetail(route) {
   const editForm = h(
     'details',
     { class: 'more' },
-    h('summary', {}, 'Edit work order'),
+    h('summary', {}, 'Edit service order'),
     workOrderForm({ existing: order, quick: false }),
   );
 
@@ -1244,7 +1330,7 @@ function renderJobDetail(route) {
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.25rem' } },
-      h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteOrder }, 'Delete work order'),
+      h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteOrder }, 'Delete service order'),
     ),
     historySection('workOrders', order.id),
   );
@@ -1322,7 +1408,7 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
   const partsEditor = createPartsEditor(base.partsUsed || []);
 
   const downCheckbox = h('input', { type: 'checkbox', checked: true });
-  const downLabel = h('label', { for: 'set-machine-down' }, 'Set machine to Down while this job is open');
+  const downLabel = h('label', { for: 'set-machine-down' }, 'Set machine to Down while this service order is open');
   downCheckbox.id = 'set-machine-down';
   const downRow = h('div', { class: 'check-row' }, downCheckbox, downLabel);
 
@@ -1385,7 +1471,7 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
   const saveButton = h(
     'button',
     { class: 'btn btn-primary', type: 'submit' },
-    isNew ? 'Save work order' : 'Save changes',
+    isNew ? 'Save service order' : 'Save changes',
   );
   const cancelHref = existing ? `#/jobs/${encodeURIComponent(existing.id)}` : '#/jobs';
   form.append(
@@ -1402,7 +1488,7 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
     errorBox.textContent = '';
     const title = titleInput.value.trim();
     if (!title) {
-      errorBox.textContent = 'Enter a short title for the job.';
+      errorBox.textContent = 'Enter a short title for the service order.';
       titleInput.focus();
       return;
     }
@@ -1416,7 +1502,7 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
       return;
     }
     if (!reportedInput.value) {
-      errorBox.textContent = 'Choose the date the job was reported.';
+      errorBox.textContent = 'Choose the date the service order was reported.';
       reportedInput.focus();
       return;
     }
@@ -1450,7 +1536,7 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
         !downRow.hidden && downCheckbox.checked && machine.status !== 'down';
       const result = await persistWorkOrderSave(existing, incoming, { setMachineDown });
       await maybeOfferRunning(result.order, wasDone);
-      toast(isNew ? 'Work order logged.' : 'Work order saved.');
+      toast(isNew ? 'Service order logged.' : 'Service order saved.');
       navigate(`#/jobs/${encodeURIComponent(result.order.id)}`);
     } catch (error) {
       errorBox.textContent = 'Could not save. Please try again.';
@@ -1545,19 +1631,14 @@ function renderMachines(route) {
   );
 }
 
-function renderMachineForm(route) {
-  const id = route.segments[1];
-  const editing = Boolean(id && id !== 'new');
-  const existing = editing ? machineById(id) : null;
-  setTitle(editing ? 'Edit machine' : 'Add machine');
-  if (editing && !existing) {
-    return page(
-      pageHead('Machine not found'),
-      emptyState('That machine does not exist.', 'It may have been deleted.', [
-        h('a', { class: 'btn btn-primary', href: '#/machines' }, 'Back to Machines'),
-      ]),
-    );
-  }
+function machineFormTitle(existing) {
+  return existing ? 'Edit machine' : 'Add machine';
+}
+
+/* Machine form body shared by the full page (< 1024 px) and the desktop
+   drawer (SPEC-v3.md section 10, drawer wired in render()). Returns the
+   form node plus an isDirty() probe for the drawer's discard check. */
+function machineFormBody(existing) {
   const base = existing || {
     name: '',
     type: DEFAULT_MACHINE_TYPE,
@@ -1687,7 +1768,29 @@ function renderMachineForm(route) {
     }
   });
 
-  return page(pageHead(editing ? 'Edit machine' : 'Add machine'), form);
+  let dirty = false;
+  form.addEventListener('input', () => {
+    dirty = true;
+  });
+
+  return { node: form, isDirty: () => dirty, title: machineFormTitle(existing) };
+}
+
+function renderMachineForm(route) {
+  const id = route.segments[1];
+  const editing = Boolean(id && id !== 'new');
+  const existing = editing ? machineById(id) : null;
+  setTitle(machineFormTitle(existing));
+  if (editing && !existing) {
+    return page(
+      pageHead('Machine not found'),
+      emptyState('That machine does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/machines' }, 'Back to Machines'),
+      ]),
+    );
+  }
+  const { node: form } = machineFormBody(existing);
+  return page(pageHead(machineFormTitle(existing)), form);
 }
 
 function renderMachineDetail(route) {
@@ -1718,8 +1821,8 @@ function renderMachineDetail(route) {
       title: 'Delete this machine?',
       message:
         open > 0
-          ? `${machine.name} still has ${open} open job${open === 1 ? '' : 's'}. The machine will be removed, but its work orders will stay in the log.`
-          : `${machine.name} will be removed. Its work order history will stay in the log.`,
+          ? `${machine.name} still has ${open} open service order${open === 1 ? '' : 's'}. The machine will be removed, but its service orders will stay in the log.`
+          : `${machine.name} will be removed. Its service order history will stay in the log.`,
       confirmText: 'Delete',
       cancelText: 'Cancel',
       danger: true,
@@ -1744,7 +1847,7 @@ function renderMachineDetail(route) {
     h('dd', {}, machine.serial || '—'),
     h('dt', {}, 'Location'),
     h('dd', {}, machine.location || '—'),
-    h('dt', {}, 'Open jobs'),
+    h('dt', {}, 'Open service orders'),
     h('dd', {}, String(openJobCount(state.workOrders, machine.id))),
     h('dt', {}, 'Notes'),
     h('dd', { class: 'pre' }, machine.notes || '—'),
@@ -1762,14 +1865,14 @@ function renderMachineDetail(route) {
     h(
       'div',
       { class: 'button-row' },
-      h('a', { class: 'btn btn-primary btn-small', href: `#/jobs/new?machine=${encodeURIComponent(machine.id)}` }, '+ Log repair'),
+      h('a', { class: 'btn btn-primary btn-small', href: `#/jobs/new?machine=${encodeURIComponent(machine.id)}` }, '+ Service order'),
       h('a', { class: 'btn btn-small', href: `#/machines/${encodeURIComponent(machine.id)}/edit` }, 'Edit machine'),
     ),
     h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
     sectionTitle('Repair history'),
     history.length
       ? h('div', { class: 'list' }, ...history.map(jobRow))
-      : h('p', { class: 'muted' }, 'No work orders for this machine yet.'),
+      : h('p', { class: 'muted' }, 'No service orders for this machine yet.'),
     sectionTitle('PM tasks'),
     pmTasks.length
       ? h(
@@ -1967,7 +2070,7 @@ function renderPartDetail(route) {
   async function deletePart() {
     const yes = await showConfirm({
       title: 'Delete this part?',
-      message: `${part.name} will be removed. Work orders that already used it will keep their record.`,
+      message: `${part.name} will be removed. Service orders that already used it will keep their record.`,
       confirmText: 'Delete',
       cancelText: 'Cancel',
       danger: true,
@@ -2066,7 +2169,7 @@ function renderPartDetail(route) {
       h('a', { class: 'btn btn-small', href: `#/parts/${encodeURIComponent(part.id)}/edit` }, 'Edit part'),
     ),
     h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
-    sectionTitle('Used on work orders'),
+    sectionTitle('Used on service orders'),
     usedOn.length
       ? h(
           'div',
@@ -2095,7 +2198,7 @@ function renderPartDetail(route) {
             );
           }),
         )
-      : h('p', { class: 'muted' }, 'This part has not been used on a work order yet.'),
+      : h('p', { class: 'muted' }, 'This part has not been used on a service order yet.'),
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
@@ -2278,7 +2381,7 @@ async function markPMTaskDone(task) {
     await sync.saveRecord('pmTasks', updatedTask, task.version);
     await sync.saveRecord('workOrders', workOrder, null);
     await refreshState();
-    toast(`PM done: ${task.title}. Logged as a done PM job; next due ${formatDate(pmDueDate(updatedTask))}.`);
+    toast(`PM done: ${task.title}. Logged as a done PM service order; next due ${formatDate(pmDueDate(updatedTask))}.`);
     render();
   } catch (error) {
     toast('Could not record the PM. Please try again.', 'warn');
@@ -2349,13 +2452,16 @@ function pausedPMGroupSection(title, tasks) {
 }
 
 function renderPM() {
-  setTitle('PM');
+  setTitle('Preventive Maintenance');
   const today = todayISO();
   const groups = groupPMTasks(state.pmTasks, today, state.machines);
   const activeCount = state.pmTasks.filter((task) => task.active !== false).length;
   if (activeCount === 0) {
     return page(
-      pageHead('PM', h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task')),
+      pageHead(
+        'Preventive Maintenance',
+        h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task'),
+      ),
       emptyState(
         'No PM tasks yet',
         'Set up recurring checks such as "Oil hook and check timing" so they show up here before something breaks.',
@@ -2364,7 +2470,10 @@ function renderPM() {
     );
   }
   return page(
-    pageHead('PM', h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task')),
+    pageHead(
+      'Preventive Maintenance',
+      h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task'),
+    ),
     groups.overdue.length ? pmGroupSection('Overdue', groups.overdue) : null,
     groups.dueSoon.length ? pmGroupSection('Due soon', groups.dueSoon) : null,
     groups.upcoming.length ? pmGroupSection('Upcoming', groups.upcoming) : null,
@@ -2394,7 +2503,7 @@ function renderPMTaskDetail(route) {
   async function deleteTask() {
     const yes = await showConfirm({
       title: 'Delete this PM task?',
-      message: `"${task.title}" will be removed. PM work orders already logged will stay in the Jobs tab.`,
+      message: `"${task.title}" will be removed. PM service orders already logged will stay in Service Orders.`,
       confirmText: 'Delete',
       cancelText: 'Cancel',
       danger: true,
@@ -2710,7 +2819,7 @@ function renderHome() {
     h(
       'div',
       { class: 'counters' },
-      counterTile('Open jobs', counts.openJobs, '#/jobs?filter=active', counts.openJobs > 0 ? 'is-warn' : ''),
+      counterTile('Open service orders', counts.openJobs, '#/jobs?filter=active', counts.openJobs > 0 ? 'is-warn' : ''),
       counterTile(
         'Waiting (parts/tech)',
         counts.waiting,
@@ -2772,7 +2881,7 @@ function exportBackup() {
 
 function exportWorkOrderCSV() {
   if (state.workOrders.length === 0) {
-    toast('No work orders to export yet.', 'warn');
+    toast('No service orders to export yet.', 'warn');
     return;
   }
   downloadFile(
@@ -2780,7 +2889,7 @@ function exportWorkOrderCSV() {
     'text/csv;charset=utf-8',
     workOrdersToCSV(state.workOrders, state.machines, state.parts),
   );
-  toast(`Exported ${state.workOrders.length} work order${state.workOrders.length === 1 ? '' : 's'} to CSV.`);
+  toast(`Exported ${state.workOrders.length} service order${state.workOrders.length === 1 ? '' : 's'} to CSV.`);
 }
 
 async function importBackupFile(file, statusHost) {
@@ -2802,7 +2911,7 @@ async function importBackupFile(file, statusHost) {
       title: 'Replace all data with this backup?',
       message: `It holds ${c.machines} machine${c.machines === 1 ? '' : 's'}, ${c.parts} part${
         c.parts === 1 ? '' : 's'
-      }, ${c.workOrders} work order${c.workOrders === 1 ? '' : 's'} and ${c.pmTasks} PM task${
+      }, ${c.workOrders} service order${c.workOrders === 1 ? '' : 's'} and ${c.pmTasks} PM task${
         c.pmTasks === 1 ? '' : 's'
       }. Everything currently on this device is erased first. This cannot be undone.`,
       confirmText: 'Import backup',
@@ -2909,7 +3018,7 @@ function suggestPassword(length = 12) {
 const STORE_LABELS = {
   machines: 'Machine',
   parts: 'Part',
-  workOrders: 'Work order',
+  workOrders: 'Service order',
   pmTasks: 'PM task',
 };
 
@@ -3296,7 +3405,7 @@ function importV1Card() {
       title: 'Import this v1 backup into the shared log?',
       message: `It holds ${c.machines} machine${c.machines === 1 ? '' : 's'}, ${c.parts} part${
         c.parts === 1 ? '' : 's'
-      }, ${c.workOrders} work order${c.workOrders === 1 ? '' : 's'} and ${c.pmTasks} PM task${
+      }, ${c.workOrders} service order${c.workOrders === 1 ? '' : 's'} and ${c.pmTasks} PM task${
         c.pmTasks === 1 ? '' : 's'
       }. Records whose ids already exist on the server are skipped. The whole team sees imported records after their next sync.`,
       confirmText: 'Import',
@@ -3421,7 +3530,7 @@ function renderSettings() {
       team
         ? null
         : h('label', { class: 'btn', for: fileInputId }, 'Import backup', h('small', {}, 'Replace all data from a backup file')),
-      h('button', { class: 'btn', type: 'button', onclick: exportWorkOrderCSV }, 'Export work orders (CSV)', h('small', {}, 'For Excel or email')),
+      h('button', { class: 'btn', type: 'button', onclick: exportWorkOrderCSV }, 'Export service orders (CSV)', h('small', {}, 'For Excel or email')),
       team ? null : fileInput,
     ),
     team ? null : importStatus,
@@ -3438,7 +3547,7 @@ function renderSettings() {
           h(
             'div',
             { class: 'settings-actions' },
-            h('button', { class: 'btn', type: 'button', onclick: loadSampleData }, 'Load sample data', h('small', {}, 'Example machines, parts, jobs and PM tasks')),
+            h('button', { class: 'btn', type: 'button', onclick: loadSampleData }, 'Load sample data', h('small', {}, 'Example machines, parts, service orders and PM tasks')),
             eraseReveal,
           ),
           erasePanel,
@@ -3472,12 +3581,21 @@ async function render() {
     if (link.dataset.tab === tab) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
+  // The phone "More" button lights up while a sheet page is shown.
+  if (moreButton) {
+    if (['parts', 'statistics', 'coworkers', 'contractors', 'help', 'settings'].includes(tab)) {
+      moreButton.setAttribute('aria-current', 'page');
+    } else {
+      moreButton.removeAttribute('aria-current');
+    }
+  }
   updateNavCounts();
   if (tab !== 'settings' && tab !== 'help') storageSet(LAST_TAB_KEY, tab);
 
   let content;
   let isDetail = false;
   let splitListRoot = null;
+  let machineDrawer = false;
 
   if (!root || root === 'home') {
     content = renderHome();
@@ -3490,11 +3608,18 @@ async function render() {
       splitListRoot = 'jobs';
     }
   } else if (root === 'machines') {
-    if (!second) content = renderMachines(route);
-    else if (second === 'new') content = renderMachineForm(route);
-    else if (third === 'edit') {
-      content = renderMachineForm(route);
-      isDetail = true;
+    if (!second) {
+      content = renderMachines(route);
+    } else if (second === 'new' || third === 'edit') {
+      // M2 drawer usage (SPEC-v3.md section 10): the machine form opens in
+      // the right drawer on desktop; phones and tablets keep the full page.
+      machineDrawer = maybeOpenMachineDrawer(route);
+      if (machineDrawer) {
+        content = renderMachines({ segments: [], params: route.params });
+      } else {
+        content = renderMachineForm(route);
+        if (second !== 'new') isDetail = true;
+      }
     } else {
       content = renderMachineDetail(route);
       isDetail = true;
@@ -3521,6 +3646,9 @@ async function render() {
       content = renderPMTaskDetail(route);
       isDetail = true;
     }
+  } else if (root === 'coworkers' || root === 'contractors' || root === 'statistics') {
+    // Routes arrive with their pages in M5/M6; placeholders for now.
+    content = renderComingSoon(tab);
   } else if (root === 'help') {
     setTitle('Help');
     content = renderHelp(h);
@@ -3572,8 +3700,10 @@ window.addEventListener('hashchange', () => {
 });
 
 /* Re-render when the viewport crosses the 1024px desktop breakpoint so the
-   split view appears or the full-page detail comes back. */
+   split view appears or the full-page detail comes back; any open drawer
+   closes so the machine form is not shown twice (drawer + full page). */
 function handleDesktopChange() {
+  if (drawerHandle) drawerHandle.close();
   render();
 }
 
@@ -3582,6 +3712,501 @@ if (typeof desktopMedia.addEventListener === 'function') {
 } else if (typeof desktopMedia.addListener === 'function') {
   desktopMedia.addListener(handleDesktopChange);
 }
+
+/* ==========================================================================
+   V3-M2 shell (SPEC-v3.md sections 8 and 10): right drawer component,
+   phone "More" sheet, global search, collapsible dark sidebar.
+   ========================================================================== */
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableElements(root) {
+  return Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+    (element) => element.getClientRects().length > 0,
+  );
+}
+
+/* Keep Tab inside a dialog/sheet/drawer root (focus trap). */
+function trapTabKey(root, event) {
+  if (event.defaultPrevented) return;
+  const items = focusableElements(root);
+  if (items.length === 0) {
+    event.preventDefault();
+    if (root.hasAttribute('tabindex')) root.focus();
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (!root.contains(active) || active === root) {
+    event.preventDefault();
+    first.focus();
+    return;
+  }
+  if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+/* ----- Right slide-over drawer (SPEC-v3.md sections 3 and 10) -----
+   openDrawer({title, content, onClose, isDirty}): 560 px panel over a
+   backdrop, focus-trapped. Esc, backdrop and the ✕ button run the
+   in-page discard check when isDirty() returns true; leaving the route
+   (Save / Cancel links) closes without the check. One drawer at a time. */
+
+let drawerHandle = null;
+
+function openDrawer({ title = '', content = null, onClose = null, isDirty = null } = {}) {
+  if (drawerHandle) drawerHandle.close();
+  closeUserMenu();
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const titleId = `drawer-title-${++fieldCounter}`;
+  const closeButton = h('button', { class: 'icon-button drawer-close', type: 'button', 'aria-label': 'Close' }, h('span', { 'aria-hidden': 'true' }, '✕'));
+  const panel = h(
+    'aside',
+    {
+      class: 'drawer',
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-labelledby': titleId,
+      tabindex: '-1',
+    },
+    h('div', { class: 'drawer-head' }, h('h2', { id: titleId }, title), closeButton),
+    h('div', { class: 'drawer-body' }, content),
+  );
+  const backdrop = h('div', { class: 'drawer-backdrop' });
+
+  let closing = false;
+  const finishClose = () => {
+    document.removeEventListener('keydown', onKeyDown);
+    backdrop.remove();
+    panel.remove();
+    document.body.classList.remove('drawer-open');
+    drawerHandle = null;
+    if (typeof onClose === 'function') onClose();
+    if (previousFocus && document.contains(previousFocus)) previousFocus.focus();
+  };
+  const close = () => {
+    if (closing) return;
+    closing = true;
+    finishClose();
+  };
+  const maybeClose = async () => {
+    if (closing) return;
+    let dirty = false;
+    if (typeof isDirty === 'function') {
+      try {
+        dirty = isDirty();
+      } catch (error) {
+        console.warn('Drawer dirty check failed:', error);
+      }
+    }
+    if (dirty) {
+      // In-page discard check; native confirm/toast are never used.
+      const discard = await showConfirm({
+        title: 'Discard changes?',
+        message: 'This form has unsaved changes.',
+        confirmText: 'Discard',
+        cancelText: 'Keep editing',
+        danger: true,
+      });
+      if (!discard) return;
+    }
+    close();
+  };
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      // An open confirm dialog handles its own Escape (dialogRoot).
+      if (dialogRoot.childElementCount > 0 || moreSheetOpen) return;
+      event.preventDefault();
+      maybeClose();
+    } else if (event.key === 'Tab') {
+      trapTabKey(panel, event);
+    }
+  };
+
+  // Leaving the route closes the drawer: the user already chose where to
+  // go (Save, Cancel, back). Listeners added during dispatch are not run
+  // by the event that triggered them, so rendering a drawer route is safe.
+  const onRouteChange = () => close();
+  window.addEventListener('hashchange', onRouteChange, { once: true });
+
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop) maybeClose();
+  });
+  closeButton.addEventListener('click', () => maybeClose());
+  document.addEventListener('keydown', onKeyDown);
+
+  document.body.append(backdrop, panel);
+  document.body.classList.add('drawer-open');
+
+  const handle = {
+    close,
+    onRouteCleanup: null,
+  };
+  handle.onRouteCleanup = () => {
+    window.removeEventListener('hashchange', onRouteChange);
+    close();
+  };
+  drawerHandle = handle;
+  const focusables = focusableElements(panel);
+  if (focusables.length > 0) focusables[0].focus();
+  else panel.focus();
+  return handle;
+}
+
+function closeDrawerForRouteChange() {
+  if (drawerHandle) drawerHandle.onRouteCleanup();
+}
+
+/* The one M2 drawer usage: the machine form opens in the drawer on
+   desktop (phone and tablet keep the full-page form). */
+function maybeOpenMachineDrawer(route) {
+  if (!desktopMedia.matches) return false;
+  const id = route.segments[1];
+  const editing = Boolean(id && id !== 'new');
+  const existing = editing ? machineById(id) : null;
+  if (editing && !existing) return false;
+  const { node, isDirty } = machineFormBody(existing);
+  openDrawer({ title: machineFormTitle(existing), content: node, isDirty });
+  return true;
+}
+
+/* ----- Placeholder pages for the routes that arrive with M3-M6 ----- */
+
+const COMING_SOON_PAGES = {
+  statistics: {
+    title: 'Statistics',
+    blurb: 'Statistics arrive in a coming update: machine status, downtime, PM compliance and labour hours.',
+  },
+  coworkers: {
+    title: 'Coworkers',
+    blurb: 'Coworkers arrive in a coming update: your shop-floor team with roles, shifts and skills.',
+  },
+  contractors: {
+    title: 'Outside Contractors',
+    blurb: 'Outside contractors arrive in a coming update: companies that service your machines, contacts and what they work on.',
+  },
+};
+
+function renderComingSoon(tab) {
+  const info = COMING_SOON_PAGES[tab] || { title: 'Coming soon', blurb: 'This page arrives in a coming update.' };
+  setTitle(info.title);
+  return page(
+    pageHead(info.title),
+    emptyState('Coming soon', info.blurb, [h('a', { class: 'btn btn-primary', href: '#/home' }, 'Go Home')]),
+  );
+}
+
+/* ----- Phone bottom-bar "More" sheet (SPEC-v3.md section 10) ----- */
+
+const NAV_ICONS = {
+  parts: [
+    'M12 2.5 20.75 7v10L12 21.5 3.25 17V7L12 2.5Z',
+    'M3.25 7 12 11.75 20.75 7',
+    'M12 11.75v9.75',
+  ],
+  stats: ['M4 20.5h16', 'M7 20.5v-6', 'M12 20.5V5', 'M17 20.5v-10'],
+  coworkers: [
+    'M5.5 8a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0',
+    'M3 20c.6-3.4 3-5.2 6-5.2s5.4 1.8 6 5.2',
+    'M16 4.8a3.5 3.5 0 0 1 0 6.4',
+    'M17.5 14.9c2.3.7 3.9 2.6 4.3 5',
+  ],
+  contractors: [
+    'M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5',
+    'M3 12.75h18',
+    'M5 7.5h14A2 2 0 0 1 21 9.5v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z',
+  ],
+  help: [
+    'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z',
+    'M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.2-3 4',
+    'M12 17.3h.01',
+  ],
+  settings: [
+    'M4 21v-7',
+    'M4 10V3',
+    'M12 21v-9',
+    'M12 8V3',
+    'M20 21v-5',
+    'M20 12V3',
+    'M1 14h6',
+    'M9 8h6',
+    'M17 16h6',
+  ],
+};
+
+let moreSheetOpen = false;
+let moreSheetRoot = null;
+
+function closeMoreSheet({ refocus = false } = {}) {
+  if (!moreSheetRoot) return;
+  const previousFocus =
+    moreSheetRoot._morePreviousFocus instanceof HTMLElement ? moreSheetRoot._morePreviousFocus : null;
+  moreSheetRoot.remove();
+  moreSheetRoot = null;
+  moreSheetOpen = false;
+  document.removeEventListener('keydown', onMoreSheetKey);
+  if (moreButton) {
+    moreButton.setAttribute('aria-expanded', 'false');
+    if (refocus || previousFocus === moreButton) moreButton.focus();
+  }
+}
+
+function onMoreSheetKey(event) {
+  if (!moreSheetRoot) return;
+  if (event.key === 'Escape') {
+    if (dialogRoot.childElementCount > 0) return;
+    event.preventDefault();
+    closeMoreSheet({ refocus: true });
+  } else if (event.key === 'Tab') {
+    trapTabKey(moreSheetRoot, event);
+  }
+}
+
+function openMoreSheet() {
+  if (moreSheetOpen || !moreButton) return;
+  closeUserMenu();
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const items = [
+    { label: 'Parts', icon: NAV_ICONS.parts, href: '#/parts' },
+    { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
+    { label: 'Coworkers', icon: NAV_ICONS.coworkers, href: '#/coworkers' },
+    { label: 'Outside Contractors', icon: NAV_ICONS.contractors, href: '#/contractors' },
+    { label: 'Help', icon: NAV_ICONS.help, href: '#/help' },
+    { label: 'Settings', icon: NAV_ICONS.settings, href: '#/settings' },
+  ];
+  const backdrop = h('div', { class: 'sheet-backdrop' });
+  moreSheetRoot = h(
+    'section',
+    { class: 'sheet', id: 'more-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'More pages' },
+    h('h2', { class: 'sheet-title' }, 'More'),
+    ...items.map((item) =>
+      h(
+        'a',
+        { class: 'sheet-item', href: item.href, onclick: () => closeMoreSheet() },
+        menuIcon(item.icon),
+        h('span', {}, item.label),
+      ),
+    ),
+  );
+  moreSheetRoot._morePreviousFocus = previousFocus;
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop) closeMoreSheet({ refocus: true });
+  });
+  document.addEventListener('keydown', onMoreSheetKey);
+  document.body.append(backdrop, moreSheetRoot);
+  moreSheetOpen = true;
+  if (moreButton) moreButton.setAttribute('aria-expanded', 'true');
+  const firstItem = moreSheetRoot.querySelector('.sheet-item');
+  if (firstItem) firstItem.focus();
+  else moreSheetRoot.focus();
+}
+
+/* ----- Top-bar global search (SPEC-v3.md section 10) -----
+   Searches service orders (by number and title), machines and parts;
+   results show in a dropdown, Enter opens the first/active item and
+   ArrowUp/Down move through it. Desktop only (CSS hides the box). */
+
+function serviceOrderLabel(order) {
+  const number = Number(order && order.number);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return `SO-${String(Math.floor(number)).padStart(4, '0')}`;
+}
+
+function globalSearchMatches(query) {
+  const needle = String(query).trim().toLowerCase();
+  if (!needle) return [];
+  const digits = /^\d+$/.test(needle) ? Number(needle) : null;
+  const results = [];
+
+  let matched = 0;
+  for (const order of sortWorkOrdersNewest(state.workOrders)) {
+    if (matched >= 4) break;
+    const label = serviceOrderLabel(order);
+    const title = String(order.title || '');
+    const labelText = label ? label.toLowerCase() : '';
+    const numberMatches =
+      (labelText && (labelText.includes(needle) || (digits !== null && Number(order.number) === digits))) || false;
+    if (title.toLowerCase().includes(needle) || numberMatches) {
+      matched += 1;
+      results.push({
+        kind: 'Service order',
+        title: title || labelText || 'Untitled',
+        sub: labelText,
+        href: `#/jobs/${encodeURIComponent(order.id)}`,
+      });
+    }
+  }
+
+  let machineMatches = 0;
+  for (const machine of state.machines) {
+    if (machineMatches >= 3) break;
+    const fits = [machine.name, machine.model, machine.serial, machine.location]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(needle));
+    if (fits) {
+      machineMatches += 1;
+      results.push({
+        kind: 'Machine',
+        title: machine.name,
+        sub: machineTypeLabel(machine),
+        href: `#/machines/${encodeURIComponent(machine.id)}`,
+      });
+    }
+  }
+
+  let partMatches = 0;
+  for (const part of state.parts) {
+    if (partMatches >= 3) break;
+    const fits = [part.name, part.partNumber, part.supplier]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(needle));
+    if (fits) {
+      partMatches += 1;
+      results.push({
+        kind: 'Part',
+        title: part.name,
+        sub: part.partNumber || '',
+        href: `#/parts/${encodeURIComponent(part.id)}`,
+      });
+    }
+  }
+
+  return results.slice(0, 9);
+}
+
+function setUpGlobalSearch() {
+  if (!globalSearchInput || !globalSearchResults || !globalSearchBox) return;
+  let results = [];
+  let activeIndex = -1;
+
+  const closeResults = () => {
+    results = [];
+    activeIndex = -1;
+    globalSearchResults.replaceChildren();
+    globalSearchResults.hidden = true;
+    globalSearchInput.setAttribute('aria-expanded', 'false');
+    globalSearchInput.removeAttribute('aria-activedescendant');
+  };
+
+  const setActive = (index) => {
+    activeIndex = index;
+    const nodes = Array.from(globalSearchResults.querySelectorAll('.gs-result'));
+    nodes.forEach((node, i) => node.setAttribute('aria-selected', i === activeIndex ? 'true' : 'false'));
+    const active = nodes[activeIndex];
+    if (active) globalSearchInput.setAttribute('aria-activedescendant', active.id);
+    else globalSearchInput.removeAttribute('aria-activedescendant');
+  };
+
+  const openResults = (list) => {
+    results = list;
+    if (results.length === 0) {
+      globalSearchResults.replaceChildren(h('div', { class: 'gs-empty' }, 'No matches.'));
+      globalSearchResults.hidden = false;
+      globalSearchInput.setAttribute('aria-expanded', 'true');
+      setActive(-1);
+      return;
+    }
+    globalSearchResults.replaceChildren(
+      ...results.map((item, index) =>
+        h(
+          'a',
+          {
+            class: 'gs-result',
+            id: `gs-option-${index}`,
+            role: 'option',
+            href: item.href,
+            'aria-selected': 'false',
+            onclick: (event) => {
+              event.preventDefault();
+              const href = (results[index] || results[0] || {}).href;
+              globalSearchInput.value = '';
+              closeResults();
+              if (href) navigate(href);
+            },
+          },
+          h('span', { class: 'gs-kind' }, item.kind),
+          h('span', { class: 'gs-title' }, item.title),
+          item.sub ? h('span', { class: 'gs-sub' }, item.sub) : null,
+        ),
+      ),
+    );
+    globalSearchResults.hidden = false;
+    globalSearchInput.setAttribute('aria-expanded', 'true');
+    setActive(0);
+  };
+
+  globalSearchInput.addEventListener('input', () => {
+    const query = globalSearchInput.value;
+    if (!query.trim()) {
+      closeResults();
+      return;
+    }
+    openResults(globalSearchMatches(query));
+  });
+
+  globalSearchInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (globalSearchResults.hidden) return;
+      event.preventDefault();
+      closeResults();
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (globalSearchResults.hidden || results.length === 0) return;
+      event.preventDefault();
+      const next =
+        event.key === 'ArrowDown'
+          ? Math.min(activeIndex + 1, results.length - 1)
+          : Math.max(activeIndex - 1, 0);
+      setActive(next);
+      return;
+    }
+    if (event.key === 'Enter') {
+      if (globalSearchResults.hidden || results.length === 0) return;
+      event.preventDefault();
+      const href = (results[activeIndex] || results[0] || {}).href;
+      globalSearchInput.value = '';
+      closeResults();
+      if (href) navigate(href);
+    }
+  });
+
+  document.addEventListener('pointerdown', (event) => {
+    if (globalSearchResults.hidden) return;
+    if (globalSearchBox.contains(event.target)) return;
+    closeResults();
+  });
+}
+
+/* ----- Collapsible dark sidebar: 64 px icon rail remembered per device ----- */
+
+function setUpSidebarRail() {
+  if (!sidebarToggle) return;
+  const apply = (collapsed) => {
+    document.body.classList.toggle('sidebar-rail', collapsed);
+    sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
+    const label = collapsed ? 'Expand navigation' : 'Collapse navigation';
+    sidebarToggle.setAttribute('aria-label', label);
+    sidebarToggle.title = label;
+  };
+  apply(storageGet(SIDEBAR_RAIL_KEY) === '1');
+  sidebarToggle.addEventListener('click', () => {
+    const collapsed = !document.body.classList.contains('sidebar-rail');
+    apply(collapsed);
+    storageSet(SIDEBAR_RAIL_KEY, collapsed ? '1' : '0');
+  });
+}
+
+setUpSidebarRail();
+setUpGlobalSearch();
+if (moreButton) moreButton.addEventListener('click', openMoreSheet);
 
 /* ---------- Desktop keyboard shortcuts (SPEC 13.1 item 5) ---------- */
 
@@ -4123,13 +4748,16 @@ function showLoginScreen() {
     document.body.classList.remove('logged-out');
     await enterTeamMode(user);
   });
+  decorateLoginCard();
+  // GET /api/branding is public: keep the login card fresh offline cache too.
+  refreshBranding();
   window.__maintLogReady = true;
 }
 
 function restoreLastTab() {
   if (location.hash) return;
   const last = storageGet(LAST_TAB_KEY);
-  if (last && ['home', 'jobs', 'machines', 'parts', 'pm'].includes(last)) {
+  if (last && ['home', 'jobs', 'machines', 'parts', 'pm', 'coworkers', 'contractors', 'statistics'].includes(last)) {
     history.replaceState(null, '', `#/${last}`);
   }
 }
@@ -4140,6 +4768,7 @@ async function enterTeamMode(user) {
   bindSyncEvents();
   setupTeamHeader();
   await loadTeamUsers();
+  refreshBranding();
   await sync.start(user);
   await sync.pull();
   restoreLastTab();
@@ -4160,6 +4789,10 @@ async function startLocalMode() {
 async function start() {
   try {
     await db.open();
+    // Branding (SPEC-v3.md section 8): cached value first, then a fresh
+    // public GET so the login card and shell match the server.
+    await loadCachedBranding();
+    refreshBranding();
     const session = await checkSession();
     if (session.status === 'ok' && session.user) {
       await enterTeamMode(session.user);

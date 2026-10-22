@@ -973,7 +973,9 @@ details.pm-group-paused[open] > summary {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  /* Above the M2 drawer (SPEC-v3.md section 10) so the in-drawer discard
+     check is not covered by the drawer or its backdrop. */
+  z-index: 90;
   display: grid;
   place-items: center;
   padding: 1rem;
@@ -1957,4 +1959,494 @@ body.logged-out #back-button {
     clip: rect(0 0 0 0);
     white-space: nowrap;
   }
+}
+
+/* ==========================================================================
+   V3-M2: Shell redesign (SPEC-v3.md sections 8 and 10).
+   Desktop ≥ 1024 px: dark sidebar with icon rail state; top-bar global
+   search; right drawer component. Phone: "More" bottom sheet.
+   This section overrides the M8a desktop rules above; phone/tablet
+   behaviour below 1024 px is unchanged apart from the More button.
+   ========================================================================== */
+
+/* Branding slots (SPEC-v3.md section 8): shown by JS when branding loads.
+   The header carries the brand on tablets; on desktop the sidebar does. */
+.header-brand-logo,
+.header-brand-name {
+  display: none;
+}
+
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .header-brand-logo {
+    display: inline-block;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    object-fit: contain;
+    flex: none;
+  }
+
+  .header-brand-name {
+    display: inline;
+    font-size: 0.95rem;
+    font-weight: 750;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.brand-logo {
+  object-fit: contain;
+}
+
+.login-card h2 {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.login-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+}
+
+/* Phone tab-bar "More" button is a <button class="tab"> (SPEC-v3.md 10). */
+.tab-button {
+  background: none;
+  border: none;
+  border-top: 3px solid transparent;
+  cursor: pointer;
+}
+
+/* ----- Desktop shell (≥ 1024 px) ----- */
+
+.global-search {
+  display: none;
+}
+
+body.logged-out .global-search {
+  display: none !important;
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --sidebar-w: 248px;
+  }
+
+  body.sidebar-rail {
+    --sidebar-w: 64px;
+  }
+
+  /* Dark sidebar: deep slate, light text, orange active indicator. */
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: var(--sidebar-w);
+    padding: 0.9rem 0.7rem 1rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+    color: #e6ecf2;
+    background: #1c232d;
+    border-right: 1px solid rgb(0 0 0 / 40%);
+    transition: width 0.18s ease;
+  }
+
+  body.sidebar-rail .sidebar {
+    padding: 0.9rem 0.4rem 1rem;
+    transition: width 0.18s ease;
+  }
+
+  .sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.15rem 0.3rem 0.8rem;
+    min-height: 44px;
+  }
+
+  .sidebar .brand-mark {
+    background: #f07a3e;
+    color: #241105;
+    flex: none;
+  }
+
+  .sidebar .brand-logo {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    background: #f4f7fa;
+    flex: none;
+  }
+
+  .sidebar-app-name {
+    flex: 1;
+    min-width: 0;
+    color: #f4f7fa;
+    font-size: 0.98rem;
+    font-weight: 800;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sidebar-toggle {
+    width: 34px;
+    height: 34px;
+    color: #aebccd;
+    flex: none;
+  }
+
+  .sidebar-toggle:hover {
+    background: rgb(255 255 255 / 8%);
+  }
+
+  body.sidebar-rail .sidebar-toggle-icon {
+    transform: rotate(180deg);
+  }
+
+  .sidebar-new {
+    width: 100%;
+    margin-bottom: 0.8rem;
+    font-size: 0.95rem;
+  }
+
+  .sidebar-links {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+  }
+
+  .sidebar-link {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    min-height: 42px;
+    padding: 0.45rem 0.6rem;
+    border-radius: 9px;
+    color: #c9d2dd;
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .sb-icon {
+    width: 19px;
+    height: 19px;
+    flex: none;
+    color: #8fa0b3;
+  }
+
+  .sidebar-label {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sidebar-link:hover {
+    background: rgb(255 255 255 / 6%);
+    color: #f2f6fa;
+  }
+
+  .sidebar-link[aria-current="page"] {
+    background: rgb(240 122 62 / 16%);
+    color: #ffffff;
+    box-shadow: inset 3px 0 0 #f07a3e;
+  }
+
+  .sidebar-link[aria-current="page"] .sb-icon {
+    color: #f9a770;
+  }
+
+  .sidebar .nav-count {
+    border-color: transparent;
+    background: #36445a;
+    color: #e0e8f1;
+  }
+
+  .sidebar-group-title {
+    margin: 0.85rem 0.6rem 0.3rem;
+    color: #7f8ea0;
+    font-size: 0.68rem;
+    font-weight: 750;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  .sidebar-sublink {
+    min-height: 38px;
+    margin-left: 25px;
+    font-size: 0.86rem;
+  }
+
+  /* Icon rail: labels and group titles collapse, badges pin to the icon. */
+  body.sidebar-rail .sidebar-brand {
+    flex-direction: column;
+    gap: 0.5rem;
+    padding-bottom: 0.6rem;
+  }
+
+  body.sidebar-rail .sidebar-app-name,
+  body.sidebar-rail .sidebar-label,
+  body.sidebar-rail .sidebar-group-title,
+  body.sidebar-rail .sidebar-new-label {
+    display: none;
+  }
+
+  body.sidebar-rail .sidebar-new {
+    padding-inline: 0.4rem;
+  }
+
+  body.sidebar-rail .sidebar-link,
+  body.sidebar-rail .sidebar-sublink {
+    position: relative;
+    justify-content: center;
+    margin-left: 0;
+    padding: 0.5rem 0;
+  }
+
+  body.sidebar-rail .nav-count {
+    position: absolute;
+    top: 1px;
+    right: 3px;
+    min-width: 0.95rem;
+    padding: 0 0.22rem;
+    font-size: 0.6rem;
+  }
+
+  /* Room for the fixed sidebar; the tab bar and FAB are already hidden. */
+  body {
+    margin-left: var(--sidebar-w);
+    transition: margin-left 0.18s ease;
+  }
+
+  body.drawer-open {
+    overflow: hidden;
+  }
+
+  /* Keep the old block's intent: tablet carries the brand in the header,
+     desktop carries it in the sidebar, phones have no room for it. */
+  .header-title .brand-mark,
+  .header-title .header-brand-logo,
+  .header-title .header-brand-name {
+    display: none;
+  }
+
+  .app-header,
+  .page {
+    max-width: 1200px;
+  }
+
+  .counters {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .home-columns {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.25rem;
+    align-items: start;
+  }
+
+  /* Top-bar global search (SPEC-v3.md section 10): service orders,
+     machines and parts; results in a dropdown under the box. */
+  body:not(.logged-out) .global-search {
+    display: block;
+    position: relative;
+    flex: 0 1 300px;
+    min-width: 160px;
+    margin-left: 0.4rem;
+  }
+
+  .global-search input {
+    width: 100%;
+    min-height: 40px;
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-3);
+    color: var(--text);
+  }
+
+  .global-search input::placeholder {
+    color: var(--muted);
+  }
+
+  .global-search-results {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 55;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .gs-result {
+    display: flex;
+    flex-direction: column;
+    gap: 0.02rem;
+    padding: 0.5rem 0.7rem;
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  .gs-result + .gs-result {
+    border-top: 1px solid var(--border);
+  }
+
+  .gs-result:hover,
+  .gs-result[aria-selected="true"] {
+    background: var(--surface-2);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .gs-kind {
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .gs-title {
+    font-weight: 650;
+    font-size: 0.92rem;
+    overflow-wrap: anywhere;
+  }
+
+  .gs-sub {
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+
+  .gs-empty {
+    padding: 0.65rem 0.7rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+}
+
+/* ----- Right slide-over drawer (SPEC-v3.md sections 3 and 10) ----- */
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgb(15 20 26 / 46%);
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 85;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100vw);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: -10px 0 34px rgb(16 24 40 / 22%);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.9rem 1.1rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.drawer-close {
+  font-size: 1.2rem;
+}
+
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.9rem 1.1rem 1.3rem;
+}
+
+@media (max-width: 767.98px) {
+  .drawer {
+    width: 100vw;
+  }
+}
+
+/* ----- Phone "More" bottom sheet (SPEC-v3.md section 10) ----- */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  background: rgb(0 0 0 / 42%);
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 76;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-width: 30rem;
+  margin: 0 auto;
+  padding: 0.55rem 0.85rem calc(env(safe-area-inset-bottom) + 0.6rem);
+  border-radius: 18px 18px 0 0;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 -8px 30px rgb(16 24 40 / 22%);
+}
+
+.sheet-title {
+  margin: 0.2rem 0.45rem 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+}
+
+.sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 52px;
+  padding: 0 0.6rem;
+  border-radius: 12px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 650;
+}
+
+.sheet-item:hover,
+.sheet-item:focus-visible {
+  background: var(--surface-2);
+}
+
+.sheet-icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--muted);
 }

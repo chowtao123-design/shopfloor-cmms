@@ -89,7 +89,7 @@ function helpData(h) {
       ],
       [
         'History for every record. ',
-        'Open any job, machine, part or PM task and scroll to ',
+        'Open any service order, machine, part or PM task and scroll to ',
         h('strong', {}, 'History'),
         ' to see every saved version — who changed it, when, and which fields changed. Nothing is thrown away, not even versions that were saved over.',
       ],
@@ -134,10 +134,10 @@ function helpQuickStart(h) {
     h('p', {}, 'Five steps and the app is doing its job:'),
     helpSteps(h, [
       'Add your machines (Machines → + Add machine) — or, if your shop is moving over from the old single-device app, an administrator imports its backup in Settings → Import v1 data.',
-      'Log a repair — Jobs → + Log repair, pick the machine, say what happened.',
-      'Update the job’s status as you work: open it and move it along — In progress, Waiting parts, Waiting tech, Done.',
+      'Log a repair — Service Orders → + Service order, pick the machine, say what happened.',
+      'Update the service order’s status as you work: open it and move it along — In progress, Waiting parts, Waiting tech, Done.',
       'Add the parts you keep in stock (Parts → + Add part) and set a minimum quantity for each, so the app warns you before you run out.',
-      'Add PM tasks (PM → + Add PM task) with an interval in days, and the app tracks what is due and when.',
+      'Add PM tasks (Preventive Maintenance → + Add PM task) with an interval in days, and the app tracks what is due and when.',
     ]),
   );
 }
@@ -148,12 +148,12 @@ function helpGlossarySection(h) {
     'help-glossary',
     'Glossary',
     helpGlossary(h, [
-      ['Work order / job', 'One repair or task, from the moment it is logged until it is marked Done. “Job” and “work order” mean the same thing here.'],
+      ['Work order / job', 'One repair or task, from the moment it is logged until it is marked Done. The app now calls these service orders; “job” and “work order” mean the same thing here.'],
       ['Breakdown', 'A repair logged because a machine stopped working. The app offers to mark that machine Down while the job is open, and Running again after.'],
       ['Machine type', 'What kind of machine it is — single-needle lockstitch, bartack, 5-thread overlock and other garment-shop types. If none of them fit, pick Other (type your own) and give it your own name; the types you use are remembered for next time.'],
       ['PM (preventive maintenance)', 'A small, scheduled check that keeps a machine working — cleaning, oiling, checking tension. Example: clean and oil the single-needle machine every 30 days.'],
       ['PM interval', 'How often a PM task repeats, in days from the last time it was done. A 30-day task is due again 30 days after you mark it done.'],
-      ['Paused PM', 'The PM tasks of a machine that is In storage or Retired are paused: they do not count as overdue or due soon, and they sit in the “Paused” group on the PM tab. Set the machine back to Running and the tasks resume with their due dates unchanged.'],
+      ['Paused PM', 'The PM tasks of a machine that is In storage or Retired are paused: they do not count as overdue or due soon, and they sit in the “Paused” group on the Preventive Maintenance page. Set the machine back to Running and the tasks resume with their due dates unchanged.'],
       ['Overdue', 'Past its due date and not done yet.'],
       ['Due soon', 'Due within the next 3 days.'],
       ['Open', 'Logged, but nobody has started on it yet.'],
@@ -161,11 +161,11 @@ function helpGlossarySection(h) {
       ['Waiting parts', 'Paused until an ordered part arrives.'],
       ['Waiting tech', 'Paused until you (or an outside repair shop) can get to it.'],
       ['Done', 'Finished and closed.'],
-      ['Downtime', 'How many minutes the machine was out of service because of this job. Entered on the job as “Machine downtime (minutes)”.'],
-      ['Labour minutes', 'How many minutes you spent working on the job — your time, tracked separately from downtime.'],
+      ['Downtime', 'How many minutes the machine was out of service because of this service order. Entered on the order as “Machine downtime (minutes)”.'],
+      ['Labour minutes', 'How many minutes you spent working on the service order — your time, tracked separately from downtime.'],
       ['Low stock / minimum quantity', 'Every part has a minimum quantity. When the quantity on hand falls to it or below, the part is flagged Low so you can reorder in time.'],
-      ['In storage', 'A machine that is put away instead of working on the floor. Jobs and PM tasks can still be logged for it, but the app leaves its status alone and pauses its PM while it is stored.'],
-      ['Building item', 'Something that is part of the building — a drain, a gutter run, a light — logged like a machine so it can have jobs and PM tasks too.'],
+      ['In storage', 'A machine that is put away instead of working on the floor. Service orders and PM tasks can still be logged for it, but the app leaves its status alone and pauses its PM while it is stored.'],
+      ['Building item', 'Something that is part of the building — a drain, a gutter run, a light — logged like a machine so it can have service orders and PM tasks too.'],
     ]),
   );
 }
@@ -178,22 +178,22 @@ function helpHowTo(h) {
     helpHowTos(h, [
       [
         'Log a repair in under a minute',
-        ' — Jobs → + Log repair, pick the machine, type what happened, then Save work order. Parts, timings and status can all be added later.',
+        ' — Service Orders → + Service order, pick the machine, type what happened, then Save service order. Parts, timings and status can all be added later.',
       ],
       [
-        'Close a job and deduct parts',
-        ' — open the job, add the parts it used, then set its status to Done. Parts are deducted from stock once, at the moment the job is marked Done. If you reopen the job, the used parts go back into stock.',
+        'Close a service order and deduct parts',
+        ' — open the order, add the parts it used, then set its status to Done. Parts are deducted from stock once, at the moment the order is marked Done. If you reopen it, the used parts go back into stock.',
       ],
       [
         'Mark a PM done',
-        ' — PM → open the task → Mark done. The app logs a PM job for the machine and sets the next due date from the interval.',
+        ' — Preventive Maintenance → open the task → Mark done. The app logs a done PM service order for the machine and sets the next due date from the interval.',
       ],
       ['Find a part', ' — go to Parts and type a name or part number into the search box.'],
       [
         'See a machine’s history',
-        ' — Machines → open the machine → Repair history lists its jobs, newest first.',
+        ' — Machines → open the machine → Repair history lists its service orders, newest first.',
       ],
-      ['Export to Excel (CSV)', ' — Settings → Export work orders (CSV). The file opens in Excel, Numbers or Google Sheets.'],
+      ['Export to Excel (CSV)', ' — Settings → Export service orders (CSV). The file opens in Excel, Numbers or Google Sheets.'],
       [
         'Back up',
         ' — Settings → Back up now saves a backup of the whole shared log on the server with one click; the server also does it automatically every night. Settings → Export backup (JSON) saves a local file of what this device holds.',
@@ -232,13 +232,13 @@ function helpShortcutsTable(h) {
     h(
       'tbody',
       {},
-      row([key('n')], 'Start a new work order (Log repair)'),
+      row([key('n')], 'Start a new service order'),
       row([key('/')], 'Focus the search box on the current page'),
       row([key('g'), ' then ', key('h')], 'Go to Home'),
-      row([key('g'), ' then ', key('j')], 'Go to Jobs'),
+      row([key('g'), ' then ', key('j')], 'Go to Service Orders'),
       row([key('g'), ' then ', key('m')], 'Go to Machines'),
       row([key('g'), ' then ', key('p')], 'Go to Parts'),
-      row([key('g'), ' then ', key('k')], 'Go to PM'),
+      row([key('g'), ' then ', key('k')], 'Go to Preventive Maintenance'),
     ),
   );
 }
@@ -251,7 +251,7 @@ function helpDesktop(h) {
     h(
       'p',
       {},
-      'On a wide screen (1024 px or more), the app puts a sidebar on the left in place of the bottom tab bar, lists turn into tables you can sort by clicking a column header, and opening a row shows its details in a pane beside the list. On smaller screens nothing changes.',
+      'On a wide screen (1024 px or more), the app shows a dark sidebar on the left in place of the bottom tab bar, lists turn into tables you can sort by clicking a column header, and opening a row shows its details in a pane beside the list. The top bar has a global search box that finds service orders, machines and parts; pick a result with the arrow keys and press Enter. The sidebar can be collapsed to an icon rail with the button at its top. On phones the bottom bar has Home, Orders, Prev. Maint., Machines and More.',
     ),
     h('p', {}, 'Keyboard shortcuts (desktop only — they never fire while you are typing in a text field):'),
     helpShortcutsTable(h),
@@ -270,8 +270,8 @@ function helpFaq(h) {
     ),
     ...helpQa(
       h,
-      'What happens when two people edit the same job?',
-      'The later save wins, and nothing is lost: the app tells the second saver that they saved over changes by the first, and both versions stay in the job’s History section. If you both close jobs that use the same part, both stock deductions apply.',
+      'What happens when two people edit the same service order?',
+      'The later save wins, and nothing is lost: the app tells the second saver that they saved over changes by the first, and both versions stay in the order’s History section. If you both close service orders that use the same part, both stock deductions apply.',
     ),
     ...helpQa(
       h,

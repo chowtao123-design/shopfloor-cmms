@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#d9541a" />
-    <meta name="description" content="Offline shop maintenance log for work orders, machines, parts and preventive maintenance." />
-    <title>Shop Maintenance Log</title>
+    <meta name="description" content="Offline shop maintenance app for service orders, machines, parts and preventive maintenance." />
+    <title>Shopfloor CMMS</title>
     <link rel="stylesheet" href="styles.css" />
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
@@ -18,8 +18,25 @@
         <span aria-hidden="true">‹</span>
       </button>
       <div class="header-title">
-        <span class="brand-mark" aria-hidden="true">ML</span>
-        <h1 id="page-title">Shop Maintenance Log</h1>
+        <span class="brand-mark" id="header-brand-mark" aria-hidden="true">SC</span>
+        <img class="header-brand-logo" id="header-brand-logo" alt="" hidden />
+        <span class="header-brand-name" id="header-brand-name" hidden>Shopfloor CMMS</span>
+        <h1 id="page-title">Shopfloor CMMS</h1>
+      </div>
+      <div class="global-search" id="global-search">
+        <input
+          type="search"
+          id="global-search-input"
+          placeholder="Search service orders, machines, parts"
+          autocomplete="off"
+          spellcheck="false"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="global-search-results"
+          aria-autocomplete="list"
+          aria-label="Global search"
+        />
+        <div class="global-search-results" id="global-search-results" role="listbox" aria-label="Global search results" hidden></div>
       </div>
       <div class="header-sync" id="sync-pill" role="status" aria-live="polite" hidden></div>
       <button id="user-menu-button" class="icon-button user-button" type="button" aria-haspopup="menu" aria-expanded="false" hidden></button>
@@ -31,39 +48,123 @@
       </a>
     </header>
 
+    <!-- Desktop sidebar (SPEC-v3.md section 10): dark, icon groups, badges, collapsible rail. -->
     <nav class="sidebar" aria-label="Main navigation (desktop)">
       <div class="sidebar-brand">
-        <span class="brand-mark" aria-hidden="true">ML</span>
-        <span class="sidebar-app-name">Shop Maintenance Log</span>
+        <img class="brand-logo" id="sidebar-logo" alt="" hidden />
+        <span class="brand-mark sidebar-mark" id="sidebar-brand-mark" aria-hidden="true">SC</span>
+        <span class="sidebar-app-name" id="sidebar-app-name">Shopfloor CMMS</span>
+        <button id="sidebar-toggle" class="icon-button sidebar-toggle" type="button" aria-label="Collapse navigation" aria-expanded="true" title="Collapse navigation">
+          <svg class="sidebar-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 5.5 9.5 12l5.5 6.5" />
+            <path d="M8.5 5.5 3 12l5.5 6.5" />
+          </svg>
+        </button>
       </div>
-      <a class="btn btn-primary sidebar-new" href="#/jobs/new">+ Log repair</a>
+      <a class="btn btn-primary sidebar-new" href="#/jobs/new" title="New service order">+ <span class="sidebar-new-label">Service order</span></a>
       <div class="sidebar-links">
-        <a class="sidebar-link" href="#/home" data-tab="home">Home</a>
-        <a class="sidebar-link" href="#/jobs" data-tab="jobs"
-          >Jobs <span class="nav-count" data-count="jobs"></span
-        ></a>
-        <a class="sidebar-link" href="#/machines" data-tab="machines">Machines</a>
-        <a class="sidebar-link" href="#/parts" data-tab="parts"
-          >Parts <span class="nav-count" data-count="parts"></span
-        ></a>
-        <a class="sidebar-link" href="#/pm" data-tab="pm"
-          >PM <span class="nav-count" data-count="pm"></span
-        ></a>
-        <a class="sidebar-link" href="#/help" data-tab="help">Help</a>
-        <a class="sidebar-link" href="#/settings" data-tab="settings">Settings</a>
+        <a class="sidebar-link" href="#/jobs" data-tab="jobs" title="Service Orders">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 2.5h8v4H8Z" />
+            <path d="M16 4.5h2A1.5 1.5 0 0 1 19.5 6v13A1.5 1.5 0 0 1 18 20.5H6A1.5 1.5 0 0 1 4.5 19V6A1.5 1.5 0 0 1 6 4.5h2" />
+            <path d="M9 11.5h6" />
+            <path d="M9 15.5h4" />
+          </svg>
+          <span class="sidebar-label">Service Orders</span>
+          <span class="nav-count" data-count="jobs"></span>
+        </a>
+        <a class="sidebar-link" href="#/pm" data-tab="pm" title="Preventive Maintenance">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 2.5v3" />
+            <path d="M16 2.5v3" />
+            <rect x="3" y="4.5" width="18" height="18" rx="2" />
+            <path d="M3 10.5h18" />
+            <path d="m9 16 2 2 4-4" />
+          </svg>
+          <span class="sidebar-label">Preventive Maintenance</span>
+          <span class="nav-count" data-count="pm"></span>
+        </a>
+        <a class="sidebar-link" href="#/statistics" data-tab="statistics" title="Statistics">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 20.5h16" />
+            <path d="M7 20.5v-6" />
+            <path d="M12 20.5V5" />
+            <path d="M17 20.5v-10" />
+          </svg>
+          <span class="sidebar-label">Statistics</span>
+        </a>
+        <a class="sidebar-link" href="#/machines" data-tab="machines" title="Machines">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          <span class="sidebar-label">Machines</span>
+        </a>
+        <a class="sidebar-link" href="#/parts" data-tab="parts" title="Parts">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2.5 20.75 7v10L12 21.5 3.25 17V7L12 2.5Z" />
+            <path d="M3.25 7 12 11.75 20.75 7" />
+            <path d="M12 11.75v9.75" />
+          </svg>
+          <span class="sidebar-label">Parts</span>
+          <span class="nav-count" data-count="parts"></span>
+        </a>
+        <div class="sidebar-group">
+          <h3 class="sidebar-group-title">People</h3>
+          <a class="sidebar-link sidebar-sublink" href="#/coworkers" data-tab="coworkers" title="Coworkers">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="9" cy="8" r="3.5" />
+              <path d="M3 20c.6-3.4 3-5.2 6-5.2s5.4 1.8 6 5.2" />
+              <path d="M16 4.8a3.5 3.5 0 0 1 0 6.4" />
+              <path d="M17.5 14.9c2.3.7 3.9 2.6 4.3 5" />
+            </svg>
+            <span class="sidebar-label">Coworkers</span>
+          </a>
+          <a class="sidebar-link sidebar-sublink" href="#/contractors" data-tab="contractors" title="Outside Contractors">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="7.5" width="18" height="12.5" rx="2" />
+              <path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5" />
+              <path d="M3 12.75h18" />
+            </svg>
+            <span class="sidebar-label">Outside Contractors</span>
+          </a>
+        </div>
+        <a class="sidebar-link" href="#/help" data-tab="help" title="Help">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z" />
+            <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.2-3 4" />
+            <path d="M12 17.3h.01" />
+          </svg>
+          <span class="sidebar-label">Help</span>
+        </a>
+        <a class="sidebar-link" href="#/settings" data-tab="settings" title="Settings">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 21v-7" />
+            <path d="M4 10V3" />
+            <path d="M12 21v-9" />
+            <path d="M12 8V3" />
+            <path d="M20 21v-5" />
+            <path d="M20 12V3" />
+            <path d="M1 14h6" />
+            <path d="M9 8h6" />
+            <path d="M17 16h6" />
+          </svg>
+          <span class="sidebar-label">Settings</span>
+        </a>
       </div>
     </nav>
 
     <main id="app-main" tabindex="-1"></main>
 
-    <a class="fab" id="fab" href="#/jobs/new" hidden>+ Log repair</a>
+    <a class="fab" id="fab" href="#/jobs/new" hidden>+ Service order</a>
 
+    <!-- Phone bottom bar (SPEC-v3.md section 10): Home · Orders · Prev. Maint. · Machines · More. -->
     <nav class="tabbar" aria-label="Main navigation">
       <a class="tab" href="#/home" data-tab="home">Home</a>
-      <a class="tab" href="#/jobs" data-tab="jobs">Jobs</a>
+      <a class="tab" href="#/jobs" data-tab="jobs">Orders</a>
+      <a class="tab" href="#/pm" data-tab="pm">Prev. Maint.</a>
       <a class="tab" href="#/machines" data-tab="machines">Machines</a>
-      <a class="tab" href="#/parts" data-tab="parts">Parts</a>
-      <a class="tab" href="#/pm" data-tab="pm">PM</a>
+      <button class="tab tab-button" id="more-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="more-sheet">More</button>
     </nav>
 
     <div id="dialog-root"></div>
