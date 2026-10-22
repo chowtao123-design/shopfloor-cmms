@@ -92,7 +92,7 @@ live in columns. Parts' `qtyOnHand` is server-owned (see §7.3).
    created with `node server/admin.js create-user --admin <username> "<Display Name>"`, which
    prompts for the password on the terminal (hidden input; also accept `--password-stdin`).
 2. **Passwords:** `crypto.scrypt` (N=16384, r=8, p=1, 64-byte key, 16-byte random salt), stored as
-   `scrypt$N$r$p$salt_b64$hash_b64`; compare with `crypto.timingSafeEqual`. Minimum length 8.
+   `scrypt$N$r$p$salt_b64$hash_b64`; compare with `crypto.timingSafeEqual`. Minimum length 6 (client decision 2026-10-21; was 8).
 3. **Login:** `POST /api/login {username, password}` → on success create a session with a
    32-byte random token (base64url) and set cookie
    `sid=<token>; HttpOnly; SameSite=Strict; Path=/; Max-Age=<SESSION_DAYS*86400>` plus `Secure`

@@ -492,10 +492,10 @@ describe('server/admin.js CLI', () => {
     });
   });
 
-  it('rejects passwords shorter than 8 characters', async () => {
-    const created = await run(['create-user', 'shrimp', 'Shrimp Short', '--password-stdin'], 'short1\n');
+  it('rejects passwords shorter than 6 characters', async () => {
+    const created = await run(['create-user', 'shrimp', 'Shrimp Short', '--password-stdin'], 'short\n');
     assert.notEqual(created.code, 0);
-    assert.match(`${created.stderr}${created.stdout}`, /at least 8/);
+    assert.match(`${created.stderr}${created.stdout}`, /at least 6/);
 
     const store = openStore(dataDir);
     try {

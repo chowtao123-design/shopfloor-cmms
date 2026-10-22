@@ -27,7 +27,7 @@ These steps set up the **team server** on a Windows PC. Use **PowerShell** or
    ```powershell
    git clone https://github.com/chowtao123-design/shopfloor-cmms.git C:\shopfloor-cmms
    ```
-3. **Create the first admin** (asks for a password, at least 8 characters):
+3. **Create the first admin** (asks for a password, at least 6 characters):
    ```powershell
    cd C:\shopfloor-cmms
    node server\admin.js create-user --admin <username> "<Your Name>"

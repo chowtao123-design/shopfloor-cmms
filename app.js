@@ -3150,14 +3150,14 @@ function usersCard() {
     reset.addEventListener('click', async () => {
       const password = await showInputDialog({
         title: `Reset password for ${user.displayName || user.username}`,
-        message: 'They use the new password at the next sign-in. Minimum 8 characters.',
+        message: 'They use the new password at the next sign-in. Minimum 6 characters.',
         label: 'New temporary password',
         initial: suggestPassword(),
         confirmText: 'Reset password',
       });
       if (password === null) return;
-      if (password.trim().length < 8) {
-        toast('The password must be at least 8 characters.', 'warn');
+      if (password.trim().length < 6) {
+        toast('The password must be at least 6 characters.', 'warn');
         return;
       }
       const next = await patchUser(user, { password: password.trim() });
@@ -3220,8 +3220,8 @@ function usersCard() {
       errorBox.textContent = 'Enter a username and a display name.';
       return;
     }
-    if (password.length < 8) {
-      errorBox.textContent = 'The temporary password must be at least 8 characters.';
+    if (password.length < 6) {
+      errorBox.textContent = 'The temporary password must be at least 6 characters.';
       return;
     }
     addUser.disabled = true;
