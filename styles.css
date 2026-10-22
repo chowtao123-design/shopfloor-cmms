@@ -2036,7 +2036,7 @@ body.logged-out .global-search {
 
 @media (min-width: 1024px) {
   :root {
-    --sidebar-w: 248px;
+    --sidebar-w: 272px; /* fits "Preventive Maintenance" plus its badge */
   }
 
   body.sidebar-rail {

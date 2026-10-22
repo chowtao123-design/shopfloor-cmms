@@ -853,6 +853,14 @@ function editedTag(record) {
   );
 }
 
+/** Local calendar date (YYYY-MM-DD) of an ISO timestamp; slicing the UTC string is a day ahead in the evening. */
+function localDateOf(isoTimestamp) {
+  const date = new Date(isoTimestamp);
+  if (Number.isNaN(date.getTime())) return String(isoTimestamp).slice(0, 10);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 /** "Created by <name> · <date>" for detail views (SPEC-v2.md 9.2). */
 function createdTag(record) {
   if (!teamUser || !record || !record.createdAt || !record.createdBy) return null;
@@ -860,7 +868,7 @@ function createdTag(record) {
   return h(
     'span',
     { class: 'edited-tag', title: `Created ${formatSyncTime(record.createdAt)}` },
-    `Created by ${who} · ${formatDate(String(record.createdAt).slice(0, 10))}`,
+    `Created by ${who} · ${formatDate(localDateOf(record.createdAt))}`,
   );
 }
 
@@ -4657,6 +4665,28 @@ function pmTableColumns() {
       value: (task) => LABELS.pmState[pmRowState(task, today)] || 'Upcoming',
       cell: (task) => pmStatePill(task, today),
       sortValue: (task) => PM_STATE_RANK[pmRowState(task, today)] ?? 2,
+    },
+    {
+      // The most-used PM action stays one click away on desktop, like the phone cards.
+      key: 'action',
+      label: '',
+      value: () => '',
+      cell: (task) => {
+        if (!canMarkPMDone() || pmPaused(machineById(task.machineId))) return null;
+        return h(
+          'button',
+          {
+            class: 'btn btn-primary btn-small',
+            type: 'button',
+            onclick: (event) => {
+              event.stopPropagation();
+              markPMTaskDone(task);
+            },
+            onkeydown: (event) => event.stopPropagation(),
+          },
+          'Mark done',
+        );
+      },
     },
   ];
 }
