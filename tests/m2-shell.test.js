@@ -93,15 +93,18 @@ test('app.js: renames and no leftover v2 wording in user-facing strings', () => 
   assert.match(src, /workOrders: 'Service order',/);
 });
 
-test('app.js: placeholder pages render Coming soon for people and statistics', () => {
+test('app.js: the statistics placeholder renders Coming soon; people pages arrive in M5', () => {
   const src = read('app.js');
   assert.match(src, /function renderComingSoon\(tab\)/);
-  for (const tab of ['coworkers', 'contractors', 'statistics']) {
-    assert.match(src, new RegExp(`${tab}: \\{`));
-  }
-  assert.match(src, /root === 'coworkers' \|\| root === 'contractors' \|\| root === 'statistics'/);
+  assert.match(src, /statistics: \{/);
+  assert.match(src, /root === 'statistics'\)/);
   // The last-tab restore accepts the new tabs.
   assert.match(src, /'coworkers', 'contractors', 'statistics'\]\.includes\(last\)/);
+  // People are real pages now (V3-M5): their routes render, not placeholders.
+  assert.match(src, /function renderCoworkers\(route\)/);
+  assert.match(src, /function renderContractors\(route\)/);
+  assert.doesNotMatch(src, /blurb: 'Coworkers arrive in a coming update/);
+  assert.doesNotMatch(src, /blurb: 'Outside contractors arrive in a coming update/);
 });
 
 test('app.js: drawer component and the machine-form drawer usage', () => {

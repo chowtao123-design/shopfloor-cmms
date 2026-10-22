@@ -3436,3 +3436,91 @@ body.logged-out .global-search {
 .manual-item .inline-link {
   margin-left: auto;
 }
+
+/* ==========================================================================
+   V3-M5 People: coworkers and outside contractors (SPEC-v3.md sections 5
+   and 13) — active/inactive pills, phone person cards, contact links with
+   Copy buttons, and the "View only" badge on read-only pages.
+   ========================================================================== */
+
+/* Active / Inactive pills: green like other good states, grey for inactive. */
+.status-active {
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+.status-inactive {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  box-shadow: inset 0 0 0 1px var(--neutral-fg);
+}
+
+/* "View only" badge (SPEC-v3.md 13.3): amber so it reads as a notice. */
+.view-only-badge {
+  background: var(--waiting-bg);
+  color: var(--waiting-fg);
+}
+
+/* Phone people cards: a tappable row plus the contact strip underneath.
+   The card carries the border; the row inside loses its own. */
+.person-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.person-card .person-row {
+  min-height: 56px;
+  border: 0;
+  border-radius: 0;
+}
+
+.person-card .person-row:hover {
+  border-radius: 0;
+}
+
+.person-card .contact-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.1rem;
+  padding: 0.55rem 0.8rem 0.65rem;
+  border-top: 1px dashed var(--border);
+  background: var(--surface-3);
+}
+
+/* Contact values: tel:/mailto: link with a small Copy button beside it. */
+.contact-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.contact-link {
+  color: var(--accent-strong);
+  overflow-wrap: anywhere;
+}
+
+.contact-link:hover,
+.contact-link:focus-visible {
+  text-decoration: underline;
+}
+
+.contact-copy {
+  flex: none;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.72rem;
+}
+
+/* Detail pages: keep the contact pairs in the card grid readable. */
+.detail-grid dd .contact-value {
+  justify-content: flex-start;
+}
+
+@media (min-width: 1024px) {
+  /* The table carries contact details as text; cards are hidden anyway. */
+  .data-table td[data-col='phone'],
+  .data-table td[data-col='email'] {
+    overflow-wrap: anywhere;
+  }
+}

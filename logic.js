@@ -73,6 +73,8 @@ export const WORK_ORDER_CATEGORIES = [
 // SPEC-v3.md section 3 item 2: due filters for the service order list.
 export const SO_DUE_FILTERS = ['overdue', 'this-week', 'none'];
 export const PM_STATES = ['overdue', 'due-soon', 'ok'];
+// SPEC-v3.md section 5: coworker shifts.
+export const COWORKER_SHIFTS = ['day', 'evening', 'night', 'rotating', 'other'];
 
 /** Map a stored priority to its current value; legacy `normal` reads as `medium`. */
 export function priorityValue(priority) {
@@ -126,6 +128,13 @@ export const LABELS = {
     user: 'User',
     coworker: 'Coworker',
     contractor: 'Contractor',
+  },
+  coworkerShift: {
+    day: 'Day',
+    evening: 'Evening',
+    night: 'Night',
+    rotating: 'Rotating',
+    other: 'Other',
   },
   pmState: {
     overdue: 'Overdue',
@@ -451,6 +460,24 @@ export function searchWorkOrders(workOrders, query, machines = []) {
   );
 }
 
+/**
+ * Search people records — coworkers and contractors (SPEC-v3.md section 5):
+ * case-insensitive text match over the given `fields` (default: the union of
+ * both stores' text fields). Tombstones (deleted) are never returned, and an
+ * empty query returns every live record, like the other search helpers.
+ */
+export function contactSearch(records, query, fields) {
+  const keys = Array.isArray(fields)
+    ? fields
+    : ['name', 'company', 'role', 'trade', 'contactName', 'phone', 'email', 'skills'];
+  const list = (Array.isArray(records) ? records : []).filter(
+    (record) => record && record.deleted !== true,
+  );
+  const needle = normalizeText(query).trim();
+  if (!needle) return list.slice();
+  return list.filter((record) => keys.some((key) => normalizeText(record[key]).includes(needle)));
+}
+
 function aggregateUsage(partsUsed = []) {
   const usage = new Map();
   for (const item of partsUsed || []) {
@@ -621,6 +648,18 @@ export function formatHours(hours) {
   if (!Number.isFinite(value) || value <= 0) return '—';
   const rounded = Math.round(value * 100) / 100;
   return `${rounded} h`;
+}
+
+/**
+ * "$126.50" for money values (contractor rates and costs, SPEC-v3.md section
+ * 5); null/undefined/non-numbers become null so callers can hide the figure.
+ */
+export function formatMoney(value) {
+  const amount = Number(value);
+  if (value === null || value === undefined || value === '' || !Number.isFinite(amount)) {
+    return null;
+  }
+  return `$${amount.toFixed(2)}`;
 }
 
 /**

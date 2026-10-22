@@ -156,6 +156,9 @@ function helpGlossarySection(h) {
       ['Due date', 'When a service order should be finished. Overdue ones show the due date in red, and “Overdue” is also one of the filters.'],
       ['Requested by', 'Free text for who asked for the work — an operator or supervisor name.'],
       ['Assignee', 'A coworker, an outside contractor or a user account assigned to a service order. Assigned people show as initials avatars with their names in a tooltip.'],
+      ['Coworker', 'Someone on your shop-floor team kept in the Coworkers list: role, shift, skills, phone and email, and optionally the team login they use. Coworkers can be assigned to service orders and get labour hours.'],
+      ['Outside contractor', 'A company that services machines for you, kept in the Outside Contractors list: trade, contact person, phone, email, what they worked on and how many hours.'],
+      ['Contractor rate', 'An optional hourly rate on a contractor, in dollars per hour. Only roles with the Contractor rates permission can see rates and costs, or change them.'],
       ['Checklist', 'A list of steps on a service order you can tick off one by one — add steps, reorder them, tick and remove them.'],
       ['Labour hours', 'Who worked on a service order and for how long: each entry is a person, a date and hours in quarter-hour steps (plus an optional note). The total adds these plus any legacy minutes recorded before v3.'],
       ['Attachment', 'A photo or PDF attached to a service order. Photos are shrunk to at most 1600 px on the long side before upload; PDFs upload as they are. Attaching needs a connection — the order itself still saves offline.'],
@@ -234,6 +237,18 @@ function helpHowTo(h) {
       ],
       ['Find a part', ' — go to Parts and type a name or part number into the search box.'],
       [
+        'Add a coworker',
+        ' — People → Coworkers → + Add coworker: name, role, shift, phone, email and skills, and optionally link their team login. Inactive coworkers stay in the list behind the Inactive filter.',
+      ],
+      [
+        'Add an outside contractor',
+        ' — People → Outside Contractors → + Add contractor: company, trade, contact person and the machines they service. Open a contractor to see the service orders they worked on and their hours.',
+      ],
+      [
+        'Call or copy a contact',
+        ' — on a coworker or contractor page, phone numbers are call links and email addresses are mail links. The Copy button next to them copies the text; if copying is blocked, the text is selected so you can copy it yourself.',
+      ],
+      [
         'See a machine’s history',
         ' — Machines → open the machine → Repair history lists its service orders, newest first.',
       ],
@@ -295,7 +310,7 @@ function helpDesktop(h) {
     h(
       'p',
       {},
-      'On a wide screen (1024 px or more), the app shows a dark sidebar on the left in place of the bottom tab bar, lists turn into tables you can sort by clicking a column header, and opening a row shows its details in a pane beside the list. On Service Orders you can also switch between List, Board and Calendar views; filters and pagination sit above the table, and forms (new or edit) open in a panel that slides in from the right — Esc closes it after a “Discard changes?” check when anything is unsaved. The top bar has a global search box that finds service orders, machines and parts; pick a result with the arrow keys and press Enter. The sidebar can be collapsed to an icon rail with the button at its top. On phones the bottom bar has Home, Orders, Prev. Maint., Machines and More; the Service Orders filters open as a sheet from the bottom.',
+      'On a wide screen (1024 px or more), the app shows a dark sidebar on the left in place of the bottom tab bar, lists turn into tables you can sort by clicking a column header, and opening a row shows its details in a pane beside the list. On Service Orders you can also switch between List, Board and Calendar views; filters and pagination sit above the table, and forms (new or edit) open in a panel that slides in from the right — Esc closes it after a “Discard changes?” check when anything is unsaved. The top bar has a global search box that finds service orders, machines, parts and people; pick a result with the arrow keys and press Enter. Coworkers and Outside Contractors live under People in the sidebar. The sidebar can be collapsed to an icon rail with the button at its top. On phones the bottom bar has Home, Orders, Prev. Maint., Machines and More; the Service Orders filters open as a sheet from the bottom.',
     ),
     h('p', {}, 'Keyboard shortcuts (desktop only — they never fire while you are typing in a text field):'),
     helpShortcutsTable(h),

@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import {
   BACKUP_STORES,
+  COWORKER_SHIFTS,
   DEFAULT_MACHINE_TYPE,
   LABELS,
   MACHINE_STATUSES,
@@ -14,6 +15,7 @@ import {
   applyWorkOrderSave,
   applyWorkOrderStatus,
   buildPMCompletionOrder,
+  contactSearch,
   customTypeOptions,
   compactSyncLabel,
   dashboardCounts,
@@ -23,6 +25,7 @@ import {
   filterWorkOrders,
   formatDate,
   formatHours,
+  formatMoney,
   formatOrderNumber,
   formatPartsUsed,
   groupPMTasks,
@@ -51,6 +54,7 @@ import {
   workOrderAgeDays,
   workOrdersToCSV,
 } from './logic.js';
+import { labourByContractor, labourByCoworker, rangeFor } from './logic-stats.js';
 import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
 import * as sync from './sync.js';
@@ -375,6 +379,55 @@ function assigneeAvatars(assignees = [], { showNames = false } = {}) {
     ...entries.map((entry) => personAvatar(personName(entry), entry.kind)),
   );
   return showNames ? [wrap, h('span', { class: 'avatar-names muted' }, names.join(', '))] : wrap;
+}
+
+/* ----- Contact actions (SPEC-v3.md section 5): tel: and mailto: links,
+   each with a small Copy button. Copying uses the async clipboard API in the
+   click handler; a rejection falls back to selecting the text so the user
+   can copy it, and a successful copy toasts "Copied". ----- */
+
+function selectTextNode(node) {
+  if (!node || typeof document.createRange !== 'function') return;
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  const selection = window.getSelection();
+  if (!selection) return;
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function copyContactText(text, linkNode) {
+  const clip = navigator.clipboard;
+  if (clip && typeof clip.writeText === 'function') {
+    clip
+      .writeText(text)
+      .then(() => toast('Copied'))
+      .catch(() => selectTextNode(linkNode));
+    return;
+  }
+  selectTextNode(linkNode);
+}
+
+/** Phone or email value as a link + Copy button ("—" when empty). */
+function contactValue(kind, value) {
+  const text = String(value || '').trim();
+  if (!text) return h('span', { class: 'muted' }, '—');
+  const isPhone = kind === 'tel';
+  const href = `${isPhone ? 'tel:' : 'mailto:'}${text.replace(/\s+/g, '')}`;
+  const link = h('a', { class: 'contact-link', href }, text);
+  const label = isPhone ? 'phone number' : 'email address';
+  const copy = h(
+    'button',
+    {
+      class: 'btn btn-small contact-copy',
+      type: 'button',
+      'aria-label': `Copy ${label}`,
+      title: `Copy ${label}`,
+      onclick: () => copyContactText(text, link),
+    },
+    'Copy',
+  );
+  return h('span', { class: 'contact-value' }, link, copy);
 }
 
 /** Coloured priority badge (SPEC-v3.md 3.3: badge + text). */
@@ -962,6 +1015,8 @@ const tableSort = {
   machines: { key: null, dir: 'asc' },
   parts: { key: null, dir: 'asc' },
   pm: { key: null, dir: 'asc' },
+  coworkers: { key: null, dir: 'asc' },
+  contractors: { key: null, dir: 'asc' },
 };
 
 function toggleTableSort(pageKey, columnKey) {
@@ -3124,6 +3179,44 @@ function canMarkPMDone() {
   return canWriteArea('pm') && canWriteArea('serviceOrders');
 }
 
+/* See an area at all (Read or Write, SPEC-v3.md 13.3): none hides the page. */
+function canViewArea(area) {
+  return areaLevel(area) !== 'none';
+}
+
+/* Contractor rates & costs (SPEC-v3.md 13.1): Read shows rate/cost, Write
+   may edit the hourlyRate field. The server stays the authority. */
+function canReadRates() {
+  const level = areaLevel('contractorRates');
+  return level === 'read' || level === 'write';
+}
+
+function canWriteRates() {
+  return canWriteArea('contractorRates');
+}
+
+/** "View only" badge on read-only pages (SPEC-v3.md 13.3). */
+function viewOnlyBadge() {
+  return h(
+    'span',
+    { class: 'pill view-only-badge', title: 'You can view this page but not change it' },
+    'View only',
+  );
+}
+
+/** Route target for a hidden area (SPEC-v3.md 13.3: "You do not have access"). */
+function noAccessPage(title, areaLabel) {
+  setTitle(title);
+  return page(
+    pageHead(title),
+    emptyState(
+      'You do not have access',
+      `Your role does not include access to ${areaLabel}. An administrator can change that in Settings → Admin.`,
+      [h('a', { class: 'btn btn-primary', href: '#/home' }, 'Go Home')],
+    ),
+  );
+}
+
 function createAttachmentsEditor(initialAttachments = []) {
   const attachments = (initialAttachments || []).filter(Boolean);
   const gridHost = h('div', { class: 'attach-grid attach-grid-edit' });
@@ -4404,6 +4497,1055 @@ function renderPartForm(route) {
   return page(pageHead(editing ? 'Edit part' : 'Add part'), form);
 }
 
+/* ---------- People: coworkers (SPEC-v3.md sections 5 and 13) ---------- */
+
+const PEOPLE_FILTERS = ['active', 'inactive', 'all'];
+const PEOPLE_FILTER_LABELS = { active: 'Active', inactive: 'Inactive', all: 'All' };
+const PERSON_ACTIVE_LABELS = { active: 'Active', inactive: 'Inactive' };
+
+function peopleFilterFrom(route) {
+  const requested = route.params.get('filter') || 'active';
+  return PEOPLE_FILTERS.includes(requested) ? requested : 'active';
+}
+
+function activePill(record) {
+  return statusPill(record && record.active === false ? 'inactive' : 'active', PERSON_ACTIVE_LABELS);
+}
+
+function shiftLabel(coworker) {
+  return coworker && coworker.shift ? LABELS.coworkerShift[coworker.shift] || coworker.shift : '';
+}
+
+function linkedAccountLabel(coworker) {
+  if (!coworker || !coworker.linkedUserId) return null;
+  const user = teamUserById(coworker.linkedUserId);
+  if (!user) return 'Linked account (not in the user list)';
+  return user.username ? `${user.displayName} (@${user.username})` : user.displayName;
+}
+
+/* Service orders a person worked on (SPEC-v3.md section 5): assignee or
+   labour entry with that kind and id. */
+function personServiceOrders(personKind, personId) {
+  return state.workOrders.filter((order) => {
+    const assignees = Array.isArray(order.assignees) ? order.assignees : [];
+    if (assignees.some((entry) => entry && entry.kind === personKind && entry.id === personId)) {
+      return true;
+    }
+    const labour = Array.isArray(order.labour) ? order.labour : [];
+    return labour.some((entry) => entry && entry.kind === personKind && entry.personId === personId);
+  });
+}
+
+function activeTableColumn() {
+  return {
+    key: 'active',
+    label: 'Active',
+    value: (record) => (record.active === false ? 'Inactive' : 'Active'),
+    cell: (record) => activePill(record),
+    sortValue: (record) => (record.active === false ? 1 : 0),
+  };
+}
+
+function coworkersTableColumns() {
+  return [
+    { key: 'name', label: 'Name', value: (coworker) => coworker.name },
+    { key: 'role', label: 'Role', value: (coworker) => coworker.role },
+    {
+      key: 'shift',
+      label: 'Shift',
+      value: (coworker) => shiftLabel(coworker),
+      cell: (coworker) => (shiftLabel(coworker) ? h('span', {}, shiftLabel(coworker)) : h('span', { class: 'muted' }, '—')),
+    },
+    { key: 'phone', label: 'Phone', value: (coworker) => coworker.phone },
+    { key: 'email', label: 'Email', value: (coworker) => coworker.email },
+    { key: 'skills', label: 'Skills', value: (coworker) => coworker.skills },
+    activeTableColumn(),
+    editedByColumn(),
+  ];
+}
+
+function coworkerCard(coworker) {
+  return h(
+    'div',
+    { class: 'person-card card' },
+    h(
+      'a',
+      { class: 'row person-row', href: `#/coworkers/${encodeURIComponent(coworker.id)}` },
+      h(
+        'div',
+        { class: 'row-main' },
+        h('div', { class: 'row-title' }, coworker.name),
+        h(
+          'div',
+          { class: 'row-sub' },
+          [coworker.role, shiftLabel(coworker)].filter(Boolean).join(' · ') || 'Coworker',
+          editedTag(coworker),
+        ),
+      ),
+      h('div', { class: 'row-side' }, activePill(coworker)),
+      h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+    ),
+    coworker.phone || coworker.email
+      ? h(
+          'div',
+          { class: 'contact-list' },
+          coworker.phone ? contactValue('tel', coworker.phone) : null,
+          coworker.email ? contactValue('mailto', coworker.email) : null,
+        )
+      : null,
+  );
+}
+
+function renderCoworkers(route) {
+  setTitle('Coworkers');
+  const activeFilter = peopleFilterFrom(route);
+  const listHost = h('div', { class: 'list people-list' });
+  const tableHost = h('div', { class: 'table-wrap' });
+  let searchQuery = '';
+
+  function update(nextQuery) {
+    if (typeof nextQuery === 'string') searchQuery = nextQuery;
+    const coworkers = contactSearch(state.coworkers, searchQuery, [
+      'name',
+      'role',
+      'phone',
+      'email',
+      'skills',
+    ])
+      .filter(
+        (coworker) =>
+          activeFilter === 'all' || (activeFilter === 'active') === (coworker.active !== false),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    if (coworkers.length === 0) {
+      listHost.replaceChildren(
+        emptyState(
+          searchQuery || activeFilter !== 'all' ? 'No matching coworkers' : 'No coworkers yet',
+          searchQuery
+            ? 'Try a different search.'
+            : activeFilter !== 'all'
+              ? 'No coworkers in this filter.'
+              : 'Add the people who work on your machines: roles, shifts, skills and contact details.',
+          [
+            searchQuery || activeFilter !== 'all'
+              ? h('a', { class: 'btn', href: '#/coworkers?filter=all' }, 'Show all coworkers')
+              : null,
+            canWriteArea('coworkers')
+              ? h('a', { class: 'btn btn-primary', href: '#/coworkers/new' }, 'Add coworker')
+              : null,
+          ],
+        ),
+      );
+      listHost.classList.remove('cards-only');
+      tableHost.replaceChildren();
+    } else {
+      listHost.replaceChildren(...coworkers.map(coworkerCard));
+      listHost.classList.add('cards-only');
+      tableHost.replaceChildren(
+        buildDataTable(
+          'coworkers',
+          coworkersTableColumns(),
+          coworkers,
+          (coworker) => `#/coworkers/${encodeURIComponent(coworker.id)}`,
+          update,
+        ),
+      );
+    }
+  }
+
+  update();
+  const chips = h(
+    'div',
+    { class: 'chips', role: 'group', 'aria-label': 'Filter coworkers' },
+    PEOPLE_FILTERS.map((value) =>
+      h(
+        'a',
+        {
+          class: `chip${value === activeFilter ? ' is-active' : ''}`,
+          href: value === 'active' ? '#/coworkers' : `#/coworkers?filter=${value}`,
+          'aria-pressed': value === activeFilter ? 'true' : 'false',
+        },
+        PEOPLE_FILTER_LABELS[value],
+      ),
+    ),
+  );
+
+  return page(
+    pageHead(
+      'Coworkers',
+      areaLevel('coworkers') === 'read' ? viewOnlyBadge() : null,
+      canWriteArea('coworkers')
+        ? h('a', { class: 'btn btn-primary btn-small', href: '#/coworkers/new' }, '+ Add coworker')
+        : null,
+    ),
+    searchBox('Search coworkers', (value) => update(value)),
+    chips,
+    listHost,
+    tableHost,
+  );
+}
+
+/* Coworker form body shared by the full page (< 1024 px) and the desktop
+   drawer (SPEC-v3.md section 5). Returns the form node plus an isDirty()
+   probe for the drawer's discard check. */
+function coworkerFormTitle(existing) {
+  return existing ? 'Edit coworker' : 'Add coworker';
+}
+
+function linkedUserSelect(selectedId) {
+  const select = h('select', {});
+  const blank = h('option', { value: '' }, 'No linked account');
+  select.append(blank);
+  const users = teamUsers
+    .filter((user) => user && !user.disabled)
+    .sort((a, b) =>
+      String(a.displayName || '').localeCompare(String(b.displayName || ''), undefined, {
+        sensitivity: 'base',
+      }),
+    );
+  for (const user of users) {
+    const option = h(
+      'option',
+      { value: user.id },
+      user.username ? `${user.displayName} (@${user.username})` : user.displayName,
+    );
+    if (user.id === selectedId) option.selected = true;
+    select.append(option);
+  }
+  if (selectedId && !users.some((user) => user.id === selectedId)) {
+    const option = h('option', { value: selectedId }, 'Linked account (not in the list)');
+    option.selected = true;
+    select.append(option);
+  }
+  return select;
+}
+
+function coworkerFormBody(existing) {
+  const base = existing || {
+    name: '',
+    role: '',
+    phone: '',
+    email: '',
+    shift: '',
+    skills: '',
+    linkedUserId: null,
+    active: true,
+    notes: '',
+  };
+  const form = h('form', { class: 'form', novalidate: true });
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+  const nameInput = h('input', {
+    type: 'text',
+    required: true,
+    maxlength: '80',
+    autocomplete: 'off',
+    placeholder: 'e.g. Ana Cruz',
+    value: base.name || '',
+  });
+  const roleInput = h('input', {
+    type: 'text',
+    maxlength: '60',
+    autocomplete: 'off',
+    placeholder: 'e.g. Line supervisor',
+    value: base.role || '',
+  });
+  const phoneInput = h('input', {
+    type: 'tel',
+    autocomplete: 'off',
+    value: base.phone || '',
+  });
+  const emailInput = h('input', {
+    type: 'email',
+    autocomplete: 'off',
+    value: base.email || '',
+  });
+  const shiftSelect = selectFrom(['', ...COWORKER_SHIFTS], base.shift || '', (value) =>
+    value ? LABELS.coworkerShift[value] : 'No set shift',
+  );
+  const skillsInput = h('input', {
+    type: 'text',
+    maxlength: '200',
+    autocomplete: 'off',
+    placeholder: 'e.g. Juki timing, thread paths',
+    value: base.skills || '',
+  });
+  const linkedSelect = linkedUserSelect(base.linkedUserId || null);
+  const activeCheck = h('input', {
+    type: 'checkbox',
+    id: `coworker-active-${++fieldCounter}`,
+    checked: base.active !== false,
+  });
+  const activeField = h(
+    'fieldset',
+    { class: 'field fieldset' },
+    h('legend', { class: 'field-label' }, 'Active'),
+    h('div', { class: 'check-row' }, activeCheck, h('label', { for: activeCheck.id }, 'Worked on recently')),
+  );
+  const notesInput = h('textarea', { rows: 4, value: base.notes || '' });
+  const save = h('button', { class: 'btn btn-primary', type: 'submit' }, existing ? 'Save changes' : 'Add coworker');
+
+  form.append(
+    errorBox,
+    field('Name', nameInput),
+    h('div', { class: 'grid-2' }, field('Role', roleInput), field('Shift', shiftSelect)),
+    h('div', { class: 'grid-2' }, field('Phone', phoneInput), field('Email', emailInput)),
+    field('Skills', skillsInput, 'What they are good at — machine types they service.'),
+    field('Linked login account', linkedSelect, 'Optional: the team login this person uses.'),
+    activeField,
+    field('Notes', notesInput),
+    h('div', { class: 'form-actions' }, save, h(
+      'a',
+      {
+        class: 'btn',
+        href: existing ? `#/coworkers/${encodeURIComponent(existing.id)}` : '#/coworkers',
+      },
+      'Cancel',
+    )),
+  );
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const name = nameInput.value.trim();
+    if (!name) {
+      errorBox.textContent = 'Enter a name.';
+      nameInput.focus();
+      return;
+    }
+    const now = nowISO();
+    const record = {
+      ...base,
+      id: existing ? existing.id : uid(),
+      name,
+      role: roleInput.value.trim(),
+      phone: phoneInput.value.trim(),
+      email: emailInput.value.trim(),
+      skills: skillsInput.value.trim(),
+      linkedUserId: linkedSelect.value || null,
+      active: activeCheck.checked,
+      notes: notesInput.value.trim(),
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+    };
+    if (shiftSelect.value) record.shift = shiftSelect.value;
+    else delete record.shift;
+    save.disabled = true;
+    try {
+      await sync.saveRecord('coworkers', record, existing ? existing.version : null);
+      await refreshState();
+      toast(existing ? 'Coworker saved.' : 'Coworker added.');
+      navigate(`#/coworkers/${encodeURIComponent(record.id)}`);
+    } catch (error) {
+      errorBox.textContent = 'Could not save. Please try again.';
+      console.error(error);
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  let dirty = false;
+  const markDirty = () => {
+    dirty = true;
+  };
+  form.addEventListener('input', markDirty);
+  form.addEventListener('change', markDirty);
+
+  return { node: form, isDirty: () => dirty };
+}
+
+function renderCoworkerForm(route) {
+  const id = route.segments[1];
+  const editing = Boolean(id && id !== 'new');
+  const existing = editing ? coworkerById(id) : null;
+  setTitle(coworkerFormTitle(existing));
+  if (editing && !existing) {
+    return page(
+      pageHead('Coworker not found'),
+      emptyState('That coworker does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/coworkers' }, 'Back to Coworkers'),
+      ]),
+    );
+  }
+  if (!canWriteArea('coworkers')) {
+    return page(
+      pageHead(coworkerFormTitle(existing)),
+      emptyState(
+        'View only',
+        'You need the Coworkers write permission to add or edit coworkers.',
+        [h('a', { class: 'btn btn-primary', href: '#/coworkers' }, 'Back to Coworkers')],
+      ),
+    );
+  }
+  const { node } = coworkerFormBody(existing);
+  return page(pageHead(coworkerFormTitle(existing)), node);
+}
+
+/* Labour hours per range for the detail pages (SPEC-v3.md section 5):
+   today-based 30 / 90 / 365-day windows via logic-stats rangeFor. */
+function contractorHoursEntries(contractor) {
+  const includeCost = canReadRates();
+  return [30, 90, 365].map((days) => {
+    const rows = labourByContractor(state.workOrders, [contractor], rangeFor(days), { includeCost });
+    const row = rows[0] || { hours: 0, cost: null };
+    return { days, hours: row.hours, cost: row.cost };
+  });
+}
+
+function coworkerHoursEntries(coworker) {
+  return [30, 90, 365].map((days) => {
+    const rows = labourByCoworker(state.workOrders, [coworker], rangeFor(days));
+    const row = rows[0] || { hours: 0 };
+    return { days, hours: row.hours };
+  });
+}
+
+function personHoursGrid(entries) {
+  const cells = [];
+  for (const entry of entries) {
+    cells.push(h('dt', {}, `Last ${entry.days} days`));
+    const hours = `${entry.hours} h`;
+    cells.push(
+      h(
+        'dd',
+        {},
+        entry.cost === null || entry.cost === undefined ? hours : `${hours} · ${formatMoney(entry.cost)}`,
+      ),
+    );
+  }
+  return h('dl', { class: 'detail-grid' }, ...cells);
+}
+
+function renderCoworkerDetail(route) {
+  const coworker = coworkerById(route.segments[1]);
+  setTitle(coworker ? coworker.name : 'Coworker not found');
+  if (!coworker) {
+    return page(
+      pageHead('Coworker not found'),
+      emptyState('That coworker does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/coworkers' }, 'Back to Coworkers'),
+      ]),
+    );
+  }
+
+  const orders = sortWorkOrdersNewest(personServiceOrders('coworker', coworker.id));
+  const hours = coworkerHoursEntries(coworker);
+  const linked = linkedAccountLabel(coworker);
+
+  async function deleteCoworker() {
+    const yes = await showConfirm({
+      title: 'Delete this coworker?',
+      message: `${coworker.name} will be removed from the Coworkers list. Their labour hours stay on the service orders they worked on.`,
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      danger: true,
+    });
+    if (!yes) return;
+    await sync.deleteRecord('coworkers', coworker.id, coworker.version);
+    await refreshState();
+    toast('Coworker deleted.');
+    navigate('#/coworkers');
+  }
+
+  const details = h(
+    'dl',
+    { class: 'detail-grid' },
+    h('dt', {}, 'Role'),
+    h('dd', {}, coworker.role || '—'),
+    h('dt', {}, 'Shift'),
+    h('dd', {}, shiftLabel(coworker) || '—'),
+    h('dt', {}, 'Phone'),
+    h('dd', {}, contactValue('tel', coworker.phone)),
+    h('dt', {}, 'Email'),
+    h('dd', {}, contactValue('mailto', coworker.email)),
+    h('dt', {}, 'Skills'),
+    h('dd', {}, coworker.skills || '—'),
+    h('dt', {}, 'Linked login account'),
+    h('dd', {}, linked || '—'),
+    h('dt', {}, 'Active'),
+    h('dd', {}, activePill(coworker)),
+    h('dt', {}, 'Notes'),
+    h('dd', { class: 'pre' }, coworker.notes || '—'),
+  );
+
+  return page(
+    h(
+      'div',
+      { class: 'detail-head' },
+      h(
+        'div',
+        {},
+        h('h2', {}, coworker.name),
+        h('div', { class: 'row-sub' }, [coworker.role, shiftLabel(coworker)].filter(Boolean).join(' · ')),
+      ),
+      areaLevel('coworkers') === 'read' ? viewOnlyBadge() : activePill(coworker),
+    ),
+    detailMeta(coworker),
+    conflictBanner('coworkers', coworker.id),
+    h(
+      'div',
+      { class: 'button-row' },
+      canWriteArea('coworkers')
+        ? h('a', { class: 'btn btn-primary btn-small', href: `#/coworkers/${encodeURIComponent(coworker.id)}/edit` }, 'Edit coworker')
+        : null,
+    ),
+    h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
+    sectionTitle('Service orders'),
+    h('p', { class: 'muted field-hint' }, 'Where they are an assignee or have labour hours.'),
+    orders.length
+      ? h('div', { class: 'list' }, ...orders.map(jobRow))
+      : h('p', { class: 'muted' }, 'No service orders for this coworker yet.'),
+    sectionTitle('Labour hours'),
+    h('div', { class: 'card' }, personHoursGrid(hours)),
+    h(
+      'div',
+      { class: 'form-actions', style: { marginTop: '1.5rem' } },
+      canWriteArea('coworkers')
+        ? h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteCoworker }, 'Delete coworker')
+        : null,
+    ),
+    historySection('coworkers', coworker.id),
+  );
+}
+
+/* ---------- People: outside contractors (SPEC-v3.md sections 5 and 13) ---------- */
+
+function contractorsServicedMachines(contractor) {
+  const ids = Array.isArray(contractor.machineIds) ? contractor.machineIds : [];
+  return state.machines
+    .filter((machine) => ids.includes(machine.id))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
+function contractorsTableColumns() {
+  const machinesByName = new Map();
+  for (const contractor of state.contractors) {
+    machinesByName.set(
+      contractor.id,
+      contractorsServicedMachines(contractor)
+        .map((machine) => machine.name)
+        .join(', '),
+    );
+  }
+  const columns = [
+    { key: 'company', label: 'Company', value: (contractor) => contractor.company },
+    { key: 'trade', label: 'Trade', value: (contractor) => contractor.trade },
+    { key: 'contactName', label: 'Contact', value: (contractor) => contractor.contactName },
+    { key: 'phone', label: 'Phone', value: (contractor) => contractor.phone },
+    { key: 'email', label: 'Email', value: (contractor) => contractor.email },
+    {
+      key: 'machines',
+      label: 'Machines serviced',
+      value: (contractor) => machinesByName.get(contractor.id) || '',
+      cell: (contractor) => {
+        const names = machinesByName.get(contractor.id);
+        return names ? h('span', {}, names) : h('span', { class: 'muted' }, '—');
+      },
+    },
+  ];
+  // Contractor rates & costs show only with contractorRates Read
+  // (SPEC-v3.md 13.1); the column is omitted entirely otherwise.
+  if (canReadRates()) {
+    columns.push({
+      key: 'hourlyRate',
+      label: 'Hourly rate',
+      value: (contractor) => formatMoney(contractor.hourlyRate) || '—',
+      sortValue: (contractor) => {
+        const rate = Number(contractor.hourlyRate);
+        return contractor.hourlyRate === null || contractor.hourlyRate === undefined || !Number.isFinite(rate)
+          ? null
+          : rate;
+      },
+    });
+  }
+  columns.push(activeTableColumn(), editedByColumn());
+  return columns;
+}
+
+function contractorCard(contractor) {
+  return h(
+    'div',
+    { class: 'person-card card' },
+    h(
+      'a',
+      { class: 'row person-row', href: `#/contractors/${encodeURIComponent(contractor.id)}` },
+      h(
+        'div',
+        { class: 'row-main' },
+        h('div', { class: 'row-title' }, contractor.company),
+        h(
+          'div',
+          { class: 'row-sub' },
+          [contractor.trade, contractor.contactName].filter(Boolean).join(' · ') || 'Outside contractor',
+          editedTag(contractor),
+        ),
+      ),
+      h(
+        'div',
+        { class: 'row-side' },
+        activePill(contractor),
+      ),
+      h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+    ),
+    contractor.phone || contractor.email
+      ? h(
+          'div',
+          { class: 'contact-list' },
+          contractor.phone ? contactValue('tel', contractor.phone) : null,
+          contractor.email ? contactValue('mailto', contractor.email) : null,
+        )
+      : null,
+  );
+}
+
+function renderContractors(route) {
+  setTitle('Outside Contractors');
+  const activeFilter = peopleFilterFrom(route);
+  const listHost = h('div', { class: 'list people-list' });
+  const tableHost = h('div', { class: 'table-wrap' });
+  let searchQuery = '';
+
+  function update(nextQuery) {
+    if (typeof nextQuery === 'string') searchQuery = nextQuery;
+    const contractors = contactSearch(state.contractors, searchQuery, [
+      'company',
+      'trade',
+      'contactName',
+      'phone',
+      'email',
+    ])
+      .filter(
+        (contractor) =>
+          activeFilter === 'all' || (activeFilter === 'active') === (contractor.active !== false),
+      )
+      .sort((a, b) => a.company.localeCompare(b.company, undefined, { sensitivity: 'base' }));
+    if (contractors.length === 0) {
+      listHost.replaceChildren(
+        emptyState(
+          searchQuery || activeFilter !== 'all' ? 'No matching contractors' : 'No contractors yet',
+          searchQuery
+            ? 'Try a different search.'
+            : activeFilter !== 'all'
+              ? 'No contractors in this filter.'
+              : 'Add the companies that service your machines: contacts, trades and what they work on.',
+          [
+            searchQuery || activeFilter !== 'all'
+              ? h('a', { class: 'btn', href: '#/contractors?filter=all' }, 'Show all contractors')
+              : null,
+            canWriteArea('contractors')
+              ? h('a', { class: 'btn btn-primary', href: '#/contractors/new' }, 'Add contractor')
+              : null,
+          ],
+        ),
+      );
+      listHost.classList.remove('cards-only');
+      tableHost.replaceChildren();
+    } else {
+      listHost.replaceChildren(...contractors.map(contractorCard));
+      listHost.classList.add('cards-only');
+      tableHost.replaceChildren(
+        buildDataTable(
+          'contractors',
+          contractorsTableColumns(),
+          contractors,
+          (contractor) => `#/contractors/${encodeURIComponent(contractor.id)}`,
+          update,
+        ),
+      );
+    }
+  }
+
+  update();
+  const chips = h(
+    'div',
+    { class: 'chips', role: 'group', 'aria-label': 'Filter contractors' },
+    PEOPLE_FILTERS.map((value) =>
+      h(
+        'a',
+        {
+          class: `chip${value === activeFilter ? ' is-active' : ''}`,
+          href: value === 'active' ? '#/contractors' : `#/contractors?filter=${value}`,
+          'aria-pressed': value === activeFilter ? 'true' : 'false',
+        },
+        PEOPLE_FILTER_LABELS[value],
+      ),
+    ),
+  );
+
+  return page(
+    pageHead(
+      'Outside Contractors',
+      areaLevel('contractors') === 'read' ? viewOnlyBadge() : null,
+      canWriteArea('contractors')
+        ? h('a', { class: 'btn btn-primary btn-small', href: '#/contractors/new' }, '+ Add contractor')
+        : null,
+    ),
+    searchBox('Search contractors', (value) => update(value)),
+    chips,
+    listHost,
+    tableHost,
+  );
+}
+
+function contractorFormTitle(existing) {
+  return existing ? 'Edit contractor' : 'Add contractor';
+}
+
+function contractorFormBody(existing) {
+  const base = existing || {
+    company: '',
+    trade: '',
+    contactName: '',
+    phone: '',
+    email: '',
+    machineIds: [],
+    active: true,
+    notes: '',
+  };
+  const form = h('form', { class: 'form', novalidate: true });
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+  const companyInput = h('input', {
+    type: 'text',
+    required: true,
+    maxlength: '80',
+    autocomplete: 'off',
+    placeholder: 'e.g. Ace Juki Service',
+    value: base.company || '',
+  });
+  const tradeInput = h('input', {
+    type: 'text',
+    maxlength: '60',
+    autocomplete: 'off',
+    placeholder: 'e.g. Juki service, HVAC',
+    value: base.trade || '',
+  });
+  const contactNameInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    value: base.contactName || '',
+  });
+  const phoneInput = h('input', {
+    type: 'tel',
+    autocomplete: 'off',
+    value: base.phone || '',
+  });
+  const emailInput = h('input', {
+    type: 'email',
+    autocomplete: 'off',
+    value: base.email || '',
+  });
+  // hourlyRate is ruled by the contractorRates permission (SPEC-v3.md 13.1):
+  // hidden without Read, read-only without Write. The server preserves the
+  // stored rate on a PUT that cannot change it.
+  const showRate = canReadRates();
+  const rateEditable = canWriteRates();
+  const rateInput = h('input', {
+    type: 'number',
+    min: '0',
+    step: '0.01',
+    inputmode: 'decimal',
+    placeholder: 'e.g. 95',
+    value:
+      base.hourlyRate === null || base.hourlyRate === undefined || base.hourlyRate === ''
+        ? ''
+        : String(base.hourlyRate),
+    disabled: !rateEditable ? true : null,
+  });
+  const machineChecks = h('div', { class: 'check-list' });
+  if (state.machines.length === 0) {
+    machineChecks.append(h('p', { class: 'field-hint' }, 'No machines added yet.'));
+  } else {
+    for (const machine of state.machines
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))) {
+      const checkId = `contractor-machine-${++fieldCounter}`;
+      const checkbox = h('input', {
+        type: 'checkbox',
+        checked: (base.machineIds || []).includes(machine.id),
+        value: machine.id,
+      });
+      checkbox.id = checkId;
+      machineChecks.append(
+        h('div', { class: 'check-row' }, checkbox, h('label', { for: checkId }, machine.name)),
+      );
+    }
+  }
+  const machineFieldset = h(
+    'fieldset',
+    { class: 'field fieldset' },
+    h('legend', { class: 'field-label' }, 'Machines they service'),
+    machineChecks,
+  );
+  const activeCheck = h('input', {
+    type: 'checkbox',
+    id: `contractor-active-${++fieldCounter}`,
+    checked: base.active !== false,
+  });
+  const activeField = h(
+    'fieldset',
+    { class: 'field fieldset' },
+    h('legend', { class: 'field-label' }, 'Active'),
+    h('div', { class: 'check-row' }, activeCheck, h('label', { for: activeCheck.id }, 'Currently used by the shop')),
+  );
+  const notesInput = h('textarea', { rows: 4, value: base.notes || '' });
+  const save = h('button', { class: 'btn btn-primary', type: 'submit' }, existing ? 'Save changes' : 'Add contractor');
+
+  form.append(
+    errorBox,
+    field('Company', companyInput),
+    h('div', { class: 'grid-2' }, field('Trade', tradeInput), field('Contact name', contactNameInput)),
+    h('div', { class: 'grid-2' }, field('Phone', phoneInput), field('Email', emailInput)),
+    showRate ? field('Hourly rate', rateInput, rateEditable ? 'Costs on their detail page are hours × rate.' : 'Read-only: you need the Contractor rates write permission to change it.') : null,
+    machineFieldset,
+    activeField,
+    field('Notes', notesInput),
+    h('div', { class: 'form-actions' }, save, h(
+      'a',
+      {
+        class: 'btn',
+        href: existing ? `#/contractors/${encodeURIComponent(existing.id)}` : '#/contractors',
+      },
+      'Cancel',
+    )),
+  );
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const company = companyInput.value.trim();
+    if (!company) {
+      errorBox.textContent = 'Enter a company name.';
+      companyInput.focus();
+      return;
+    }
+    if (rateEditable) {
+      const rateText = String(rateInput.value || '').trim();
+      if (rateText !== '') {
+        const rate = Number(rateText);
+        if (!Number.isFinite(rate) || rate < 0) {
+          errorBox.textContent = 'Enter an hourly rate of 0 or more, or clear it.';
+          rateInput.focus();
+          return;
+        }
+      }
+    }
+    const now = nowISO();
+    const record = {
+      ...base,
+      id: existing ? existing.id : uid(),
+      company,
+      trade: tradeInput.value.trim(),
+      contactName: contactNameInput.value.trim(),
+      phone: phoneInput.value.trim(),
+      email: emailInput.value.trim(),
+      machineIds: [...machineChecks.querySelectorAll('input[type="checkbox"]:checked')].map(
+        (input) => input.value,
+      ),
+      active: activeCheck.checked,
+      notes: notesInput.value.trim(),
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+    };
+    if (rateEditable) {
+      const rateText = String(rateInput.value || '').trim();
+      if (rateText === '') delete record.hourlyRate;
+      else record.hourlyRate = Number(rateText);
+    } else if (base.hourlyRate === undefined) {
+      delete record.hourlyRate;
+    }
+    save.disabled = true;
+    try {
+      await sync.saveRecord('contractors', record, existing ? existing.version : null);
+      await refreshState();
+      toast(existing ? 'Contractor saved.' : 'Contractor added.');
+      navigate(`#/contractors/${encodeURIComponent(record.id)}`);
+    } catch (error) {
+      errorBox.textContent = 'Could not save. Please try again.';
+      console.error(error);
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  let dirty = false;
+  const markDirty = () => {
+    dirty = true;
+  };
+  form.addEventListener('input', markDirty);
+  form.addEventListener('change', markDirty);
+
+  return { node: form, isDirty: () => dirty };
+}
+
+function renderContractorForm(route) {
+  const id = route.segments[1];
+  const editing = Boolean(id && id !== 'new');
+  const existing = editing ? contractorById(id) : null;
+  setTitle(contractorFormTitle(existing));
+  if (editing && !existing) {
+    return page(
+      pageHead('Contractor not found'),
+      emptyState('That contractor does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/contractors' }, 'Back to Outside Contractors'),
+      ]),
+    );
+  }
+  if (!canWriteArea('contractors')) {
+    return page(
+      pageHead(contractorFormTitle(existing)),
+      emptyState(
+        'View only',
+        'You need the Outside Contractors write permission to add or edit contractors.',
+        [h('a', { class: 'btn btn-primary', href: '#/contractors' }, 'Back to Outside Contractors')],
+      ),
+    );
+  }
+  const { node } = contractorFormBody(existing);
+  return page(pageHead(contractorFormTitle(existing)), node);
+}
+
+function renderContractorDetail(route) {
+  const contractor = contractorById(route.segments[1]);
+  setTitle(contractor ? contractor.company : 'Contractor not found');
+  if (!contractor) {
+    return page(
+      pageHead('Contractor not found'),
+      emptyState('That contractor does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/contractors' }, 'Back to Outside Contractors'),
+      ]),
+    );
+  }
+
+  const machines = contractorsServicedMachines(contractor);
+  const orders = sortWorkOrdersNewest(personServiceOrders('contractor', contractor.id));
+  const hours = contractorHoursEntries(contractor);
+  const showRate = canReadRates();
+
+  async function deleteContractor() {
+    const yes = await showConfirm({
+      title: 'Delete this contractor?',
+      message: `${contractor.company} will be removed from the Outside Contractors list. Their labour hours stay on the service orders they worked on.`,
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      danger: true,
+    });
+    if (!yes) return;
+    await sync.deleteRecord('contractors', contractor.id, contractor.version);
+    await refreshState();
+    toast('Contractor deleted.');
+    navigate('#/contractors');
+  }
+
+  const detailPairs = [
+    h('dt', {}, 'Trade'),
+    h('dd', {}, contractor.trade || '—'),
+    h('dt', {}, 'Contact'),
+    h('dd', {}, contractor.contactName || '—'),
+    h('dt', {}, 'Phone'),
+    h('dd', {}, contactValue('tel', contractor.phone)),
+    h('dt', {}, 'Email'),
+    h('dd', {}, contactValue('mailto', contractor.email)),
+    showRate
+      ? [
+          h('dt', {}, 'Hourly rate'),
+          h('dd', {}, formatMoney(contractor.hourlyRate) || '—'),
+        ]
+      : null,
+    h('dt', {}, 'Machines serviced'),
+    h('dd', {}, machines.length === 0 ? '—' : `${machines.length === 1 ? '1 machine' : `${machines.length} machines`}`),
+    h('dt', {}, 'Active'),
+    h('dd', {}, activePill(contractor)),
+    h('dt', {}, 'Notes'),
+    h('dd', { class: 'pre' }, contractor.notes || '—'),
+  ].filter(Boolean);
+  const details = h('dl', { class: 'detail-grid' }, ...detailPairs.flat());
+
+  return page(
+    h(
+      'div',
+      { class: 'detail-head' },
+      h(
+        'div',
+        {},
+        h('h2', {}, contractor.company),
+        h('div', { class: 'row-sub' }, [contractor.trade, contractor.contactName].filter(Boolean).join(' · ')),
+      ),
+      areaLevel('contractors') === 'read' ? viewOnlyBadge() : activePill(contractor),
+    ),
+    detailMeta(contractor),
+    conflictBanner('contractors', contractor.id),
+    h(
+      'div',
+      { class: 'button-row' },
+      canWriteArea('contractors')
+        ? h('a', { class: 'btn btn-primary btn-small', href: `#/contractors/${encodeURIComponent(contractor.id)}/edit` }, 'Edit contractor')
+        : null,
+    ),
+    h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
+    sectionTitle('Machines serviced'),
+    machines.length
+      ? h(
+          'div',
+          { class: 'list' },
+          ...machines.map((machine) =>
+            h(
+              'a',
+              { class: 'row', href: `#/machines/${encodeURIComponent(machine.id)}` },
+              h(
+                'div',
+                { class: 'row-main' },
+                h('div', { class: 'row-title' }, machine.name),
+                h('div', { class: 'row-sub' }, [machineTypeLabel(machine), machine.location].filter(Boolean).join(' · ')),
+              ),
+              statusPill(machine.status, LABELS.machineStatus),
+              h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+            ),
+          ),
+        )
+      : h('p', { class: 'muted' }, 'No machines linked to this contractor yet.'),
+    sectionTitle('Service orders'),
+    h('p', { class: 'muted field-hint' }, 'Where they are an assignee or have labour hours.'),
+    orders.length
+      ? h('div', { class: 'list' }, ...orders.map(jobRow))
+      : h('p', { class: 'muted' }, 'No service orders for this contractor yet.'),
+    sectionTitle('Labour hours'),
+    h('div', { class: 'card' }, personHoursGrid(hours)),
+    h(
+      'div',
+      { class: 'form-actions', style: { marginTop: '1.5rem' } },
+      canWriteArea('contractors')
+        ? h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteContractor }, 'Delete contractor')
+        : null,
+    ),
+    historySection('contractors', contractor.id),
+  );
+}
+
+/* The M5 drawer usage (SPEC-v3.md section 10): add/edit opens in the right
+   drawer on desktop; phones and tablets keep the full-page form. */
+function maybeOpenCoworkerDrawer(route) {
+  if (!desktopMedia.matches) return false;
+  if (!canWriteArea('coworkers')) return false;
+  const second = route.segments[1];
+  const editing = Boolean(second && second !== 'new');
+  const existing = editing ? coworkerById(second) : null;
+  if (editing && !existing) return false;
+  const { node, isDirty } = coworkerFormBody(existing);
+  openDrawer({ title: existing ? 'Edit coworker' : 'New coworker', content: node, isDirty });
+  return true;
+}
+
+function maybeOpenContractorDrawer(route) {
+  if (!desktopMedia.matches) return false;
+  if (!canWriteArea('contractors')) return false;
+  const second = route.segments[1];
+  const editing = Boolean(second && second !== 'new');
+  const existing = editing ? contractorById(second) : null;
+  if (editing && !existing) return false;
+  const { node, isDirty } = contractorFormBody(existing);
+  openDrawer({ title: existing ? 'Edit contractor' : 'New contractor', content: node, isDirty });
+  return true;
+}
+
 /* ---------- PM ---------- */
 
 /* In-page dialog after "Mark done" (SPEC-v3.md section 4): optional labour
@@ -5415,6 +6557,8 @@ const STORE_LABELS = {
   parts: 'Part',
   workOrders: 'Service order',
   pmTasks: 'PM task',
+  coworkers: 'Coworker',
+  contractors: 'Contractor',
 };
 
 /** Failed outbox entries from sync.js, with a Retry button (SPEC-v2.md 8). */
@@ -5971,6 +7115,8 @@ async function render() {
   const route = routeInfo();
   const [root, second, third] = route.segments;
   const tab = root || 'home';
+  // Hidden areas leave the navigation too (SPEC-v3.md 13.3).
+  applyNavPermissions();
 
   for (const link of document.querySelectorAll('.tab, .sidebar a[data-tab]')) {
     if (link.dataset.tab === tab) link.setAttribute('aria-current', 'page');
@@ -6058,8 +7204,47 @@ async function render() {
       content = renderPMTaskDetail(route);
       isDetail = true;
     }
-  } else if (root === 'coworkers' || root === 'contractors' || root === 'statistics') {
-    // Routes arrive with their pages in M5/M6; placeholders for now.
+  } else if (root === 'coworkers') {
+    // People pages (SPEC-v3.md section 5, permissions section 13).
+    if (!canViewArea('coworkers')) {
+      content = noAccessPage('Coworkers', 'Coworkers');
+    } else if (!second) {
+      content = renderCoworkers(route);
+    } else if (second === 'new' || third === 'edit') {
+      // Desktop opens the form in the drawer (SPEC-v3.md section 10);
+      // phones and tablets keep the full-page form.
+      const peopleDrawer = maybeOpenCoworkerDrawer(route);
+      if (peopleDrawer) {
+        content = renderCoworkers({ segments: ['coworkers'], params: route.params });
+      } else {
+        content = renderCoworkerForm(route);
+        if (second !== 'new') isDetail = true;
+      }
+    } else {
+      content = renderCoworkerDetail(route);
+      isDetail = true;
+      splitListRoot = 'coworkers';
+    }
+  } else if (root === 'contractors') {
+    if (!canViewArea('contractors')) {
+      content = noAccessPage('Outside Contractors', 'Outside Contractors');
+    } else if (!second) {
+      content = renderContractors(route);
+    } else if (second === 'new' || third === 'edit') {
+      const peopleDrawer = maybeOpenContractorDrawer(route);
+      if (peopleDrawer) {
+        content = renderContractors({ segments: ['contractors'], params: route.params });
+      } else {
+        content = renderContractorForm(route);
+        if (second !== 'new') isDetail = true;
+      }
+    } else {
+      content = renderContractorDetail(route);
+      isDetail = true;
+      splitListRoot = 'contractors';
+    }
+  } else if (root === 'statistics') {
+    // The Statistics page arrives with M6.
     content = renderComingSoon(tab);
   } else if (root === 'help') {
     setTitle('Help');
@@ -6086,7 +7271,11 @@ async function render() {
         ? renderJobs(listRoute)
         : splitListRoot === 'machines'
           ? renderMachines(listRoute)
-          : renderParts(listRoute);
+          : splitListRoot === 'coworkers'
+            ? renderCoworkers(listRoute)
+            : splitListRoot === 'contractors'
+              ? renderContractors(listRoute)
+              : renderParts(listRoute);
     content = h(
       'div',
       { class: 'split' },
@@ -6328,20 +7517,12 @@ function maybeOpenPMDrawer(route) {
   return true;
 }
 
-/* ----- Placeholder pages for the routes that arrive with M3-M6 ----- */
+/* ----- Placeholder page for the route that arrives with M6 ----- */
 
 const COMING_SOON_PAGES = {
   statistics: {
     title: 'Statistics',
     blurb: 'Statistics arrive in a coming update: machine status, downtime, PM compliance and labour hours.',
-  },
-  coworkers: {
-    title: 'Coworkers',
-    blurb: 'Coworkers arrive in a coming update: your shop-floor team with roles, shifts and skills.',
-  },
-  contractors: {
-    title: 'Outside Contractors',
-    blurb: 'Outside contractors arrive in a coming update: companies that service your machines, contacts and what they work on.',
   },
 };
 
@@ -6427,11 +7608,16 @@ function openMoreSheet() {
   const items = [
     { label: 'Parts', icon: NAV_ICONS.parts, href: '#/parts' },
     { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
-    { label: 'Coworkers', icon: NAV_ICONS.coworkers, href: '#/coworkers' },
-    { label: 'Outside Contractors', icon: NAV_ICONS.contractors, href: '#/contractors' },
+    // People follow the coworkers/contractors permissions (SPEC-v3.md 13.3).
+    canViewArea('coworkers') && { label: 'Coworkers', icon: NAV_ICONS.coworkers, href: '#/coworkers' },
+    canViewArea('contractors') && {
+      label: 'Outside Contractors',
+      icon: NAV_ICONS.contractors,
+      href: '#/contractors',
+    },
     { label: 'Help', icon: NAV_ICONS.help, href: '#/help' },
     { label: 'Settings', icon: NAV_ICONS.settings, href: '#/settings' },
-  ];
+  ].filter(Boolean);
   const backdrop = h('div', { class: 'sheet-backdrop' });
   moreSheetRoot = h(
     'section',
@@ -6525,6 +7711,47 @@ function globalSearchMatches(query) {
         title: part.name,
         sub: part.partNumber || '',
         href: `#/parts/${encodeURIComponent(part.id)}`,
+      });
+    }
+  }
+
+  // People (SPEC-v3.md section 10): coworkers by name, contractors by company
+  // and trade — only the areas this user may see (13.3).
+  if (canViewArea('coworkers')) {
+    let coworkerMatches = 0;
+    for (const coworker of contactSearch(state.coworkers, needle, [
+      'name',
+      'role',
+      'phone',
+      'email',
+      'skills',
+    ])) {
+      if (coworkerMatches >= 2) break;
+      coworkerMatches += 1;
+      results.push({
+        kind: 'Coworker',
+        title: coworker.name,
+        sub: coworker.role || '',
+        href: `#/coworkers/${encodeURIComponent(coworker.id)}`,
+      });
+    }
+  }
+  if (canViewArea('contractors')) {
+    let contractorMatches = 0;
+    for (const contractor of contactSearch(state.contractors, needle, [
+      'company',
+      'trade',
+      'contactName',
+      'phone',
+      'email',
+    ])) {
+      if (contractorMatches >= 2) break;
+      contractorMatches += 1;
+      results.push({
+        kind: 'Contractor',
+        title: contractor.company,
+        sub: contractor.trade || '',
+        href: `#/contractors/${encodeURIComponent(contractor.id)}`,
       });
     }
   }
@@ -6653,6 +7880,20 @@ function setUpSidebarRail() {
     apply(collapsed);
     storageSet(SIDEBAR_RAIL_KEY, collapsed ? '1' : '0');
   });
+}
+
+/* People areas with permission None leave the sidebar and the phone More
+   sheet (SPEC-v3.md 13.3); the routes themselves answer "You do not have
+   access". Local mode (no team user) sees everything. */
+function applyNavPermissions() {
+  const showCoworkers = canViewArea('coworkers');
+  const showContractors = canViewArea('contractors');
+  const coworkersLink = document.querySelector('.sidebar a[data-tab="coworkers"]');
+  if (coworkersLink) coworkersLink.hidden = !showCoworkers;
+  const contractorsLink = document.querySelector('.sidebar a[data-tab="contractors"]');
+  if (contractorsLink) contractorsLink.hidden = !showContractors;
+  const peopleGroup = document.querySelector('.sidebar-group');
+  if (peopleGroup) peopleGroup.hidden = !(showCoworkers || showContractors);
 }
 
 setUpSidebarRail();
