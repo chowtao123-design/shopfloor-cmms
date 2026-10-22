@@ -223,9 +223,50 @@ is hidden when no provider is configured). Providers:
   password here, and start it in an **empty dedicated folder** (opencode can
   read and edit the folder it runs in; an empty one gives it nothing to touch).
 
+### Setup steps — opencode
+
+1. On the machine that runs the maint-log server, create a new **empty folder**
+   (opencode can read and edit the folder it runs in; keep it dedicated).
+2. Start opencode there, bound to localhost, with a password:
+
+   ```
+   OPENCODE_SERVER_PASSWORD=choose-a-long-password opencode serve --port 4096
+   ```
+
+3. In Settings → **AI assistant** pick provider **opencode** and fill in:
+   Server URL `http://127.0.0.1:4096`, Server password (the value from step 2),
+   Provider ID and Model ID of the model your opencode uses.
+4. Press **Save**, then **Test connection**.
+
+### Setup steps — an OpenAI-compatible server (for example vLLM)
+
+1. Run your model server on the same machine (or anywhere the maint-log
+   server can reach it), for example with vLLM:
+
+   ```
+   vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000
+   ```
+
+   Ollama and LM Studio work the same way (Ollama's default port is 11434).
+2. In Settings → **AI assistant** pick provider **OpenAI-compatible** and fill
+   in: Base URL `http://127.0.0.1:8000/v1` (append `/v1`; for Ollama use
+   `http://127.0.0.1:11434/v1`), the API key the server expects (any value
+   when it does not check), and the exact model id the server serves (vLLM
+   prints it at startup).
+3. Press **Save**, then **Test connection**.
+
 Always use the **Test connection** button after changing settings. Secrets (the
 API key, the opencode password) are stored server-side only and are never sent
 back to the browser (the API answers `{configured: true}` style booleans).
+
+### Using the chat
+
+Signed-in users whose role has the **AI assistant** permission (Read or Write)
+get a round chat button fixed at the bottom right of every page. It opens the
+assistant panel: questions and answers, "Clear history" (your own chats only),
+and a one-line privacy notice. The assistant may suggest a **draft service
+order**; "Open as new service order" opens the normal form pre-filled and
+nothing is saved until you press Save there.
 
 How it behaves:
 

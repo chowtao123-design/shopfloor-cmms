@@ -1,7 +1,7 @@
 // Service worker: cache-first app shell so the log works offline.
 // Bump CACHE_VERSION whenever any shell file changes.
 
-const CACHE_VERSION = 21;
+const CACHE_VERSION = 22;
 const CACHE_NAME = `maint-log-v${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -10,6 +10,7 @@ const APP_SHELL = [
   './styles.css',
   './app.js',
   './charts.js',
+  './chat.js',
   './help.js',
   './db.js',
   './logic.js',

@@ -6,6 +6,7 @@ const HELP_SECTIONS = [
   { id: 'help-howto', title: 'How to…' },
   { id: 'help-install', title: 'Install on your phone' },
   { id: 'help-desktop', title: 'Desktop tips' },
+  { id: 'help-ai', title: 'AI assistant' },
   { id: 'help-faq', title: 'FAQ' },
 ];
 
@@ -366,6 +367,44 @@ function helpFaq(h) {
   );
 }
 
+/* AI assistant (SPEC-v3.md section 9, client help for V3-M8). */
+function helpAi(h) {
+  return helpSection(
+    h,
+    'help-ai',
+    'AI assistant',
+    h(
+      'p',
+      {},
+      'The round chat button at the bottom right of every page opens the AI assistant. It answers questions about this log: which machines are down, what maintenance is overdue, which parts are low on stock, or a short summary of the week.',
+    ),
+    helpList(h, [
+      [
+        h('strong', {}, 'Read-only: '),
+        'the assistant can look at records but never change them. It answers in text only.',
+      ],
+      [
+        h('strong', {}, 'Draft service orders: '),
+        'it may suggest a draft service order as a card. "Open as new service order" opens the normal form pre-filled — nothing is saved until you press Save there.',
+      ],
+      [
+        h('strong', {}, 'Your chats: '),
+        'history is stored per user and everyone can clear only their own.',
+      ],
+    ]),
+    h(
+      'p',
+      {},
+      'Privacy: questions and the records needed to answer them are sent to the configured AI provider.',
+    ),
+    h(
+      'p',
+      {},
+      'Admins turn the assistant on and choose the provider (opencode or any OpenAI-compatible server) in Settings → AI assistant. The button stays hidden while the assistant is off.',
+    ),
+  );
+}
+
 export function renderHelp(h) {
   return h(
     'div',
@@ -402,6 +441,7 @@ export function renderHelp(h) {
     helpHowTo(h),
     helpInstall(h),
     helpDesktop(h),
+    helpAi(h),
     helpFaq(h),
   );
 }

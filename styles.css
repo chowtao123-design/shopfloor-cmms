@@ -3807,3 +3807,322 @@ a.stat-tile-link:hover {
   width: 100%;
   height: auto;
 }
+
+/* ==========================================================================
+   V3-M8 AI assistant (SPEC-v3.md section 9): fixed chat button, popover
+   panel (desktop 380 × 560, phone full-screen sheet), draft card, Settings
+   card. Permissions section 13 decide visibility in app.js.
+   ========================================================================== */
+
+/* Fixed chat button: above the phone tab bar and the FAB so they never
+   overlap; on the desktop sidebar layout it sits alone bottom-right. */
+.ai-chat-fab {
+  position: fixed;
+  z-index: 65;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--shadow);
+}
+
+.ai-chat-fab:hover {
+  background: var(--accent-strong);
+}
+
+.ai-chat-fab:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.ai-chat-fab-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+
+.ai-chat-icon {
+  width: 24px;
+  height: 24px;
+}
+
+@media (max-width: 1023.98px) {
+  /* Keep the same right edge as the FAB and stack above it (the FAB bottom
+     is tabbar + safe-area + 1rem and it is ~52px tall). */
+  .ai-chat-fab {
+    right: max(1rem, calc((100vw - 720px) / 2 + 1rem));
+    bottom: calc(var(--tabbar-height) + env(safe-area-inset-bottom) + 5.5rem);
+  }
+}
+
+/* Login screen (SPEC-v2.md 9.1): no app chrome before sign-in. */
+body.logged-out .ai-chat-fab {
+  display: none !important;
+}
+
+/* The panel: desktop popover bottom-right; phone full-screen sheet. */
+.ai-chat-panel {
+  position: fixed;
+  right: 1.5rem;
+  bottom: calc(1.5rem + var(--tap) + 0.75rem);
+  z-index: 65;
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  height: 560px;
+  max-width: calc(100vw - 3rem);
+  max-height: calc(100vh - 3rem - var(--tap));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.ai-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.8rem 0.95rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-chat-title {
+  flex: 1;
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.ai-chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.8rem 0.95rem;
+  background: var(--surface-3);
+}
+
+/* Bubbles: user right, assistant left (SPEC-v3.md section 9). */
+.ai-msg {
+  max-width: 86%;
+  padding: 0.5rem 0.7rem;
+  border-radius: 12px;
+  font-size: 0.95rem;
+}
+
+.ai-msg.is-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--on-accent);
+  border-bottom-right-radius: 4px;
+}
+
+.ai-msg.is-assistant {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+/* Line breaks survive without innerHTML: paragraphs keep newlines. */
+.chat-para {
+  margin: 0 0 0.45rem;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.chat-list {
+  margin: 0 0 0.45rem;
+  padding-left: 1.2rem;
+}
+
+.chat-list li {
+  margin: 0 0 0.2rem;
+  overflow-wrap: anywhere;
+}
+
+.ai-msg > :last-child,
+.ai-msg > :last-child > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-chat-thinking {
+  align-self: flex-start;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+}
+
+.ai-chat-error {
+  margin: 0;
+  padding: 0.45rem 0.95rem;
+}
+
+.ai-chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding: 0.6rem 0.95rem 0.25rem;
+}
+
+.ai-chat-input {
+  flex: 1;
+  min-height: 2.6rem;
+  max-height: 8rem;
+  resize: vertical;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.ai-chat-form .btn {
+  margin: 0;
+  min-height: 2.6rem;
+}
+
+.ai-chat-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.75rem;
+  padding: 0 0.95rem 0.7rem;
+}
+
+.ai-chat-count {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.ai-chat-notice {
+  flex: 1;
+  min-width: 12rem;
+  margin: 0;
+  text-align: right;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Starter suggestions when the conversation is empty. */
+.ai-chat-starters {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.4rem 0.2rem;
+}
+
+.ai-chat-starters-title {
+  margin: 0 0 0.1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ai-starter {
+  align-self: flex-start;
+  max-width: 100%;
+  text-align: left;
+}
+
+/* Draft service order card (SPEC-v3.md section 9): shown in the chat, saved
+   only after "Open as new service order" + Save in the normal form. */
+.ai-draft-card {
+  align-self: flex-start;
+  width: 92%;
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+}
+
+.ai-draft-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+}
+
+.ai-draft-facts {
+  margin: 0 0 0.4rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.55rem;
+}
+
+.ai-draft-facts dt {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.ai-draft-facts dd {
+  margin: 0;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.ai-draft-card .btn {
+  margin: 0;
+}
+
+/* Phone: the panel becomes a full-screen sheet above the tab bar. */
+@media (max-width: 767.98px) {
+  .ai-chat-panel {
+    right: 0;
+    left: 0;
+    bottom: 0;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    max-width: none;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .ai-msg {
+    max-width: 92%;
+  }
+
+  .ai-chat-notice {
+    text-align: left;
+  }
+}
+
+/* Settings → AI assistant card fields (SPEC-v3.md section 9). */
+.ai-settings-card .field-label {
+  display: block;
+  margin: 0.55rem 0 0.2rem;
+}
+
+.ai-settings-card input,
+.ai-settings-card select {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.ai-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-top: 0.5rem;
+}

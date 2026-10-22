@@ -70,6 +70,15 @@ import {
   topMachinesByBreakdowns,
 } from './logic-stats.js';
 import { barChart, horizontalBarChart, lineChart } from './charts.js';
+import {
+  aiSettingsCard,
+  consumeAiDraft,
+  initAiChat,
+  parseDraftForForm,
+  refreshAiStatus,
+  resetAiChat,
+  updateAiChatButton,
+} from './chat.js';
 import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
 import * as sync from './sync.js';
@@ -2391,6 +2400,13 @@ function soCalendarBody(filtered) {
   return host;
 }
 
+/* AI draft (SPEC-v3.md section 9): the chat panel stashes a draft and the
+   normal new-service-order form opens pre-filled. Nothing is saved until the
+   user presses Save; machine ids and assignees must match local records. */
+function prefillFromAiDraft(draft) {
+  return parseDraftForForm(draft, state.machines, assignablePeople());
+}
+
 function renderJobNew(route) {
   setTitle('New service order');
   if (state.machines.length === 0) {
@@ -2405,9 +2421,11 @@ function renderJobNew(route) {
   }
   // Phone/tablet form page; on desktop render() opens the drawer instead.
   const preset = route.params.get('machine');
+  const prefill = prefillFromAiDraft(consumeAiDraft() || {});
   const { node } = workOrderFormBody({
     existing: null,
     presetMachineId: preset && machineById(preset) ? preset : null,
+    prefill: prefill || null,
   });
   return page(pageHead('New service order'), node);
 }
@@ -3335,7 +3353,13 @@ function createAttachmentsEditor(initialAttachments = []) {
 /* ----- Service order form body: sectioned form used by the full page
    (phone/tablet) and the desktop drawer (SPEC-v3.md section 3 item 6) ----- */
 
-function workOrderFormBody({ existing = null, presetMachineId = null, cancelTo = undefined, onSaved = null } = {}) {
+function workOrderFormBody({
+  existing = null,
+  presetMachineId = null,
+  prefill = null,
+  cancelTo = undefined,
+  onSaved = null,
+} = {}) {
   const isNew = !existing;
   const today = todayISO();
   const base = existing || {
@@ -3358,6 +3382,14 @@ function workOrderFormBody({ existing = null, presetMachineId = null, cancelTo =
     checklist: [],
     attachments: [],
   };
+  /* AI draft prefill (SPEC-v3.md section 9): form-safe fields only; the
+     prefill comes from parseDraftForForm, which validated machine ids and
+     assignees against this device's records. */
+  if (!existing && prefill && typeof prefill === 'object') {
+    for (const [key, value] of Object.entries(prefill)) {
+      if (value !== undefined && value !== null) base[key] = value;
+    }
+  }
 
   const form = h('form', { class: 'form so-form', novalidate: true });
   const errorBox = h('div', { class: 'form-error', role: 'alert' });
@@ -7095,6 +7127,8 @@ function renderSettings() {
           failedSyncSection(),
           isAdmin() ? [sectionTitle('Users'), usersCard()] : null,
           isAdmin() ? [sectionTitle('Import v1 data'), importV1Card()] : null,
+          // AI provider settings need settings Write (SPEC-v3.md 13.1).
+          canWriteArea('settings') ? [sectionTitle('AI assistant'), aiSettingsCard()] : null,
         ]
       : [
           sectionTitle('Data'),
@@ -7604,6 +7638,9 @@ async function render() {
   const tab = root || 'home';
   // Hidden areas leave the navigation too (SPEC-v3.md 13.3).
   applyNavPermissions();
+  // AI chat button (V3-M8, SPEC-v3.md section 9): visibility follows the
+  // aiAssistant permission and the server's provider status.
+  updateAiChatButton();
 
   for (const link of document.querySelectorAll('.tab, .sidebar a[data-tab]')) {
     if (link.dataset.tab === tab) link.setAttribute('aria-current', 'page');
@@ -7993,7 +8030,14 @@ function maybeOpenJobDrawer(route) {
   }
   const presetId = route.params.get('machine');
   const presetMachineId = presetId && machineById(presetId) ? presetId : null;
-  const { node, isDirty } = workOrderFormBody({ existing: null, presetMachineId, cancelTo: null });
+  // An AI draft waiting in this tab opens pre-filled (V3-M8, SPEC-v3 9).
+  const prefill = prefillFromAiDraft(consumeAiDraft() || {});
+  const { node, isDirty } = workOrderFormBody({
+    existing: null,
+    presetMachineId,
+    prefill: prefill || null,
+    cancelTo: null,
+  });
   openDrawer({ title: 'New service order', content: node, isDirty });
   return true;
 }
@@ -8921,6 +8965,7 @@ function showLoginScreen() {
   loginActive = true;
   teamUser = null;
   teardownTeamHeader();
+  resetAiChat();
   document.body.classList.add('logged-out');
   setTitle('Sign in');
   appMain.replaceChildren();
@@ -8950,6 +8995,10 @@ async function enterTeamMode(user) {
   bindSyncEvents();
   setupTeamHeader();
   await loadTeamUsers();
+  // AI chat (V3-M8): ask the server whether a provider is configured, then
+  // the button follows the aiAssistant permission on every render.
+  await refreshAiStatus();
+  updateAiChatButton();
   refreshBranding();
   await sync.start(user);
   await sync.pull();
@@ -9016,5 +9065,17 @@ function registerServiceWorker() {
     console.error('Service worker registration failed:', error);
   });
 }
+
+/* V3-M8 AI chat (SPEC-v3.md section 9, permissions section 13): the fixed
+   chat button, its panel and the Settings card live in chat.js; wire them to
+   this app's api, permission helpers and records. */
+initAiChat({
+  api: sync.api,
+  areaLevel,
+  machines: () => state.machines,
+  isSignedIn: () => Boolean(teamUser),
+  navigate,
+  showConfirm,
+});
 
 start();
