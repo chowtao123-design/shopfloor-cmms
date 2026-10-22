@@ -653,7 +653,8 @@ async function loginHandler(req, res, ctx) {
   }
   clearUsernameFailures(ctx.store, username);
   const session = createSession(ctx.store, user.id, ctx.sessionDays);
-  sendJson(req, res, 200, publicUser(user), {
+  // Same shape as GET /api/me, so the client knows the role's permissions right after signing in.
+  sendJson(req, res, 200, { ...publicUser(user), permissions: permissionsOf(ctx.store, user.role_id ?? user.roleId) }, {
     'Set-Cookie': sessionCookie(session.token, ctx.sessionDays, ctx.scheme === 'https'),
   });
 }

@@ -4894,8 +4894,15 @@ async function eraseAllData() {
 
 /* ---------- Team Settings: backups, users, v1 import (SPEC-v2.md 9.5-9.7) ---------- */
 
+// Admin screens follow the roles model (SPEC-v3 13): "Users & roles" write, not the legacy role column.
 function isAdmin() {
-  return Boolean(teamUser && teamUser.role === 'admin');
+  return Boolean(teamUser && teamUser.permissions && teamUser.permissions.admin === 'write');
+}
+
+function roleLabel(user) {
+  if (!user) return '';
+  if (user.roleName) return user.roleName;
+  return user.role === 'admin' ? 'Administrator' : 'Technician';
 }
 
 function formatBytes(bytes) {
@@ -5198,7 +5205,7 @@ function usersCard() {
         `${user.displayName || user.username}${disabled ? ' (disabled)' : ''}`,
         h('span', { class: 'muted' }, user.username),
       ),
-      h('span', { class: 'user-role' }, user.role === 'admin' ? 'Administrator' : 'Technician'),
+      h('span', { class: 'user-role' }, roleLabel(user)),
       ...stateButtons,
     );
   }
@@ -5433,7 +5440,7 @@ function renderSettings() {
       ? h(
           'p',
           { class: 'muted' },
-          `Signed in as ${teamUser.displayName}${teamUser.role === 'admin' ? ' (administrator)' : ''} — everyone on the team shares one log on the server.`,
+          `Signed in as ${teamUser.displayName} (${roleLabel(teamUser)}) — everyone on the team shares one log on the server.`,
         )
       : h('p', { class: 'muted' }, 'All data lives on this device only. Keep a backup copy somewhere safe.'),
     h('p', { class: 'field-hint' }, `Last backup: ${lastBackup ? formatBackupStamp(lastBackup) : 'Never'}`),
@@ -6520,7 +6527,7 @@ function toggleUserMenu() {
   }
   const displayName = teamUser && teamUser.displayName ? teamUser.displayName : '';
   const username = teamUser && teamUser.username ? teamUser.username : '';
-  const role = teamUser && teamUser.role === 'admin' ? 'Administrator' : 'Technician';
+  const role = roleLabel(teamUser);
   const accountLine = username ? `@${username} · ${role}` : role;
   userMenuElement = h(
     'div',

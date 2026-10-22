@@ -80,7 +80,8 @@ test('successful login sets a session cookie with the right flags (no Secure ove
   assert.ok(!sidCookie.includes('Secure'));
   assert.ok(token);
   const root = handle.store.getUserByUsername('root');
-  assert.deepEqual(body, {
+  const { permissions, ...rest } = body;
+  assert.deepEqual(rest, {
     id: root.id,
     username: 'root',
     displayName: 'Root Admin',
@@ -88,6 +89,8 @@ test('successful login sets a session cookie with the right flags (no Secure ove
     roleId: root.role_id,
     roleName: 'Administrator',
   });
+  // The login reply carries the role's permissions (same as GET /api/me).
+  assert.equal(permissions.admin, 'write');
 });
 
 test('cookie strings set and clear with Secure only for HTTPS', () => {

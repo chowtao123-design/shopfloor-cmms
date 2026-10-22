@@ -1025,3 +1025,16 @@ test('admin.js create-user --admin/--role assigns roles; list-users shows role n
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+test('login response carries the role permissions, same as GET /api/me', async () => {
+  for (const [username, password, adminLevel] of [['root', 'root-password-1', 'write'], ['vera', 'vera-password-1', 'none']]) {
+    const res = await fetch(`${base}/api/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...XRW },
+      body: JSON.stringify({ username, password }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.permissions?.admin, adminLevel, `${username} admin level`);
+    assert.equal(typeof body.roleName, 'string');
+  }
+});
