@@ -361,6 +361,60 @@ export function completePMTask(task, options = {}) {
   return { task: updatedTask, workOrder };
 }
 
+/**
+ * "Mark done" for v3 PM tasks (SPEC-v3.md section 4, V3-M4): builds the Done
+ * service order that copies the task's priority (legacy `normal` reads as
+ * `medium`; none given → `medium`), category (only when set), assignees and
+ * the checklist with every item ticked, plus the updated task with
+ * `lastDoneAt` set to today. `user` (the signed-in user, may be null in local
+ * mode) yields `labourPerson` — the default person for the optional labour
+ * hours dialog shown after Mark done.
+ */
+export function buildPMCompletionOrder(task, user, today = todayISO(), options = {}) {
+  const now = options.now || new Date().toISOString();
+  let id = options.id;
+  if (!id) {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      id = crypto.randomUUID();
+    } else {
+      throw new Error('buildPMCompletionOrder requires an id for the work order');
+    }
+  }
+  const assignees = Array.isArray(task.assignees)
+    ? task.assignees.filter(Boolean).slice(0, 10).map((entry) => ({ kind: entry.kind, id: entry.id }))
+    : [];
+  const checklist = Array.isArray(task.checklist)
+    ? task.checklist.filter(Boolean).slice(0, 50).map((item) => ({ id: item.id, text: item.text, done: true }))
+    : [];
+  const order = {
+    id,
+    title: task.title,
+    machineId: task.machineId,
+    kind: 'pm',
+    status: 'done',
+    priority: priorityValue(task.priority) || 'medium',
+    reportedAt: today,
+    completedAt: today,
+    problem: '',
+    actionTaken: task.instructions || '',
+    partsUsed: [],
+    minutesSpent: 0,
+    downtimeMinutes: 0,
+    pmTaskId: task.id,
+    photos: [],
+    stockDeducted: false,
+    assignees,
+    checklist,
+    labour: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (task.category) order.category = task.category;
+  const labourPerson = user && user.id ? { kind: 'user', id: user.id } : null;
+  const updatedTask = { ...task, lastDoneAt: today, updatedAt: now };
+  return { order, task: updatedTask, labourPerson };
+}
+
 export function isLowStock(part) {
   const onHand = Number(part && part.qtyOnHand);
   const min = Number(part && part.minQty);

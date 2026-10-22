@@ -304,6 +304,22 @@ function expectAttachments(store, key, value) {
   });
 }
 
+// SPEC-v3.md section 4 (V3-M4): a PM task's estimated hours — a number
+// 0.25–1000 in quarter-hour steps, or null for "no estimate".
+function expectEstimatedHours(store, key, value) {
+  if (value === null) return value;
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < 0.25 ||
+    value > 1000 ||
+    !Number.isInteger(value * 4)
+  ) {
+    throw bad(`${store}.${key} must be 0.25–1000 in steps of 0.25, or null`);
+  }
+  return value;
+}
+
 /**
  * Field specs per SPEC.md section 6. `required` fields must be present;
  * `defaults()` fills spec-noted defaults on create only.
@@ -320,6 +336,10 @@ const FIELD_SPECS = {
       location: { type: 'string' },
       status: { type: 'enum', values: MACHINE_STATUSES },
       notes: { type: 'string' },
+      // SPEC-v3.md sections 4 and 6 (V3-M4): machine photos and manuals are
+      // stored as one attachments array; images show as photos, PDFs as
+      // manuals on the machine detail page.
+      attachments: { type: 'attachments' },
     },
     defaults: () => ({}),
     // SPEC-v2.md 15.2: typeLabel is required (trimmed, 2–40 chars) when
@@ -392,6 +412,9 @@ const FIELD_SPECS = {
       return data;
     },
   },
+  // SPEC-v3.md section 4 (V3-M4): PM tasks carry the same priority, category,
+  // assignees, checklist and attachment fields as work orders, plus
+  // estimatedHours. `priority` keeps the workOrders legacy `normal` mapping.
   pmTasks: {
     required: ['title', 'machineId'],
     fields: {
@@ -401,8 +424,19 @@ const FIELD_SPECS = {
       lastDoneAt: { type: 'date', orNull: true },
       instructions: { type: 'string' },
       active: { type: 'boolean' },
+      priority: { type: 'enum', values: WORK_ORDER_PRIORITIES },
+      estimatedHours: { type: 'estimatedHours' },
+      category: { type: 'enum', values: WORK_ORDER_CATEGORIES },
+      assignees: { type: 'assignees' },
+      checklist: { type: 'checklist' },
+      attachments: { type: 'attachments' },
     },
-    defaults: () => ({ active: true }),
+    defaults: () => ({ active: true, priority: 'medium' }),
+    // Legacy `normal` reads as `medium` here too (SPEC-v3.md section 2).
+    finalize: (data) => {
+      if (data.priority === 'normal') data.priority = 'medium';
+      return data;
+    },
   },
   // SPEC-v3.md section 5: people stores share the versioning/history rules.
   coworkers: {
@@ -469,6 +503,8 @@ function validateField(store, key, spec, value) {
       return expectChecklist(store, key, value);
     case 'attachments':
       return expectAttachments(store, key, value);
+    case 'estimatedHours':
+      return expectEstimatedHours(store, key, value);
     case 'photos': {
       if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array (reserved)`);
       return value;

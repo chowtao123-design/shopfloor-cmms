@@ -13,7 +13,7 @@ import {
   WORK_ORDER_STATUSES,
   applyWorkOrderSave,
   applyWorkOrderStatus,
-  completePMTask,
+  buildPMCompletionOrder,
   customTypeOptions,
   compactSyncLabel,
   dashboardCounts,
@@ -953,6 +953,7 @@ const tableSort = {
   jobs: { key: null, dir: 'asc' },
   machines: { key: null, dir: 'asc' },
   parts: { key: null, dir: 'asc' },
+  pm: { key: null, dir: 'asc' },
 };
 
 function toggleTableSort(pageKey, columnKey) {
@@ -3096,6 +3097,25 @@ function createLabourEditor(initialEntries = []) {
 
 /* ----- Attachments editor (SPEC-v3.md section 3 item 6 + section 6) ----- */
 
+/* Permission helpers (SPEC-v3.md 13.3): the client follows
+   teamUser.permissions {area: 'none'|'read'|'write'}; local mode (no team
+   user) allows everything. The server stays the authority on every save. */
+function areaLevel(area) {
+  if (!teamUser || !teamUser.permissions) return 'write';
+  const level = teamUser.permissions[area];
+  return level === 'write' || level === 'read' ? level : 'none';
+}
+
+function canWriteArea(area) {
+  return areaLevel(area) === 'write';
+}
+
+/* Mark done writes a PM task *and* creates a Done service order
+   (SPEC-v3.md 13.1: the pm area plus serviceOrders Write). */
+function canMarkPMDone() {
+  return canWriteArea('pm') && canWriteArea('serviceOrders');
+}
+
 function createAttachmentsEditor(initialAttachments = []) {
   const attachments = (initialAttachments || []).filter(Boolean);
   const gridHost = h('div', { class: 'attach-grid attach-grid-edit' });
@@ -3107,6 +3127,8 @@ function createAttachmentsEditor(initialAttachments = []) {
     'aria-label': 'Add photos or PDFs',
   });
   const addButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Add photo or PDF');
+  // Uploading needs the files area Write permission (SPEC-v3.md 13.1).
+  const canUpload = canWriteArea('files');
 
   function renderGrid() {
     if (attachments.length === 0) {
@@ -3178,9 +3200,18 @@ function createAttachmentsEditor(initialAttachments = []) {
     h('span', { class: 'field-label' }, 'Attachments'),
     statusBox,
     gridHost,
-    input,
-    h('div', { class: 'form-actions' }, addButton),
-    h('span', { class: 'field-hint' }, 'Images are downscaled before upload; PDFs upload as-is.'),
+    ...(canUpload
+      ? [input, h('div', { class: 'form-actions' }, addButton)]
+      : [
+          h(
+            'span',
+            { class: 'field-hint' },
+            'View only — you need the Photos & files write permission to upload.',
+          ),
+        ]),
+    ...(canUpload
+      ? [h('span', { class: 'field-hint' }, 'Images are downscaled before upload; PDFs upload as-is.')]
+      : []),
   );
   return { element, getAttachments: () => attachments.slice(0, FILE_UPLOAD_MAX_ATTACHMENTS) };
 }
@@ -3537,7 +3568,9 @@ function renderMachines(route) {
   return page(
     pageHead(
       'Machines',
-      h('a', { class: 'btn btn-primary btn-small', href: '#/machines/new' }, '+ Add machine'),
+      canWriteArea('machines')
+        ? h('a', { class: 'btn btn-primary btn-small', href: '#/machines/new' }, '+ Add machine')
+        : null,
     ),
     searchBox('Search machines', (value) => update(value)),
     chips,
@@ -3563,6 +3596,7 @@ function machineFormBody(existing) {
     location: '',
     status: 'running',
     notes: '',
+    attachments: [],
   };
   const form = h('form', { class: 'form', novalidate: true });
   const errorBox = h('div', { class: 'form-error', role: 'alert' });
@@ -3593,6 +3627,10 @@ function machineFormBody(existing) {
   const locationInput = h('input', { type: 'text', value: base.location || '' });
   const statusSelect = selectFrom(MACHINE_STATUSES, base.status || 'running', (value) => LABELS.machineStatus[value]);
   const notesInput = h('textarea', { rows: 4, value: base.notes || '' });
+  // Photos and manuals (SPEC-v3.md sections 4 and 6): one attachments array
+  // on the machine record, added with the shared attachments editor. Images
+  // show in the machine's photo gallery, PDFs are listed as manuals.
+  const attachmentsEditor = createAttachmentsEditor(base.attachments || []);
 
   typeLabelField.hidden = typeSelect.value !== 'other';
   const syncTypeLabelField = (focus) => {
@@ -3615,6 +3653,8 @@ function machineFormBody(existing) {
     h('div', { class: 'grid-2' }, field('Model', modelInput), field('Serial number', serialInput)),
     field('Location', locationInput, 'Line, room, roof, etc.'),
     field('Notes', notesInput),
+    sectionTitle('Photos and manuals'),
+    attachmentsEditor.element,
     h(
       'div',
       { class: 'form-actions' },
@@ -3666,6 +3706,7 @@ function machineFormBody(existing) {
       location: locationInput.value.trim(),
       status: statusSelect.value,
       notes: notesInput.value.trim(),
+      attachments: attachmentsEditor.getAttachments(),
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now,
     };
@@ -3687,6 +3728,9 @@ function machineFormBody(existing) {
   form.addEventListener('input', () => {
     dirty = true;
   });
+  form.addEventListener('change', () => {
+    dirty = true;
+  });
 
   return { node: form, isDirty: () => dirty, title: machineFormTitle(existing) };
 }
@@ -3704,8 +3748,69 @@ function renderMachineForm(route) {
       ]),
     );
   }
+  // Read-only roles never see the form (entry buttons are hidden); direct
+  // links land on this page. The server stays the authority.
+  if (!canWriteArea('machines')) {
+    return page(
+      pageHead(machineFormTitle(existing)),
+      emptyState(
+        'View only',
+        'You need the Machines write permission to add or edit machines.',
+        [h('a', { class: 'btn btn-primary', href: '#/machines' }, 'Back to Machines')],
+      ),
+    );
+  }
   const { node: form } = machineFormBody(existing);
   return page(pageHead(machineFormTitle(existing)), form);
+}
+
+/* Machine photos and manuals (SPEC-v3.md sections 4 and 6, V3-M4): one
+   attachments array on the machine record. Images render in the photo
+   gallery; PDFs are listed as manuals with name, size and an Open link. */
+function machinePhotos(machine) {
+  return (machine.attachments || []).filter(
+    (attachment) => attachment && typeof attachment.mime === 'string' && attachment.mime.startsWith('image/'),
+  );
+}
+
+function machineManuals(machine) {
+  return (machine.attachments || []).filter(
+    (attachment) => attachment && attachment.mime === 'application/pdf',
+  );
+}
+
+function machinePhotosNode(machine) {
+  const photos = machinePhotos(machine);
+  if (photos.length === 0) return h('p', { class: 'muted' }, 'No photos yet.');
+  return h('div', { class: 'attach-grid' }, ...photos.map(attachmentNode));
+}
+
+function machineManualsNode(machine) {
+  const manuals = machineManuals(machine);
+  if (manuals.length === 0) return h('p', { class: 'muted' }, 'No manuals yet.');
+  return h(
+    'ul',
+    { class: 'manual-list' },
+    ...manuals.map((manual) =>
+      h(
+        'li',
+        { class: 'manual-item' },
+        h('span', { class: 'attach-icon', 'aria-hidden': 'true' }, 'PDF'),
+        h('span', { class: 'manual-name' }, manual.name || 'File'),
+        h('span', { class: 'muted manual-size' }, formatBytes(manual.size)),
+        h(
+          'a',
+          {
+            class: 'inline-link',
+            href: `/api/files/${encodeURIComponent(manual.fileId)}`,
+            target: '_blank',
+            rel: 'noopener',
+          },
+          'Open',
+        ),
+      ),
+    ),
+  );
 }
 
 function renderMachineDetail(route) {
@@ -3781,9 +3886,15 @@ function renderMachineDetail(route) {
       'div',
       { class: 'button-row' },
       h('a', { class: 'btn btn-primary btn-small', href: `#/jobs/new?machine=${encodeURIComponent(machine.id)}` }, '+ Service order'),
-      h('a', { class: 'btn btn-small', href: `#/machines/${encodeURIComponent(machine.id)}/edit` }, 'Edit machine'),
+      canWriteArea('machines')
+        ? h('a', { class: 'btn btn-small', href: `#/machines/${encodeURIComponent(machine.id)}/edit` }, 'Edit machine')
+        : null,
     ),
     h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
+    sectionTitle('Photos'),
+    machinePhotosNode(machine),
+    sectionTitle('Manuals'),
+    machineManualsNode(machine),
     sectionTitle('Repair history'),
     history.length
       ? h('div', { class: 'list' }, ...history.map(jobRow))
@@ -3844,7 +3955,9 @@ function renderMachineDetail(route) {
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
-      h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteMachine }, 'Delete machine'),
+      canWriteArea('machines')
+        ? h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteMachine }, 'Delete machine')
+        : null,
     ),
     historySection('machines', machine.id),
   );
@@ -4285,18 +4398,118 @@ function renderPartForm(route) {
 
 /* ---------- PM ---------- */
 
-async function markPMTaskDone(task) {
-  const now = nowISO();
-  const { task: updatedTask, workOrder } = completePMTask(task, {
-    id: uid(),
-    today: todayISO(),
-    now,
+/* In-page dialog after "Mark done" (SPEC-v3.md section 4): optional labour
+   hours (person + hours) added to the completion service order. Resolves a
+   labour entry, or null when skipped. Never window.prompt. */
+function showPMLabourDialog(defaultPerson) {
+  return new Promise((resolve) => {
+    const people = assignablePeople();
+    const defaultValue = defaultPerson
+      ? `${defaultPerson.kind}:${defaultPerson.id}`
+      : people.length > 0
+        ? `${people[0].kind}:${people[0].id}`
+        : '';
+    const personSelect = h(
+      'select',
+      { 'aria-label': 'Labour: person' },
+      ...(people.length === 0
+        ? [h('option', { value: '' }, 'No people yet')]
+        : people.map((person) => {
+            const value = `${person.kind}:${person.id}`;
+            const option = h('option', { value }, `${person.name} · ${person.sub}`);
+            if (value === defaultValue) option.selected = true;
+            return option;
+          })),
+    );
+    const hoursInput = h('input', {
+      type: 'number',
+      min: '0.25',
+      max: '24',
+      step: '0.25',
+      inputmode: 'decimal',
+      placeholder: 'e.g. 1',
+      'aria-label': 'Labour: hours',
+    });
+    const hint = h('p', { class: 'field-hint', role: 'alert' });
+    const previousFocus = document.activeElement;
+    const skip = h('button', { class: 'btn', type: 'button' }, 'Finish without hours');
+    const add = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add hours');
+    const form = h(
+      'form',
+      { class: 'form', novalidate: true },
+      hint,
+      field('Person', personSelect),
+      field('Hours', hoursInput, 'Optional: quarter-hour steps, e.g. 0.25 or 1.5.'),
+      h('div', { class: 'dialog-actions' }, skip, add),
+    );
+    const dialog = h(
+      'div',
+      { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' },
+      h('h2', { id: 'dialog-title' }, 'Labour hours for this PM'),
+      h('p', {}, 'Who worked on it, and for how long? You can skip this.'),
+      form,
+    );
+    const backdrop = h('div', { class: 'dialog-backdrop' }, dialog);
+    const onKey = (event) => {
+      if (event.key === 'Escape') close(null);
+    };
+    const close = (value) => {
+      document.removeEventListener('keydown', onKey);
+      dialogRoot.replaceChildren();
+      if (previousFocus && typeof previousFocus.focus === 'function') previousFocus.focus();
+      resolve(value);
+    };
+    skip.addEventListener('click', () => close(null));
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const raw = personSelect.value;
+      const hours = Number(hoursInput.value);
+      if (
+        raw === '' ||
+        hoursInput.value.trim() === '' ||
+        !Number.isFinite(hours) ||
+        hours < 0.25 ||
+        hours > 24
+      ) {
+        hint.textContent = 'Pick a person and enter hours between 0.25 and 24 — or finish without hours.';
+        return;
+      }
+      const separator = raw.indexOf(':');
+      close({
+        id: uid(),
+        kind: raw.slice(0, separator),
+        personId: raw.slice(separator + 1),
+        date: todayISO(),
+        hours: Math.round(hours * 4) / 4,
+        note: '',
+      });
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) close(null);
+    });
+    document.addEventListener('keydown', onKey);
+    dialogRoot.replaceChildren(backdrop);
+    hoursInput.focus();
   });
+}
+
+async function markPMTaskDone(task) {
+  const today = todayISO();
+  // V3-M4 (SPEC-v3.md section 4): "Mark done" builds a Done service order
+  // that copies priority, category, assignees and the ticked checklist, then
+  // asks for optional labour hours before both records are saved.
+  const { order, task: updatedTask, labourPerson } = buildPMCompletionOrder(task, teamUser, today);
+  const entry = await showPMLabourDialog(labourPerson);
+  if (entry) order.labour = [entry];
   try {
     await sync.saveRecord('pmTasks', updatedTask, task.version);
-    await sync.saveRecord('workOrders', workOrder, null);
+    await sync.saveRecord('workOrders', order, null);
     await refreshState();
-    toast(`PM done: ${task.title}. Logged as a done PM service order; next due ${formatDate(pmDueDate(updatedTask))}.`);
+    toast(
+      `PM done: ${task.title}. Logged as a done PM service order${
+        entry ? ` with ${entry.hours} h labour` : ''
+      }; next due ${formatDate(pmDueDate(updatedTask))}.`,
+    );
     render();
   } catch (error) {
     toast('Could not record the PM. Please try again.', 'warn');
@@ -4311,6 +4524,9 @@ function pmTaskRow(task) {
   const machine = machineById(task.machineId);
   const paused = pmPaused(machine);
   const lateDays = !paused && stateName === 'overdue' ? Math.max(0, daysBetween(due, today) || 0) : 0;
+  // Mark done writes the PM task and creates a service order (SPEC-v3.md
+  // 13.1): it needs pm + serviceOrders Write and is hidden without them.
+  const canDone = canMarkPMDone();
   return h(
     'div',
     { class: 'pm-row' },
@@ -4327,13 +4543,13 @@ function pmTaskRow(task) {
         editedTag(task),
       ),
     ),
-    paused
-      ? statusPill(machine.status, LABELS.machineStatus)
-      : h(
+    paused ? statusPill(machine.status, LABELS.machineStatus) : canDone
+      ? h(
           'button',
           { class: 'btn btn-primary btn-small', type: 'button', onclick: () => markPMTaskDone(task) },
           'Mark done',
-        ),
+        )
+      : null,
   );
 }
 
@@ -4366,29 +4582,128 @@ function pausedPMGroupSection(title, tasks) {
   );
 }
 
+/* Row state for the desktop PM table (SPEC-v3.md section 4): a task on a
+   paused machine (or an inactive task) is "Paused"; otherwise overdue /
+   due-soon / upcoming. */
+const PM_STATE_RANK = { overdue: 0, 'due-soon': 1, ok: 2, paused: 3 };
+
+function pmRowState(task, today = todayISO()) {
+  if (task.active === false || pmPaused(machineById(task.machineId))) return 'paused';
+  return pmState(task, today);
+}
+
+function pmStatePill(task, today = todayISO()) {
+  const stateName = pmRowState(task, today);
+  return stateName === 'paused'
+    ? statusPill('neutral', { neutral: 'Paused' })
+    : statusPill(stateName, LABELS.pmState);
+}
+
+function pmTableColumns() {
+  const today = todayISO();
+  return [
+    { key: 'task', label: 'Task', value: (task) => task.title },
+    { key: 'machine', label: 'Machine', value: (task) => machineName(task.machineId) },
+    {
+      key: 'priority',
+      label: 'Priority',
+      value: (task) => LABELS.priority[task.priority] || (task.priority ? String(task.priority) : 'Medium'),
+      cell: (task) => priorityBadge(task.priority),
+      sortValue: (task) => PRIORITIES.indexOf(priorityValue(task.priority) || 'medium'),
+    },
+    {
+      key: 'assignees',
+      label: 'Assigned to',
+      value: (task) =>
+        (task.assignees || []).map((entry) => personName(entry) || 'Unknown').join(', '),
+      cell: (task) => assigneeAvatars(task.assignees || []),
+      sortValue: (task) => (task.assignees || []).length,
+    },
+    {
+      key: 'estimatedHours',
+      label: 'Est. hours',
+      value: (task) =>
+        task.estimatedHours === null || task.estimatedHours === undefined
+          ? ''
+          : String(task.estimatedHours),
+      cell: (task) => h('span', {}, formatHours(task.estimatedHours === null || task.estimatedHours === undefined ? null : task.estimatedHours)),
+      sortValue: (task) => {
+        const value = Number(task.estimatedHours);
+        return Number.isFinite(value) ? value : 0;
+      },
+    },
+    {
+      key: 'interval',
+      label: 'Interval',
+      value: (task) => `every ${Math.max(1, Math.floor(Number(task.intervalDays) || 1))} days`,
+      sortValue: (task) => Math.max(1, Math.floor(Number(task.intervalDays) || 1)),
+    },
+    {
+      key: 'due',
+      label: 'Due',
+      value: (task) => pmDueDate(task, today),
+      cell: (task) => {
+        const due = pmDueDate(task, today);
+        const overdue = pmRowState(task, today) === 'overdue';
+        return overdue
+          ? h('span', { class: 'due-overdue' }, formatDate(due))
+          : h('span', {}, formatDate(due));
+      },
+      sortValue: (task) => pmDueDate(task, today),
+    },
+    {
+      key: 'state',
+      label: 'State',
+      value: (task) => LABELS.pmState[pmRowState(task, today)] || 'Upcoming',
+      cell: (task) => pmStatePill(task, today),
+      sortValue: (task) => PM_STATE_RANK[pmRowState(task, today)] ?? 2,
+    },
+  ];
+}
+
 function renderPM() {
   setTitle('Preventive Maintenance');
   const today = todayISO();
-  const groups = groupPMTasks(state.pmTasks, today, state.machines);
-  const activeCount = state.pmTasks.filter((task) => task.active !== false).length;
-  if (activeCount === 0) {
+  // Creating PM tasks needs the pm write permission (SPEC-v3.md 13.3).
+  const add = canWriteArea('pm')
+    ? h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task')
+    : null;
+  if (state.pmTasks.length === 0) {
     return page(
-      pageHead(
-        'Preventive Maintenance',
-        h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task'),
-      ),
+      pageHead('Preventive Maintenance', add),
       emptyState(
         'No PM tasks yet',
         'Set up recurring checks such as "Oil hook and check timing" so they show up here before something breaks.',
-        [h('a', { class: 'btn btn-primary', href: '#/pm/new' }, '+ Add PM task')],
+        add ? [add] : [],
       ),
     );
   }
+  if (desktopMedia.matches) {
+    // Desktop: one sortable table with the priority, assignee, est-hours and
+    // state columns (SPEC-v3.md section 4); every task shows, paused ones
+    // included, in their State cell.
+    const tableHost = h('div', { class: 'table-wrap' });
+    const updatePMTable = () => {
+      const rows = [...state.pmTasks].sort(
+        (a, b) => pmDueDate(a, today).localeCompare(pmDueDate(b, today)),
+      );
+      tableHost.replaceChildren(
+        buildDataTable(
+          'pm',
+          pmTableColumns(),
+          rows,
+          (task) => `#/pm/${encodeURIComponent(task.id)}`,
+          updatePMTable,
+        ),
+      );
+    };
+    updatePMTable();
+    return page(pageHead('Preventive Maintenance', add), tableHost);
+  }
+  // Phone and tablet keep the grouped cards (SPEC-v2.md 15.3).
+  const groups = groupPMTasks(state.pmTasks, today, state.machines);
   return page(
-    pageHead(
-      'Preventive Maintenance',
-      h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task'),
-    ),
+    pageHead('Preventive Maintenance', add),
     groups.overdue.length ? pmGroupSection('Overdue', groups.overdue) : null,
     groups.dueSoon.length ? pmGroupSection('Due soon', groups.dueSoon) : null,
     groups.upcoming.length ? pmGroupSection('Upcoming', groups.upcoming) : null,
@@ -4445,8 +4760,18 @@ function renderPMTaskDetail(route) {
     h(
       'dd',
       {},
-      inactive ? statusPill('neutral', { neutral: 'Paused' }) : statusPill(pmState(task, today), LABELS.pmState),
+      inactive || pmPaused(machine)
+        ? statusPill('neutral', { neutral: 'Paused' })
+        : statusPill(pmState(task, today), LABELS.pmState),
     ),
+    h('dt', {}, 'Priority'),
+    h('dd', {}, priorityBadge(task.priority)),
+    task.category ? h('dt', {}, 'Category') : null,
+    task.category ? h('dd', {}, LABELS.category[task.category] || task.category) : null,
+    h('dt', {}, 'Estimated hours'),
+    h('dd', {}, formatHours(task.estimatedHours ?? null)),
+    h('dt', {}, 'Assigned to'),
+    h('dd', {}, assigneeAvatars(task.assignees || [], { showNames: true })),
     h('dt', {}, 'Interval'),
     h('dd', {}, `Every ${Math.max(1, Math.floor(Number(task.intervalDays) || 1))} days`),
     h('dt', {}, 'Last done'),
@@ -4456,6 +4781,11 @@ function renderPMTaskDetail(route) {
     h('dt', {}, 'Instructions'),
     h('dd', { class: 'pre' }, task.instructions || '—'),
   );
+
+  // Mark done needs pm + serviceOrders Write; editing needs pm Write
+  // (SPEC-v3.md 13.1). The server stays the authority on every save.
+  const canEdit = canWriteArea('pm');
+  const canDone = canMarkPMDone();
 
   return page(
     h(
@@ -4469,41 +4799,38 @@ function renderPMTaskDetail(route) {
     h(
       'div',
       { class: 'button-row' },
-      h('button', { class: 'btn btn-primary', type: 'button', onclick: () => markPMTaskDone(task) }, 'Mark done'),
-      h('a', { class: 'btn btn-small', href: `#/pm/${encodeURIComponent(task.id)}/edit` }, 'Edit task'),
+      canDone
+        ? h('button', { class: 'btn btn-primary', type: 'button', onclick: () => markPMTaskDone(task) }, 'Mark done')
+        : null,
+      canEdit
+        ? h('a', { class: 'btn btn-small', href: `#/pm/${encodeURIComponent(task.id)}/edit` }, 'Edit task')
+        : null,
     ),
     h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
-    h(
-      'div',
-      { class: 'form-actions', style: { marginTop: '1.5rem' } },
-      h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteTask }, 'Delete PM task'),
-    ),
+    sectionTitle('Checklist template'),
+    (task.checklist || []).length ? checklistNode({ checklist: task.checklist }) : h('p', { class: 'muted' }, 'No checklist steps.'),
+    sectionTitle('Attachments'),
+    attachmentsGrid(task.attachments || []),
+    canEdit
+      ? h(
+          'div',
+          { class: 'form-actions', style: { marginTop: '1.5rem' } },
+          h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteTask }, 'Delete PM task'),
+        )
+      : null,
     historySection('pmTasks', task.id),
   );
 }
 
-function renderPMTaskForm(route) {
-  const id = route.segments[1];
-  const editing = Boolean(id && id !== 'new');
-  const existing = editing ? pmTaskById(id) : null;
-  setTitle(editing ? 'Edit PM task' : 'Add PM task');
-  if (editing && !existing) {
-    return page(
-      pageHead('PM task not found'),
-      emptyState('That PM task does not exist.', 'It may have been deleted.', [
-        h('a', { class: 'btn btn-primary', href: '#/pm' }, 'Back to PM'),
-      ]),
-    );
-  }
-  if (state.machines.length === 0) {
-    return page(
-      pageHead('Add PM task'),
-      emptyState('Add a machine first', 'Every PM task belongs to a machine or building item.', [
-        h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine'),
-      ]),
-    );
-  }
+function pmTaskFormTitle(existing) {
+  return existing ? 'Edit PM task' : 'Add PM task';
+}
 
+/* PM task form body (SPEC-v3.md section 4, V3-M4): sectioned form with
+   title, machine, interval, priority, estimated hours, category, assignees,
+   checklist template, instructions and attachments. Shared by the full page
+   (phone/tablet) and the desktop drawer like the service order form. */
+function pmTaskFormBody({ existing = null, cancelTo = undefined } = {}) {
   const base = existing || {
     title: '',
     machineId: '',
@@ -4511,9 +4838,10 @@ function renderPMTaskForm(route) {
     lastDoneAt: null,
     instructions: '',
     active: true,
+    priority: 'medium',
   };
 
-  const form = h('form', { class: 'form', novalidate: true });
+  const form = h('form', { class: 'form pm-form', novalidate: true });
   const errorBox = h('div', { class: 'form-error', role: 'alert' });
   const titleInput = h('input', {
     type: 'text',
@@ -4535,10 +4863,33 @@ function renderPMTaskForm(route) {
     inputmode: 'numeric',
     value: String(Math.max(1, Math.floor(Number(base.intervalDays) || 30))),
   });
+  const prioritySelect = selectFrom(PRIORITIES, priorityValue(base.priority) || 'medium', (value) => LABELS.priority[value]);
+  const categorySelect = h(
+    'select',
+    {},
+    h('option', { value: '' }, 'No category'),
+    ...WORK_ORDER_CATEGORIES.map((value) => {
+      const option = h('option', { value }, LABELS.category[value]);
+      if (value === (base.category || '')) option.selected = true;
+      return option;
+    }),
+  );
+  const estimatedHoursInput = h('input', {
+    type: 'number',
+    min: '0.25',
+    max: '1000',
+    step: '0.25',
+    inputmode: 'decimal',
+    placeholder: 'e.g. 1.5',
+    value:
+      base.estimatedHours === null || base.estimatedHours === undefined
+        ? ''
+        : String(base.estimatedHours),
+  });
   const lastDoneInput = h('input', { type: 'date', value: base.lastDoneAt || '' });
   const instructionsInput = h('textarea', {
     rows: 4,
-    placeholder: 'Checklist text, e.g. Oil hook; check timing; wipe feed dogs.',
+    placeholder: 'How to do this check; copied to the completion service order.',
     value: base.instructions || '',
   });
   const activeId = `pm-active-${++fieldCounter}`;
@@ -4546,26 +4897,54 @@ function renderPMTaskForm(route) {
   activeCheckbox.id = activeId;
   activeCheckbox.checked = base.active !== false;
 
+  const assigneeEditor = createAssigneeEditor(base.assignees || []);
+  const checklistEditor = createChecklistEditor(base.checklist || []);
+  const attachmentsEditor = createAttachmentsEditor(base.attachments || []);
+
   const save = h('button', { class: 'btn btn-primary', type: 'submit' }, existing ? 'Save changes' : 'Add PM task');
+  const cancelButton =
+    cancelTo === null
+      ? h(
+          'button',
+          {
+            class: 'btn',
+            type: 'button',
+            onclick: () => {
+              if (drawerHandle) drawerHandle.close();
+            },
+          },
+          'Cancel',
+        )
+      : h(
+          'a',
+          { class: 'btn', href: cancelTo || (existing ? `#/pm/${encodeURIComponent(existing.id)}` : '#/pm') },
+          'Cancel',
+        );
+
   form.append(
     errorBox,
+    sectionTitle('Basics'),
     field('Title', titleInput),
     field('Machine', machineSelect),
-    field('Interval (days)', intervalInput, 'The task is due again this many days after it was last done.'),
-    field('Last done', lastDoneInput, 'Leave empty if this task has never been done; it will be due today.'),
-    field('Instructions', instructionsInput),
-    h('div', { class: 'check-row' }, activeCheckbox, h('label', { for: activeId }, 'Task is active')),
-    h('div', { class: 'field-hint' }, 'Paused tasks never count as due or overdue.'),
     h(
       'div',
-      { class: 'form-actions' },
-      save,
-      h(
-        'a',
-        { class: 'btn', href: existing ? `#/pm/${encodeURIComponent(existing.id)}` : '#/pm' },
-        'Cancel',
-      ),
+      { class: 'grid-2' },
+      field('Interval (days)', intervalInput, 'The task is due again this many days after it was last done.'),
+      field('Priority', prioritySelect),
     ),
+    h('div', { class: 'grid-2' }, field('Category', categorySelect), field('Estimated hours', estimatedHoursInput, 'Rough time this check takes, in quarter-hour steps.')),
+    field('Last done', lastDoneInput, 'Leave empty if this task has never been done; it will be due today.'),
+    sectionTitle('Assign'),
+    assigneeEditor.element,
+    sectionTitle('Checklist template'),
+    checklistEditor.element,
+    sectionTitle('Instructions'),
+    instructionsInput,
+    sectionTitle('Attachments'),
+    attachmentsEditor.element,
+    h('div', { class: 'check-row' }, activeCheckbox, h('label', { for: activeId }, 'Task is active')),
+    h('div', { class: 'field-hint' }, 'Paused tasks never count as due or overdue.'),
+    h('div', { class: 'form-actions' }, save, cancelButton),
   );
 
   form.addEventListener('submit', async (event) => {
@@ -4588,6 +4967,17 @@ function renderPMTaskForm(route) {
       intervalInput.focus();
       return;
     }
+    const rawEstimated = estimatedHoursInput.value.trim();
+    let estimatedHours = null;
+    if (rawEstimated !== '') {
+      const value = Number(rawEstimated);
+      if (!Number.isFinite(value) || value < 0.25 || value > 1000 || !Number.isInteger(value * 4)) {
+        errorBox.textContent = 'Estimated hours must be 0.25–1000 in steps of 0.25.';
+        estimatedHoursInput.focus();
+        return;
+      }
+      estimatedHours = Math.round(value * 4) / 4;
+    }
     const lastDone = lastDoneInput.value;
     if (lastDone && !isISODate(lastDone)) {
       errorBox.textContent = 'Enter a valid last-done date or leave it empty.';
@@ -4604,9 +4994,17 @@ function renderPMTaskForm(route) {
       lastDoneAt: lastDone || null,
       instructions: instructionsInput.value.trim(),
       active: activeCheckbox.checked,
+      priority: prioritySelect.value,
+      estimatedHours,
+      assignees: assigneeEditor.getAssignees(),
+      checklist: checklistEditor.getChecklist(),
+      attachments: attachmentsEditor.getAttachments(),
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now,
     };
+    // An empty category is omitted rather than sent as "" (enum validation).
+    if (categorySelect.value) record.category = categorySelect.value;
+    else delete record.category;
     save.disabled = true;
     try {
       await sync.saveRecord('pmTasks', record, existing ? existing.version : null);
@@ -4621,7 +5019,52 @@ function renderPMTaskForm(route) {
     }
   });
 
-  return page(pageHead(editing ? 'Edit PM task' : 'Add PM task'), form);
+  let dirty = false;
+  form.addEventListener('input', () => {
+    dirty = true;
+  });
+  form.addEventListener('change', () => {
+    dirty = true;
+  });
+
+  return { node: form, isDirty: () => dirty };
+}
+
+function renderPMTaskForm(route) {
+  const id = route.segments[1];
+  const editing = Boolean(id && id !== 'new');
+  const existing = editing ? pmTaskById(id) : null;
+  setTitle(pmTaskFormTitle(existing));
+  if (editing && !existing) {
+    return page(
+      pageHead('PM task not found'),
+      emptyState('That PM task does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/pm' }, 'Back to PM'),
+      ]),
+    );
+  }
+  if (state.machines.length === 0) {
+    return page(
+      pageHead('Add PM task'),
+      emptyState('Add a machine first', 'Every PM task belongs to a machine or building item.', [
+        h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine'),
+      ]),
+    );
+  }
+  // Read-only roles never see the form (entry buttons are hidden); direct
+  // links land on this "View only" page. The server stays the authority.
+  if (!canWriteArea('pm')) {
+    return page(
+      pageHead(pmTaskFormTitle(existing)),
+      emptyState(
+        'View only',
+        'You need the Preventive Maintenance write permission to add or edit PM tasks.',
+        [h('a', { class: 'btn btn-primary', href: '#/pm' }, 'Back to PM')],
+      ),
+    );
+  }
+  const { node: form } = pmTaskFormBody({ existing });
+  return page(pageHead(pmTaskFormTitle(existing)), form);
 }
 
 /* ---------- Home ---------- */
@@ -5569,11 +6012,18 @@ async function render() {
       splitListRoot = 'parts';
     }
   } else if (root === 'pm') {
-    if (!second) content = renderPM(route);
-    else if (second === 'new') content = renderPMTaskForm(route);
-    else if (third === 'edit') {
-      content = renderPMTaskForm(route);
-      isDetail = true;
+    if (!second) {
+      content = renderPM(route);
+    } else if (second === 'new' || third === 'edit') {
+      // Desktop opens the PM form in the drawer (SPEC-v3.md section 4);
+      // below 1024 px the full-page form stays.
+      const pmDrawer = maybeOpenPMDrawer(route);
+      if (pmDrawer) {
+        content = renderPM({ segments: ['pm'], params: route.params });
+      } else {
+        content = renderPMTaskForm(route);
+        if (second !== 'new') isDetail = true;
+      }
     } else {
       content = renderPMTaskDetail(route);
       isDetail = true;
@@ -5800,6 +6250,7 @@ function closeDrawerForRouteChange() {
    desktop (phone and tablet keep the full-page form). */
 function maybeOpenMachineDrawer(route) {
   if (!desktopMedia.matches) return false;
+  if (!canWriteArea('machines')) return false;
   const id = route.segments[1];
   const editing = Boolean(id && id !== 'new');
   const existing = editing ? machineById(id) : null;
@@ -5823,6 +6274,27 @@ function maybeOpenJobDrawer(route) {
   const presetMachineId = presetId && machineById(presetId) ? presetId : null;
   const { node, isDirty } = workOrderFormBody({ existing: null, presetMachineId, cancelTo: null });
   openDrawer({ title: 'New service order', content: node, isDirty });
+  return true;
+}
+
+/* The M4 drawer usage: the PM task form opens in the drawer on desktop
+   (SPEC-v3.md section 4); phones and tablets keep the full-page form. */
+function maybeOpenPMDrawer(route) {
+  if (!desktopMedia.matches) return false;
+  const second = route.segments[1];
+  const editing = Boolean(second && second !== 'new');
+  const existing = editing ? pmTaskById(second) : null;
+  if (editing && !existing) return false;
+  if (state.machines.length === 0) {
+    // Keep the full-page "add a machine first" empty state.
+    return false;
+  }
+  if (!canWriteArea('pm')) {
+    // Read-only roles see the full-page "View only" state instead.
+    return false;
+  }
+  const { node, isDirty } = pmTaskFormBody({ existing, cancelTo: null });
+  openDrawer({ title: existing ? 'Edit PM task' : 'New PM task', content: node, isDirty });
   return true;
 }
 

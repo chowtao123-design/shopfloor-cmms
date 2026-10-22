@@ -164,6 +164,11 @@ function helpGlossarySection(h) {
       ['Machine type', 'What kind of machine it is — single-needle lockstitch, bartack, 5-thread overlock and other garment-shop types. If none of them fit, pick Other (type your own) and give it your own name; the types you use are remembered for next time.'],
       ['PM (preventive maintenance)', 'A small, scheduled check that keeps a machine working — cleaning, oiling, checking tension. Example: clean and oil the single-needle machine every 30 days.'],
       ['PM interval', 'How often a PM task repeats, in days from the last time it was done. A 30-day task is due again 30 days after you mark it done.'],
+      ['PM priority', 'How urgent a PM task is: None, Low, Medium (the default), High or Urgent. Marking a task done copies this to the completion service order.'],
+      ['Estimated hours', 'The rough time a PM task takes, in quarter-hour steps (0.25, 0.5, …). Shown in the Est. hours column on the Preventive Maintenance page.'],
+      ['PM checklist template', 'The steps of a PM task — add them, reorder them, remove them. When you mark the task done, they are copied to the completion service order with every step already ticked.'],
+      ['Machine photos', 'Photos kept on the machine’s own page: add them under Photos and manuals on the machine form; they show as a gallery on the machine detail page.'],
+      ['Manuals', 'PDF manuals kept on a machine’s page. The machine detail lists each manual with its file name and size, plus an Open link that opens it in a new tab.'],
       ['Paused PM', 'The PM tasks of a machine that is In storage or Retired are paused: they do not count as overdue or due soon, and they sit in the “Paused” group on the Preventive Maintenance page. Set the machine back to Running and the tasks resume with their due dates unchanged.'],
       ['Overdue', 'Past its due date and not done yet.'],
       ['Due soon', 'Due within the next 3 days.'],
@@ -216,12 +221,16 @@ function helpHowTo(h) {
         ' — in the order form under Attachments, press Add photo or PDF. Photos are shrunk before uploading; PDFs upload as they are. Tap an attachment to view it full size. Uploading needs a connection to the server, but the order itself still saves offline.',
       ],
       [
+        'Keep machine photos and manuals',
+        ' — Machines → open the machine → Edit machine → Photos and manuals. Photos are shrunk before uploading and show as the machine’s gallery; PDF manuals are listed under Manuals with their size and an Open link that opens them in a new tab.',
+      ],
+      [
         'Close a service order and deduct parts',
         ' — open the order, add the parts it used, then set its status to Done. Parts are deducted from stock once, at the moment the order is marked Done. If you reopen it, the used parts go back into stock.',
       ],
       [
         'Mark a PM done',
-        ' — Preventive Maintenance → open the task → Mark done. The app logs a done PM service order for the machine and sets the next due date from the interval.',
+        ' — Preventive Maintenance → open the task → Mark done. The app logs a done PM service order that copies the task’s priority, category, assignees and checklist (every step ticked), then asks for optional labour hours (person + hours) to add to that order, and sets the next due date from the interval.',
       ],
       ['Find a part', ' — go to Parts and type a name or part number into the search box.'],
       [

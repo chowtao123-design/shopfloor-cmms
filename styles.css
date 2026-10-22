@@ -3396,3 +3396,43 @@ body.logged-out .global-search {
 .so-number {
   white-space: nowrap;
 }
+
+/* PM task form (V3-M4): same section rhythm as the service order form. */
+.pm-form .section-title {
+  margin-top: 1.5rem;
+}
+
+.pm-form .section-title:first-of-type {
+  margin-top: 0.25rem;
+}
+
+/* Machine manuals (SPEC-v3.md sections 4 and 6): PDF attachments listed
+   with the file name, size and an Open link (new tab). */
+.manual-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.manual-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.manual-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.manual-item .inline-link {
+  margin-left: auto;
+}
