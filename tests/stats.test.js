@@ -149,8 +149,9 @@ test('downNow: machines down, oldest breakdown first, hours since down', () => {
   assert.deepEqual(
     rows.map((row) => [row.machine.id, row.hoursDown, row.downSince]),
     [
-      ['m1', 72, '2026-10-18'],
-      ['m2', 24, '2026-10-20'],
+      // Measured from the moment each order was logged (createdAt), to the minute.
+      ['m1', 72.5, '2026-10-18T09:00:00.000Z'],
+      ['m2', 24.5, '2026-10-20T09:00:00.000Z'],
       ['m3', null, null],
     ],
   );
@@ -161,6 +162,15 @@ test('downNow: machines down, oldest breakdown first, hours since down', () => {
   assert.equal(downNow([], [], TODAY).length, 0);
 });
 
+test('downNow: an order with only a report date counts from that local midnight', () => {
+  const machines = [machine({ id: 'm1', status: 'down' })];
+  const workOrders = [order({ id: 'w', machineId: 'm1', reportedAt: '2026-10-19' })];
+  const now = new Date('2026-10-20T06:00:00');
+  const [row] = downNow(machines, workOrders, now.toISOString());
+  assert.equal(row.downSince, '2026-10-19');
+  assert.equal(row.hoursDown, 30);
+});
+
 test('downNow: earliest reportedAt wins among several open breakdowns', () => {
   const machines = [machine({ id: 'm1', status: 'down' })];
   const workOrders = [
@@ -168,7 +178,7 @@ test('downNow: earliest reportedAt wins among several open breakdowns', () => {
     order({ id: 'early', machineId: 'm1', reportedAt: '2026-10-19', createdAt: '2026-10-19T10:00:00.000Z' }),
     order({ id: 'earlier', machineId: 'm1', reportedAt: '2026-10-19', createdAt: '2026-10-19T08:00:00.000Z' }),
   ];
-  const [row] = downNow(machines, workOrders, TODAY);
+  const [row] = downNow(machines, workOrders, '2026-10-21T08:00:00.000Z');
   assert.equal(row.order.id, 'earlier');
   assert.equal(row.hoursDown, 48);
 });

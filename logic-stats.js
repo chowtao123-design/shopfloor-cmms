@@ -104,15 +104,17 @@ export function downNow(machines, workOrders, nowISO) {
       if (candidate.machineId !== machine.id) continue;
       if (order === null || orderKey(candidate) < orderKey(order)) order = candidate;
     }
-    const downSince = order ? dateOf(order.reportedAt) : null;
-    const days = downSince && isISODate(downSince) ? daysBetween(downSince, now) : null;
-    rows.push({
-      machine,
-      type: machineTypeLabel(machine),
-      downSince,
-      order,
-      hoursDown: days === null ? null : Math.max(0, days) * 24,
-    });
+    // Prefer the moment the order was logged; a report date alone counts from local midnight.
+    const reported = order ? dateOf(order.reportedAt) : null;
+    const created = order && order.createdAt && !Number.isNaN(Date.parse(order.createdAt)) ? order.createdAt : null;
+    const downSince = created && (!reported || dateOf(created) === reported) ? created : reported;
+    let hoursDown = null;
+    if (downSince) {
+      const start = isISODate(downSince) ? new Date(`${downSince}T00:00:00`) : new Date(downSince);
+      const end = nowISO && !isISODate(nowISO) && !Number.isNaN(Date.parse(nowISO)) ? new Date(nowISO) : new Date(`${now}T00:00:00`);
+      hoursDown = Math.max(0, Math.round(((end - start) / 3600000) * 10) / 10);
+    }
+    rows.push({ machine, type: machineTypeLabel(machine), downSince, order, hoursDown });
   }
   rows.sort(
     (a, b) =>
