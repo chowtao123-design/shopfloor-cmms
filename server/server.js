@@ -51,6 +51,15 @@ import {
   setBrandingLogo,
   setBrandingName,
 } from './branding.js';
+import {
+  aiDeleteHistory,
+  aiGetConfig,
+  aiGetHistory,
+  aiGetStatus,
+  aiPostChat,
+  aiPostTest,
+  aiPutConfig,
+} from './ai.js';
 import { openStore } from './store.js';
 
 /**
@@ -448,6 +457,19 @@ function deleteBrandingLogoHandler(req, res, ctx) {
   sendJson(req, res, 200, clearBrandingLogo(ctx.store, ctx.store.dataDir, SERVER_VERSION));
 }
 
+// ---------------------------------------------------------------------------
+// AI assistant (SPEC-v3.md section 9). Handlers live in server/ai.js and
+// return {status, body, headers} or throw ApiError; this wrapper sends them.
+// ---------------------------------------------------------------------------
+
+function aiRoute(handler) {
+  return async function aiHandler(req, res, ctx) {
+    const body = req.method === 'POST' || req.method === 'PUT' ? await readJsonBody(req) : undefined;
+    const out = await handler(ctx, req, body);
+    sendJson(req, res, out.status ?? 200, out.body ?? {}, out.headers ?? {});
+  };
+}
+
 async function createBackupHandler(req, res, ctx) {
   let meta;
   try {
@@ -708,6 +730,28 @@ const ROUTES = [
     { auth: true, admin: true, adminMessage: 'Only admins can change the logo' },
     deleteBrandingLogoHandler
   ),
+  compileRoute(
+    'GET',
+    '/api/ai/config',
+    { auth: true, admin: true, adminMessage: 'Only admins can manage the AI assistant' },
+    aiRoute(aiGetConfig)
+  ),
+  compileRoute(
+    'PUT',
+    '/api/ai/config',
+    { auth: true, admin: true, adminMessage: 'Only admins can manage the AI assistant' },
+    aiRoute(aiPutConfig)
+  ),
+  compileRoute(
+    'POST',
+    '/api/ai/test',
+    { auth: true, admin: true, adminMessage: 'Only admins can test the AI assistant' },
+    aiRoute(aiPostTest)
+  ),
+  compileRoute('GET', '/api/ai/status', { auth: true }, aiRoute(aiGetStatus)),
+  compileRoute('POST', '/api/ai/chat', { auth: true }, aiRoute(aiPostChat)),
+  compileRoute('GET', '/api/ai/history', { auth: true }, aiRoute(aiGetHistory)),
+  compileRoute('DELETE', '/api/ai/history', { auth: true }, aiRoute(aiDeleteHistory)),
 ];
 
 function matchRoute(method, apiPath) {

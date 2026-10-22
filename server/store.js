@@ -113,6 +113,18 @@ CREATE TABLE IF NOT EXISTS files (
   uploaded_by TEXT,
   uploaded_at TEXT NOT NULL
 );
+
+-- v3 (SPEC-v3.md section 9): AI chat history, per user and conversation.
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('user','assistant')),
+  content TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_messages_user_conversation ON ai_messages (user_id, conversation_id);
 `;
 
 function getMetaValue(db, key) {
@@ -171,6 +183,17 @@ function publicHistory(row) {
     after: row.after === null ? null : JSON.parse(row.after),
     conflict: Number(row.conflict) === 1,
     note: row.note,
+  };
+}
+
+/** Public JSON shape of one ai_messages row (SPEC-v3.md section 9). */
+function publicAiMessage(row) {
+  return {
+    id: Number(row.id),
+    conversationId: row.conversation_id,
+    role: row.role,
+    content: row.content,
+    at: row.at,
   };
 }
 
@@ -249,6 +272,57 @@ export function openStore(dataDir) {
     },
     deleteSetting(key) {
       db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+    },
+    /**
+     * All live records of one store, oldest seq first (v3 SPEC-v3.md
+     * section 9 read-only AI snapshot). Tombstones are excluded.
+     */
+    listRecords(storeName) {
+      return db
+        .prepare('SELECT * FROM records WHERE store = ? AND deleted = 0 ORDER BY seq ASC')
+        .all(storeName)
+        .map((row) => publicRecord(row));
+    },
+    /** Insert one AI chat message (SPEC-v3.md section 9). */
+    insertAiMessage(message) {
+      const result = db
+        .prepare(
+          `INSERT INTO ai_messages (conversation_id, user_id, role, content, at)
+           VALUES (?, ?, ?, ?, ?)`
+        )
+        .run(message.conversationId, message.userId, message.role, message.content, message.at);
+      return Number(result.lastInsertRowid);
+    },
+    /**
+     * A user's own AI messages (public shape), newest last; optionally scoped
+     * to one conversation. Other users' chats are never visible (SPEC-v3.md
+     * section 9).
+     */
+    listAiMessages(userId, conversationId = null) {
+      const rows =
+        conversationId === null
+          ? db
+              .prepare(
+                `SELECT id, conversation_id, role, content, at FROM ai_messages
+                 WHERE user_id = ? ORDER BY id ASC`
+              )
+              .all(userId)
+          : db
+              .prepare(
+                `SELECT id, conversation_id, role, content, at FROM ai_messages
+                 WHERE user_id = ? AND conversation_id = ? ORDER BY id ASC`
+              )
+              .all(userId, conversationId);
+      return rows.map((row) => publicAiMessage(row));
+    },
+    /** Delete a user's own AI messages, all or one conversation; returns the count. */
+    deleteAiMessages(userId, conversationId = null) {
+      const statement =
+        conversationId === null
+          ? db.prepare('DELETE FROM ai_messages WHERE user_id = ?')
+          : db.prepare('DELETE FROM ai_messages WHERE user_id = ? AND conversation_id = ?');
+      const params = conversationId === null ? [userId] : [userId, conversationId];
+      return statement.run(...params).changes;
     },
     /** Insert one uploaded-file row (SPEC-v3.md section 6). */
     insertFile(file) {
@@ -367,6 +441,7 @@ export function openStore(dataDir) {
       const row = db.prepare('SELECT display_name FROM users WHERE id = ?').get(userId);
       return row === undefined ? null : row.display_name;
     },
+    /** Display name of a user id, or null for unknown/absent users. */
     /**
      * Run `fn` inside one SQLite transaction so every write (records row,
      * counter bump, history entry) commits or rolls back together. Not

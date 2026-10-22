@@ -183,6 +183,38 @@ Records live in `data/maint.db`, not in the app files, so an update does not
 touch them. Devices pick up the new app shell on their next reload (the
 service-worker cache is versioned and refreshes itself).
 
+## AI assistant (v3)
+
+Admins configure the assistant in Settings → **AI assistant** (the chat button
+is hidden when no provider is configured). Providers:
+
+- **openai-compatible** – base URL + API key + model id; works with OpenAI,
+  vLLM, Ollama, LM Studio.
+- **opencode** – run `opencode serve` **on the same machine**, bound to
+  `127.0.0.1`, set `OPENCODE_SERVER_PASSWORD` and use it as the server
+  password here, and start it in an **empty dedicated folder** (opencode can
+  read and edit the folder it runs in; an empty one gives it nothing to touch).
+
+Always use the **Test connection** button after changing settings. Secrets (the
+API key, the opencode password) are stored server-side only and are never sent
+back to the browser (the API answers `{configured: true}` style booleans).
+
+How it behaves:
+
+- The server, not the browser, talks to the provider. Each question sends a
+  short explanation of the app plus a **read-only** snapshot: open and overdue
+  service orders, down machines, PM due within 7 days, low-stock parts and up
+  to 20 records matching the question. Contractor rates and other people's
+  chats stay out unless you are an admin. The assistant cannot change any
+  data.
+- It may propose a **draft service order** as a JSON block; nothing is saved
+  until you review it and press Save.
+- Limit: 20 messages per minute per user (then a short cool-down).
+- Chat history is stored per user (`GET /api/ai/history`) and everyone can
+  clear only their own (`DELETE /api/ai/history`).
+- If the provider is down or times out (60 s), the chat shows a friendly
+  error; the server logs the failure without secrets.
+
 ## Run locally (standalone, single device)
 
 ```
