@@ -96,7 +96,16 @@ export function validateSession(store, token, sessionDays) {
   } else {
     store.touchSession(tokenHash, { lastSeenAt: new Date(now).toISOString() });
   }
-  return { id: row.user_id, username: row.username, display_name: row.display_name, role: row.role };
+  // The legacy `role` column stays readable for one version (SPEC-v3.md
+  // 13.2); access itself is decided by can() from users.role_id.
+  return {
+    id: row.user_id,
+    username: row.username,
+    display_name: row.display_name,
+    role: row.legacy_role,
+    roleId: row.role_id === undefined ? null : row.role_id,
+    roleName: row.role_name === undefined ? null : row.role_name,
+  };
 }
 
 export function deleteSessionByToken(store, token) {

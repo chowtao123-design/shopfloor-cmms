@@ -1,5 +1,7 @@
 'use strict';
 
+import { can } from './permissions.js';
+
 /**
  * Record validation and write operations for the six record stores
  * (SPEC-v2.md sections 5, 7.1, 7.3, 11; SPEC-v3.md sections 2 and 5;
@@ -9,9 +11,10 @@
  * `records` columns. Parts' qtyOnHand is server-owned (SPEC-v2.md 7.3):
  * client PUTs of parts ignore qtyOnHand except on create; quantity changes go
  * through stock moves. WorkOrders.number is server-assigned (SPEC-v3.md 2) and
- * ignored in client data. Contractors' hourlyRate is admin-only (SPEC-v3.md
- * 5): it is hidden from non-admins in read responses and non-admin writes keep
- * the stored value.
+ * ignored in client data. Contractors' hourlyRate is ruled by the
+ * contractorRates permission (SPEC-v3.md 5 and 13): hidden in responses
+ * without Read, kept on writes without Write. `user` carries { store,
+ * roleId } for can() (see server/permissions.js).
  */
 
 export class ApiError extends Error {
@@ -425,7 +428,8 @@ const FIELD_SPECS = {
       contactName: { type: 'string' },
       phone: { type: 'string' },
       email: { type: 'string' },
-      // Admins only (SPEC-v3.md section 5): see putRecord for the non-admin rule.
+      // contractorRates permission only (SPEC-v3.md 5, 13.1): see putRecord
+      // for the no-write rule.
       hourlyRate: { type: 'number', min: 0 },
       machineIds: { type: 'stringArray' },
       active: { type: 'boolean' },
@@ -553,8 +557,9 @@ const conflictNote = (conflict) =>
   `overwrote v${conflict.overwrittenVersion} by ${conflict.overwrittenBy} at ${conflict.overwrittenAt}`;
 
 // ---------------------------------------------------------------------------
-// Contractors' hourlyRate is admin-only (SPEC-v3.md section 5): the server
-// omits it for non-admins in changes/history responses (and record responses).
+// Contractors' hourlyRate is ruled by the contractorRates permission
+// (SPEC-v3.md sections 5 and 13): it is omitted for viewers without Read and
+// a PUT without Write keeps the stored value.
 // ---------------------------------------------------------------------------
 
 function withoutHourlyRate(data) {
@@ -564,16 +569,16 @@ function withoutHourlyRate(data) {
   return copy;
 }
 
-/** Hide contractors.hourlyRate from a non-admin viewer of one record. */
-export function sanitizeRecordForRole(record, role) {
-  if (!record || record.store !== 'contractors' || role === 'admin') return record;
+/** Hide contractors.hourlyRate from a viewer without contractorRates Read. */
+export function sanitizeRecordForRole(record, showRates) {
+  if (!record || record.store !== 'contractors' || showRates) return record;
   if (record.data === withoutHourlyRate(record.data)) return record;
   return { ...record, data: withoutHourlyRate(record.data) };
 }
 
-/** Hide contractors.hourlyRate from a non-admin viewer of one history entry. */
-export function sanitizeHistoryForRole(entry, role) {
-  if (!entry || entry.store !== 'contractors' || role === 'admin') return entry;
+/** Hide contractors.hourlyRate from a viewer without contractorRates Read. */
+export function sanitizeHistoryForRole(entry, showRates) {
+  if (!entry || entry.store !== 'contractors' || showRates) return entry;
   const before = withoutHourlyRate(entry.before);
   const after = withoutHourlyRate(entry.after);
   if (before === entry.before && after === entry.after) return entry;
@@ -621,11 +626,11 @@ export function putRecord(store, { storeName, id, body, user }) {
   const baseVersion = checkBaseVersion(body.baseVersion);
   const current = store.getRecord(storeName, id);
   const isCreate = current === null;
-  // Only admins may edit contractors.hourlyRate (SPEC-v3.md section 5): a
-  // non-admin PUT that includes it keeps the stored value instead.
-  const nonAdminContractor = storeName === 'contractors' && user.role !== 'admin';
+  // Only contractorRates Write may edit contractors.hourlyRate (SPEC-v3.md
+  // 13.1): a PUT without it that includes a rate keeps the stored value.
+  const noRateWrite = storeName === 'contractors' && !can(user, 'contractorRates', 'write');
   let rawData = body.data;
-  if (nonAdminContractor && isPlainObject(rawData) && rawData.hourlyRate !== undefined) {
+  if (noRateWrite && isPlainObject(rawData) && rawData.hourlyRate !== undefined) {
     rawData = { ...rawData };
     delete rawData.hourlyRate;
   }
@@ -636,7 +641,7 @@ export function putRecord(store, { storeName, id, body, user }) {
     delete data.qtyOnHand;
     data.qtyOnHand = Number.isInteger(currentData.qtyOnHand) ? currentData.qtyOnHand : 0;
   }
-  if (nonAdminContractor && !isCreate) {
+  if (noRateWrite && !isCreate) {
     const currentData = JSON.parse(current.data);
     if (currentData.hourlyRate !== undefined) data.hourlyRate = currentData.hourlyRate;
   }

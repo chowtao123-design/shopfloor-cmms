@@ -153,15 +153,43 @@ TLS_CERT=cert.pem TLS_KEY=key.pem npm start
 
 ### Backups
 
-- **One click:** anyone signed in → Settings → **Back up now**. The file is
-  written to `DATA_DIR/backups/` and shows up in the list right away.
+- **One click:** anyone signed in with *Backups → Write* permission → Settings →
+  **Back up now**. The file is written to `DATA_DIR/backups/` and shows up in
+  the list right away (listing needs *Backups → Read*).
 - **Automatic:** the server backs itself up daily at `BACKUP_DAILY_AT` and
   keeps the newest `BACKUP_KEEP` backups (older files are deleted).
-- **Admins** can download any backup from Settings.
+- Downloading a backup file needs *Backups → Write*.
 - **Restore** (with the server stopped):
   `node server/admin.js restore <backup-file>` — the current database is
   saved first as `backups/pre-restore-<timestamp>.db`. There is no restore
   over HTTP.
+
+### Roles and permissions
+
+Instead of the fixed admin/tech split, an **Administrator** (a user whose role
+has *Users & roles → Write*) defines **roles**, and each role sets a level
+**None / Read / Write** for every area of the app (Service Orders, Preventive
+Maintenance, Machines, Parts & Stock, Coworkers, Outside Contractors,
+Contractor rates & costs, Statistics, Photos & files, Backups, AI assistant,
+Branding & AI settings, Users & roles).
+
+- Built-in roles (created automatically, levels per SPEC-v3.md 13.1):
+  **Administrator** (everything Write; the role itself cannot be edited or
+  deleted), **Technician** (Write on the day-to-day areas, Read on Statistics
+  and Backups), **Viewer** (Read on most areas).
+- The server checks the signed-in user's role permissions on **every
+  request**; a change takes effect on the user's next request. A denied call
+  returns `403` with `{error: "forbidden", area, needed}`.
+- Safety rails: the last enabled user with *Users & roles → Write* cannot be
+  disabled or demoted, and nobody can strip that Write from their own role.
+- Manage roles over the API (`GET/POST /api/roles`, `PATCH/DELETE
+  /api/roles/:id`, history per role) or on the server:
+
+```
+node server/admin.js create-user --admin <username> "<Display Name>"
+node server/admin.js create-user --role "Supervisor" <username> "<Display Name>"
+node server/admin.js list-users        # shows each user's role name
+```
 
 ### Importing v1 data
 
