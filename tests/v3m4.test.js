@@ -476,17 +476,22 @@ test('app.js: mark done builds the completion order and asks for labour hours', 
 
 test('app.js: permissions hide create/edit/Mark done and the upload button', () => {
   const src = read('app.js');
-  assert.match(src, /function areaLevel\(area\)/);
-  assert.match(src, /function canWriteArea\(area\)/);
-  assert.match(src, /function canMarkPMDone\(\)/);
+  // V3-M9: the ad-hoc helpers became the one can(area, level) check.
+  assert.match(src, /function can\(area, level = 'read'\)/);
+  assert.match(src, /function isReadOnly\(area\)/);
   // Upload is hidden without the files write permission.
-  assert.match(src, /const canUpload = canWriteArea\('files'\);/);
+  assert.match(src, /const canUpload = can\('files', 'write'\);/);
   assert.match(src, /'View only — you need the Photos \& files write permission to upload\.'/);
   // Mark done needs pm + serviceOrders write (SPEC-v3.md 13.1).
-  assert.match(src, /return canWriteArea\('pm'\) && canWriteArea\('serviceOrders'\);/);
+  assert.match(src, /can\('pm', 'write'\) && can\('serviceOrders', 'write'\)/);
   // PM and machine entry points are gated.
-  assert.match(src, /canWriteArea\('pm'\)/);
-  assert.match(src, /canWriteArea\('machines'\)/);
+  assert.match(src, /can\('pm', 'write'\)/);
+  assert.match(src, /can\('machines', 'write'\)/);
+  // The old helper names are gone (replaced by can(), SPEC-v3.md 13.3).
+  assert.doesNotMatch(src, /function areaLevel\(area\)/);
+  assert.doesNotMatch(src, /function canWriteArea\(area\)/);
+  assert.doesNotMatch(src, /function canMarkPMDone\(\)/);
+  assert.doesNotMatch(src, /function canViewArea\(area\)/);
 });
 
 test('app.js: machine photos and manuals reuse the shared attachments helper', () => {

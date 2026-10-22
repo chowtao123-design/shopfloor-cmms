@@ -4126,3 +4126,187 @@ body.logged-out .ai-chat-fab {
   gap: 0.2rem;
   margin-top: 0.5rem;
 }
+
+/* Admin dashboard (SPEC-v3.md 13.3): users table, roles matrix, history. */
+.admin-tabs {
+  margin: 0.25rem 0 0.9rem;
+}
+
+.matrix-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+
+.roles-matrix {
+  min-width: 40rem;
+}
+
+.roles-matrix .matrix-area,
+.roles-matrix th:first-child,
+.roles-matrix td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+
+.matrix-role.is-locked {
+  color: var(--muted);
+}
+
+.matrix-lock {
+  margin-left: 0.35rem;
+  cursor: help;
+}
+
+.matrix-lock svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  vertical-align: -0.1rem;
+}
+
+.seg {
+  display: inline-flex;
+  gap: 0.2rem;
+  align-items: center;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-3);
+  white-space: nowrap;
+}
+
+.seg-option {
+  display: inline-flex;
+  gap: 0.25rem;
+  align-items: center;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.seg-option:has(input[type="radio"]:checked) {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.seg-option input[type="radio"] {
+  width: 0.85rem;
+  height: 0.85rem;
+  margin: 0;
+  accent-color: var(--accent);
+  flex: none;
+}
+
+.seg-option:has(input[type="radio"]:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.unsaved-bar {
+  position: sticky;
+  bottom: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.85rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow);
+}
+
+.unsaved-bar-text {
+  font-weight: 600;
+}
+
+.role-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 0.5rem;
+  background: var(--surface);
+}
+
+.role-card-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+.role-delete-reason {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+}
+
+.role-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.role-history-entry {
+  padding: 0.6rem 0.2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.role-history-entry:last-child {
+  border-bottom: 0;
+}
+
+.role-history-who {
+  font-weight: 600;
+}
+
+.role-history-when {
+  font-size: 0.8rem;
+  margin-bottom: 0.25rem;
+}
+
+.role-history-changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.role-history-change {
+  padding: 0.1rem 0;
+  font-size: 0.88rem;
+}
+
+.toast-action {
+  margin-left: 0.5rem;
+}
+
+.branding-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.branding-logo-preview {
+  max-height: 48px;
+  max-width: 140px;
+  border-radius: 6px;
+}
+
+.admin-users-table td,
+.admin-users-table th {
+  vertical-align: middle;
+}
+
+.matrix-lock-svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  vertical-align: -0.12rem;
+}

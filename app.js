@@ -83,6 +83,8 @@ import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
 import * as sync from './sync.js';
 import { checkSession, logout, renderLogin } from './login.js';
+import { AREA_KEYS, allows } from './permissions.js';
+import * as adminUI from './admin.js';
 
 const appMain = document.getElementById('app-main');
 const pageTitle = document.getElementById('page-title');
@@ -1799,6 +1801,12 @@ function soPhoneCard(order) {
   );
 }
 
+/** Page-head action or the "View only" badge for read-only areas (SPEC-v3.md 13.3). */
+function headActionFor(area, node = null) {
+  if (can(area, 'write')) return node;
+  return isReadOnly(area) ? viewOnlyBadge() : null;
+}
+
 function renderJobs(route) {
   setTitle('Service Orders');
   const desktop = desktopMedia.matches;
@@ -1991,7 +1999,8 @@ function renderJobs(route) {
           searchQuery.trim()
             ? 'Try a different search or clear filters.'
             : 'Log a repair to keep track of what is open.',
-          filters.status.length === 0 || filters.status.includes('not-done')
+          can('serviceOrders', 'write') &&
+            (filters.status.length === 0 || filters.status.includes('not-done'))
             ? [h('a', { class: 'btn btn-primary', href: '#/jobs/new' }, '+ Service order')]
             : [],
         ),
@@ -2038,7 +2047,7 @@ function renderJobs(route) {
   return page(
     pageHead(
       'Service Orders',
-      h('a', { class: 'btn btn-primary btn-small', href: '#/jobs/new' }, '+ Service order'),
+      headActionFor('serviceOrders', h('a', { class: 'btn btn-primary btn-small', href: '#/jobs/new' }, '+ Service order')),
     ),
     toolbar,
     chipsHost,
@@ -2143,6 +2152,9 @@ async function moveBoardOrder(order, status) {
 function soBoardCard(order) {
   const due = orderDueParts(order);
   const detailHref = `#/jobs/${encodeURIComponent(order.id)}`;
+  // Moving a card edits the order: Read-only users get no move menu and no
+  // drag (SPEC-v3.md 13.3).
+  const canMove = can('serviceOrders', 'write');
   const moveButton = h(
     'button',
     {
@@ -2162,7 +2174,7 @@ function soBoardCard(order) {
     'article',
     {
       class: `board-card status-${order.status}`,
-      draggable: true,
+      draggable: canMove === true || null,
       tabindex: 0,
       'aria-label': `${formatOrderNumber(order.number)} ${order.title}`,
     },
@@ -2185,7 +2197,7 @@ function soBoardCard(order) {
       'div',
       { class: 'board-card-foot' },
       assigneeAvatars(order.assignees || []),
-      moveButton,
+      canMove ? moveButton : null,
     ),
   );
   card.addEventListener('dragstart', (event) => {
@@ -2209,29 +2221,32 @@ function soBoardCard(order) {
 }
 
 function soBoardColumn(status, orders) {
+  const canMove = can('serviceOrders', 'write');
   const list = h(
     'div',
     { class: 'board-list', 'data-status': status },
     ...orders.map((order) => soBoardCard(order)),
   );
-  list.addEventListener('dragover', (event) => {
-    if (!event.dataTransfer) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    list.classList.add('is-drop-target');
-  });
-  list.addEventListener('dragleave', (event) => {
-    if (event.target === list) list.classList.remove('is-drop-target');
-  });
-  list.addEventListener('drop', async (event) => {
-    event.preventDefault();
-    list.classList.remove('is-drop-target');
-    const id = event.dataTransfer ? event.dataTransfer.getData('text/plain') : '';
-    if (!id) return;
-    const order = state.workOrders.find((entry) => entry.id === id);
-    if (!order || order.status === status) return;
-    await moveBoardOrder(order, status);
-  });
+  if (canMove) {
+    list.addEventListener('dragover', (event) => {
+      if (!event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      list.classList.add('is-drop-target');
+    });
+    list.addEventListener('dragleave', (event) => {
+      if (event.target === list) list.classList.remove('is-drop-target');
+    });
+    list.addEventListener('drop', async (event) => {
+      event.preventDefault();
+      list.classList.remove('is-drop-target');
+      const id = event.dataTransfer ? event.dataTransfer.getData('text/plain') : '';
+      if (!id) return;
+      const order = state.workOrders.find((entry) => entry.id === id);
+      if (!order || order.status === status) return;
+      await moveBoardOrder(order, status);
+    });
+  }
   return h(
     'section',
     { class: `board-column status-${status}`, 'aria-label': `${LABELS.status[status]} column` },
@@ -2639,15 +2654,17 @@ function renderJobDetail(route) {
       : null,
   );
 
-  const editSection = desktopMedia.matches
-    ? null
-    : h(
-        'details',
-        { class: 'more' },
-        h('summary', {}, 'Edit service order'),
-        editFormBody(),
-      );
+  const editSection =
+    desktopMedia.matches || !can('serviceOrders', 'write')
+      ? null
+      : h(
+          'details',
+          { class: 'more' },
+          h('summary', {}, 'Edit service order'),
+          editFormBody(),
+        );
 
+  const canEditOrder = can('serviceOrders', 'write');
   return page(
     h(
       'div',
@@ -2658,18 +2675,16 @@ function renderJobDetail(route) {
         h('h2', {}, order.title),
         h('div', { class: 'row-sub' }, `${formatOrderNumber(order.number)} · ${machineName(order.machineId)}`),
       ),
-      desktopMedia.matches
-        ? h(
-            'div',
-            { class: 'button-row' },
-            h('button', { class: 'btn btn-small', type: 'button', onclick: openEditDrawer }, 'Edit'),
-            statusPill(order.status, LABELS.status),
-          )
-        : statusPill(order.status, LABELS.status),
+      h(
+        'div',
+        { class: 'row-sub' },
+        statusPill(order.status, LABELS.status),
+        isReadOnly('serviceOrders') ? viewOnlyBadge() : null,
+      ),
     ),
     detailMeta(order),
     conflictBanner('workOrders', order.id),
-    statusButtons,
+    canEditOrder ? statusButtons : null,
     h('div', { class: 'card' }, details),
     sectionTitle('Assigned to'),
     assignees.length
@@ -2712,14 +2727,14 @@ function renderJobDetail(route) {
       ? h('div', { class: 'card pre' }, order.actionTaken)
       : h('p', { class: 'muted' }, 'Nothing recorded yet.'),
     editSection,
-    h(
-      'div',
-      { class: 'form-actions', style: { marginTop: '1.25rem' } },
-      h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteOrder }, 'Delete service order'),
-      desktopMedia.matches
-        ? h('button', { class: 'btn', type: 'button', onclick: openEditDrawer }, 'Edit')
-        : null,
-    ),
+    canEditOrder
+      ? h(
+          'div',
+          { class: 'form-actions', style: { marginTop: '1.25rem' } },
+          h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteOrder }, 'Delete service order'),
+          desktopMedia.matches ? h('button', { class: 'btn', type: 'button', onclick: openEditDrawer }, 'Edit') : null,
+        )
+      : null,
     historySection('workOrders', order.id),
   );
 }
@@ -3195,37 +3210,32 @@ function createLabourEditor(initialEntries = []) {
 
 /* Permission helpers (SPEC-v3.md 13.3): the client follows
    teamUser.permissions {area: 'none'|'read'|'write'}; local mode (no team
-   user) allows everything. The server stays the authority on every save. */
-function areaLevel(area) {
-  if (!teamUser || !teamUser.permissions) return 'write';
-  const level = teamUser.permissions[area];
-  return level === 'write' || level === 'read' ? level : 'none';
+   user) allows everything. The server stays the authority on every save.
+   can(area, level) is the one check used everywhere: level order
+   none < read < write, so write implies read. */
+function can(area, level = 'read') {
+  if (!teamUser || !teamUser.permissions) return true;
+  return allows(teamUser.permissions, area, level);
 }
 
-function canWriteArea(area) {
-  return areaLevel(area) === 'write';
+function isReadOnly(area) {
+  return can(area) && !can(area, 'write');
 }
 
-/* Mark done writes a PM task *and* creates a Done service order
-   (SPEC-v3.md 13.1: the pm area plus serviceOrders Write). */
-function canMarkPMDone() {
-  return canWriteArea('pm') && canWriteArea('serviceOrders');
-}
-
-/* See an area at all (Read or Write, SPEC-v3.md 13.3): none hides the page. */
-function canViewArea(area) {
-  return areaLevel(area) !== 'none';
+/* The Admin dashboard exists only in team mode: local records have no users
+   or roles to manage (the server routes need admin Write anyway). */
+function canAdminUI() {
+  return Boolean(teamUser) && can('admin', 'write');
 }
 
 /* Contractor rates & costs (SPEC-v3.md 13.1): Read shows rate/cost, Write
    may edit the hourlyRate field. The server stays the authority. */
 function canReadRates() {
-  const level = areaLevel('contractorRates');
-  return level === 'read' || level === 'write';
+  return can('contractorRates');
 }
 
 function canWriteRates() {
-  return canWriteArea('contractorRates');
+  return can('contractorRates', 'write');
 }
 
 /** "View only" badge on read-only pages (SPEC-v3.md 13.3). */
@@ -3244,7 +3254,7 @@ function noAccessPage(title, areaLabel) {
     pageHead(title),
     emptyState(
       'You do not have access',
-      `Your role does not include access to ${areaLabel}. An administrator can change that in Settings → Admin.`,
+      `Your role does not include access to ${areaLabel}. An administrator can change that on the Admin page.`,
       [h('a', { class: 'btn btn-primary', href: '#/home' }, 'Go Home')],
     ),
   );
@@ -3262,7 +3272,7 @@ function createAttachmentsEditor(initialAttachments = []) {
   });
   const addButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Add photo or PDF');
   // Uploading needs the files area Write permission (SPEC-v3.md 13.1).
-  const canUpload = canWriteArea('files');
+  const canUpload = can('files', 'write');
 
   function renderGrid() {
     if (attachments.length === 0) {
@@ -3716,9 +3726,7 @@ function renderMachines(route) {
   return page(
     pageHead(
       'Machines',
-      canWriteArea('machines')
-        ? h('a', { class: 'btn btn-primary btn-small', href: '#/machines/new' }, '+ Add machine')
-        : null,
+      headActionFor('machines', h('a', { class: 'btn btn-primary btn-small', href: '#/machines/new' }, '+ Add machine')),
     ),
     searchBox('Search machines', (value) => update(value)),
     chips,
@@ -3898,7 +3906,7 @@ function renderMachineForm(route) {
   }
   // Read-only roles never see the form (entry buttons are hidden); direct
   // links land on this page. The server stays the authority.
-  if (!canWriteArea('machines')) {
+  if (!can('machines', 'write')) {
     return page(
       pageHead(machineFormTitle(existing)),
       emptyState(
@@ -4026,15 +4034,17 @@ function renderMachineDetail(route) {
       'div',
       { class: 'detail-head' },
       h('div', {}, h('h2', {}, machine.name), h('div', { class: 'row-sub' }, machine.location || '')),
-      statusPill(machine.status, LABELS.machineStatus),
+      h('div', { class: 'row-sub' }, statusPill(machine.status, LABELS.machineStatus), isReadOnly('machines') ? viewOnlyBadge() : null),
     ),
     detailMeta(machine),
     conflictBanner('machines', machine.id),
     h(
       'div',
       { class: 'button-row' },
-      h('a', { class: 'btn btn-primary btn-small', href: `#/jobs/new?machine=${encodeURIComponent(machine.id)}` }, '+ Service order'),
-      canWriteArea('machines')
+      can('serviceOrders', 'write')
+        ? h('a', { class: 'btn btn-primary btn-small', href: `#/jobs/new?machine=${encodeURIComponent(machine.id)}` }, '+ Service order')
+        : null,
+      can('machines', 'write')
         ? h('a', { class: 'btn btn-small', href: `#/machines/${encodeURIComponent(machine.id)}/edit` }, 'Edit machine')
         : null,
     ),
@@ -4103,7 +4113,7 @@ function renderMachineDetail(route) {
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
-      canWriteArea('machines')
+      can('machines', 'write')
         ? h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteMachine }, 'Delete machine')
         : null,
     ),
@@ -4169,7 +4179,9 @@ function renderParts(route) {
               : 'Add needles, blades, sensors and other spares you keep on the shelf.',
           searchQuery.trim() || lowOnly
             ? []
-            : [h('a', { class: 'btn btn-primary', href: '#/parts/new' }, 'Add a part')],
+            : can('parts', 'write')
+              ? [h('a', { class: 'btn btn-primary', href: '#/parts/new' }, 'Add a part')]
+              : [],
         ),
       );
       listHost.classList.remove('cards-only');
@@ -4191,7 +4203,7 @@ function renderParts(route) {
 
   update();
   return page(
-    pageHead('Parts', h('a', { class: 'btn btn-primary btn-small', href: '#/parts/new' }, '+ Add part')),
+    pageHead('Parts', headActionFor('parts', h('a', { class: 'btn btn-primary btn-small', href: '#/parts/new' }, '+ Add part'))),
     searchBox('Search parts', (value) => update(value), true),
     h(
       'div',
@@ -4300,49 +4312,51 @@ function renderPartDetail(route) {
         h('h2', {}, part.name),
         h('div', { class: 'row-sub' }, part.partNumber || 'No part number'),
       ),
-      low ? h('span', { class: 'pill status-low' }, 'Low stock') : statusPill('ok', { ok: 'In stock' }),
+      h('div', { class: 'row-sub' }, low ? h('span', { class: 'pill status-low' }, 'Low stock') : statusPill('ok', { ok: 'In stock' }), isReadOnly('parts') ? viewOnlyBadge() : null),
     ),
     detailMeta(part),
     conflictBanner('parts', part.id),
-    h(
-      'div',
-      { class: 'card' },
-      h(
-        'div',
-        { class: 'stock-controls' },
-        h(
-          'button',
-          {
-            class: 'btn',
-            type: 'button',
-            'aria-label': `Remove one ${part.name}`,
-            disabled: toInteger(part.qtyOnHand) <= 0,
-            onclick: () => adjust(-1),
-          },
-          '−1',
-        ),
-        h(
-          'span',
-          { class: `qty-big${low ? ' low-text' : ''}` },
-          String(toInteger(part.qtyOnHand)),
-        ),
-        h('span', { class: 'muted' }, part.unit || 'pcs'),
-        h(
-          'button',
-          {
-            class: 'btn',
-            type: 'button',
-            'aria-label': `Add one ${part.name}`,
-            onclick: () => adjust(1),
-          },
-          '+1',
-        ),
-      ),
-    ),
+    can('parts', 'write')
+      ? h(
+          'div',
+          { class: 'card' },
+          h(
+            'div',
+            { class: 'stock-controls' },
+            h(
+              'button',
+              {
+                class: 'btn',
+                type: 'button',
+                'aria-label': `Remove one ${part.name}`,
+                disabled: toInteger(part.qtyOnHand) <= 0,
+                onclick: () => adjust(-1),
+              },
+              '−1',
+            ),
+            h(
+              'span',
+              { class: `qty-big${low ? ' low-text' : ''}` },
+              String(toInteger(part.qtyOnHand)),
+            ),
+            h('span', { class: 'muted' }, part.unit || 'pcs'),
+            h(
+              'button',
+              {
+                class: 'btn',
+                type: 'button',
+                'aria-label': `Add one ${part.name}`,
+                onclick: () => adjust(1),
+              },
+              '+1',
+            ),
+          ),
+        )
+      : null,
     h(
       'div',
       { class: 'button-row', style: { marginTop: '0.75rem' } },
-      h('a', { class: 'btn btn-small', href: `#/parts/${encodeURIComponent(part.id)}/edit` }, 'Edit part'),
+      can('parts', 'write') ? h('a', { class: 'btn btn-small', href: `#/parts/${encodeURIComponent(part.id)}/edit` }, 'Edit part') : null,
     ),
     h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
     sectionTitle('Used on service orders'),
@@ -4378,7 +4392,7 @@ function renderPartDetail(route) {
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
-      h('button', { class: 'btn btn-danger', type: 'button', onclick: deletePart }, 'Delete part'),
+      can('parts', 'write') ? h('button', { class: 'btn btn-danger', type: 'button', onclick: deletePart }, 'Delete part') : null,
     ),
     historySection('parts', part.id),
   );
@@ -4677,7 +4691,7 @@ function renderCoworkers(route) {
             searchQuery || activeFilter !== 'all'
               ? h('a', { class: 'btn', href: '#/coworkers?filter=all' }, 'Show all coworkers')
               : null,
-            canWriteArea('coworkers')
+            can('coworkers', 'write')
               ? h('a', { class: 'btn btn-primary', href: '#/coworkers/new' }, 'Add coworker')
               : null,
           ],
@@ -4720,8 +4734,8 @@ function renderCoworkers(route) {
   return page(
     pageHead(
       'Coworkers',
-      areaLevel('coworkers') === 'read' ? viewOnlyBadge() : null,
-      canWriteArea('coworkers')
+      isReadOnly('coworkers') ? viewOnlyBadge() : null,
+      can('coworkers', 'write')
         ? h('a', { class: 'btn btn-primary btn-small', href: '#/coworkers/new' }, '+ Add coworker')
         : null,
     ),
@@ -4913,7 +4927,7 @@ function renderCoworkerForm(route) {
       ]),
     );
   }
-  if (!canWriteArea('coworkers')) {
+  if (!can('coworkers', 'write')) {
     return page(
       pageHead(coworkerFormTitle(existing)),
       emptyState(
@@ -5024,14 +5038,14 @@ function renderCoworkerDetail(route) {
         h('h2', {}, coworker.name),
         h('div', { class: 'row-sub' }, [coworker.role, shiftLabel(coworker)].filter(Boolean).join(' · ')),
       ),
-      areaLevel('coworkers') === 'read' ? viewOnlyBadge() : activePill(coworker),
+      isReadOnly('coworkers') ? viewOnlyBadge() : activePill(coworker),
     ),
     detailMeta(coworker),
     conflictBanner('coworkers', coworker.id),
     h(
       'div',
       { class: 'button-row' },
-      canWriteArea('coworkers')
+      can('coworkers', 'write')
         ? h('a', { class: 'btn btn-primary btn-small', href: `#/coworkers/${encodeURIComponent(coworker.id)}/edit` }, 'Edit coworker')
         : null,
     ),
@@ -5046,7 +5060,7 @@ function renderCoworkerDetail(route) {
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
-      canWriteArea('coworkers')
+      can('coworkers', 'write')
         ? h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteCoworker }, 'Delete coworker')
         : null,
     ),
@@ -5178,7 +5192,7 @@ function renderContractors(route) {
             searchQuery || activeFilter !== 'all'
               ? h('a', { class: 'btn', href: '#/contractors?filter=all' }, 'Show all contractors')
               : null,
-            canWriteArea('contractors')
+            can('contractors', 'write')
               ? h('a', { class: 'btn btn-primary', href: '#/contractors/new' }, 'Add contractor')
               : null,
           ],
@@ -5221,8 +5235,8 @@ function renderContractors(route) {
   return page(
     pageHead(
       'Outside Contractors',
-      areaLevel('contractors') === 'read' ? viewOnlyBadge() : null,
-      canWriteArea('contractors')
+      isReadOnly('contractors') ? viewOnlyBadge() : null,
+      can('contractors', 'write')
         ? h('a', { class: 'btn btn-primary btn-small', href: '#/contractors/new' }, '+ Add contractor')
         : null,
     ),
@@ -5436,7 +5450,7 @@ function renderContractorForm(route) {
       ]),
     );
   }
-  if (!canWriteArea('contractors')) {
+  if (!can('contractors', 'write')) {
     return page(
       pageHead(contractorFormTitle(existing)),
       emptyState(
@@ -5516,14 +5530,14 @@ function renderContractorDetail(route) {
         h('h2', {}, contractor.company),
         h('div', { class: 'row-sub' }, [contractor.trade, contractor.contactName].filter(Boolean).join(' · ')),
       ),
-      areaLevel('contractors') === 'read' ? viewOnlyBadge() : activePill(contractor),
+      isReadOnly('contractors') ? viewOnlyBadge() : activePill(contractor),
     ),
     detailMeta(contractor),
     conflictBanner('contractors', contractor.id),
     h(
       'div',
       { class: 'button-row' },
-      canWriteArea('contractors')
+      can('contractors', 'write')
         ? h('a', { class: 'btn btn-primary btn-small', href: `#/contractors/${encodeURIComponent(contractor.id)}/edit` }, 'Edit contractor')
         : null,
     ),
@@ -5559,7 +5573,7 @@ function renderContractorDetail(route) {
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
-      canWriteArea('contractors')
+      can('contractors', 'write')
         ? h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteContractor }, 'Delete contractor')
         : null,
     ),
@@ -5571,7 +5585,7 @@ function renderContractorDetail(route) {
    drawer on desktop; phones and tablets keep the full-page form. */
 function maybeOpenCoworkerDrawer(route) {
   if (!desktopMedia.matches) return false;
-  if (!canWriteArea('coworkers')) return false;
+  if (!can('coworkers', 'write')) return false;
   const second = route.segments[1];
   const editing = Boolean(second && second !== 'new');
   const existing = editing ? coworkerById(second) : null;
@@ -5583,7 +5597,7 @@ function maybeOpenCoworkerDrawer(route) {
 
 function maybeOpenContractorDrawer(route) {
   if (!desktopMedia.matches) return false;
-  if (!canWriteArea('contractors')) return false;
+  if (!can('contractors', 'write')) return false;
   const second = route.segments[1];
   const editing = Boolean(second && second !== 'new');
   const existing = editing ? contractorById(second) : null;
@@ -5723,7 +5737,7 @@ function pmTaskRow(task) {
   const lateDays = !paused && stateName === 'overdue' ? Math.max(0, daysBetween(due, today) || 0) : 0;
   // Mark done writes the PM task and creates a service order (SPEC-v3.md
   // 13.1): it needs pm + serviceOrders Write and is hidden without them.
-  const canDone = canMarkPMDone();
+  const canDone = can('pm', 'write') && can('serviceOrders', 'write');
   return h(
     'div',
     { class: 'pm-row' },
@@ -5861,7 +5875,8 @@ function pmTableColumns() {
       label: '',
       value: () => '',
       cell: (task) => {
-        if (!canMarkPMDone() || pmPaused(machineById(task.machineId))) return null;
+        if (!(can('pm', 'write') && can('serviceOrders', 'write')) || pmPaused(machineById(task.machineId)))
+          return null;
         return h(
           'button',
           {
@@ -5884,9 +5899,7 @@ function renderPM() {
   setTitle('Preventive Maintenance');
   const today = todayISO();
   // Creating PM tasks needs the pm write permission (SPEC-v3.md 13.3).
-  const add = canWriteArea('pm')
-    ? h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task')
-    : null;
+  const add = headActionFor('pm', h('a', { class: 'btn btn-primary btn-small', href: '#/pm/new' }, '+ Add PM task'));
   if (state.pmTasks.length === 0) {
     return page(
       pageHead('Preventive Maintenance', add),
@@ -6003,8 +6016,8 @@ function renderPMTaskDetail(route) {
 
   // Mark done needs pm + serviceOrders Write; editing needs pm Write
   // (SPEC-v3.md 13.1). The server stays the authority on every save.
-  const canEdit = canWriteArea('pm');
-  const canDone = canMarkPMDone();
+  const canEdit = can('pm', 'write');
+  const canDone = can('pm', 'write') && can('serviceOrders', 'write');
 
   return page(
     h(
@@ -6015,16 +6028,17 @@ function renderPMTaskDetail(route) {
     ),
     detailMeta(task),
     conflictBanner('pmTasks', task.id),
-    h(
-      'div',
-      { class: 'button-row' },
-      canDone
-        ? h('button', { class: 'btn btn-primary', type: 'button', onclick: () => markPMTaskDone(task) }, 'Mark done')
-        : null,
-      canEdit
-        ? h('a', { class: 'btn btn-small', href: `#/pm/${encodeURIComponent(task.id)}/edit` }, 'Edit task')
-        : null,
-    ),
+      h(
+        'div',
+        { class: 'button-row' },
+        canDone
+          ? h('button', { class: 'btn btn-primary', type: 'button', onclick: () => markPMTaskDone(task) }, 'Mark done')
+          : null,
+        canEdit
+          ? h('a', { class: 'btn btn-small', href: `#/pm/${encodeURIComponent(task.id)}/edit` }, 'Edit task')
+          : null,
+        !canDone && !canEdit && isReadOnly('pm') ? viewOnlyBadge() : null,
+      ),
     h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
     sectionTitle('Checklist template'),
     (task.checklist || []).length ? checklistNode({ checklist: task.checklist }) : h('p', { class: 'muted' }, 'No checklist steps.'),
@@ -6272,7 +6286,7 @@ function renderPMTaskForm(route) {
   }
   // Read-only roles never see the form (entry buttons are hidden); direct
   // links land on this "View only" page. The server stays the authority.
-  if (!canWriteArea('pm')) {
+  if (!can('pm', 'write')) {
     return page(
       pageHead(pmTaskFormTitle(existing)),
       emptyState(
@@ -6335,7 +6349,7 @@ function renderHome() {
     return page(
       pageHead('Today'),
       emptyState('Set up your shop', 'Add your machines, then log your first repair.', [
-        h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine'),
+        can('machines', 'write') ? h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine') : null,
         h('button', { class: 'btn', type: 'button', onclick: loadSampleData }, 'Load sample data'),
         h('a', { class: 'btn', href: '#/help' }, 'New here? Read the guide'),
       ]),
@@ -6556,11 +6570,6 @@ async function eraseAllData() {
 
 /* ---------- Team Settings: backups, users, v1 import (SPEC-v2.md 9.5-9.7) ---------- */
 
-// Admin screens follow the roles model (SPEC-v3 13): "Users & roles" write, not the legacy role column.
-function isAdmin() {
-  return Boolean(teamUser && teamUser.permissions && teamUser.permissions.admin === 'write');
-}
-
 function roleLabel(user) {
   if (!user) return '';
   if (user.roleName) return user.roleName;
@@ -6694,7 +6703,7 @@ async function loadServerBackups(listHost) {
             `${backup.createdAt ? formatBackupStamp(backup.createdAt) : 'Unknown time'} · ${backup.createdBy || 'Automatic'}`,
           ),
           h('span', { class: 'muted' }, formatBytes(backup.bytes)),
-          isAdmin() && backup.file
+          can('backups', 'write') && backup.file
             ? h(
                 'a',
                 { class: 'btn btn-small', href: `/api/backups/${encodeURIComponent(backup.file)}` },
@@ -6711,6 +6720,8 @@ async function loadServerBackups(listHost) {
 function serverBackupsCard() {
   const statusLine = h('p', { class: 'field-hint', role: 'status' });
   const listHost = h('div');
+  // "Back up now" and Download need backups Write (SPEC-v3.md 13.1).
+  const canBackupNow = can('backups', 'write');
   const backupNow = h('button', { class: 'btn btn-primary', type: 'button' }, 'Back up now');
   backupNow.addEventListener('click', async () => {
     backupNow.disabled = true;
@@ -6742,218 +6753,167 @@ function serverBackupsCard() {
     h(
       'p',
       { class: 'field-hint' },
-      'One click saves a backup file on the server. The server also saves one automatically every night.',
+      canBackupNow
+        ? 'One click saves a backup file on the server. The server also saves one automatically every night.'
+        : 'The server saves one backup automatically every night; an administrator can save and download more.',
     ),
-    h('div', { class: 'button-row' }, backupNow),
+    canBackupNow ? h('div', { class: 'button-row' }, backupNow) : null,
     statusLine,
     listHost,
   );
 }
 
-/** Admin Users card: list, add, disable/enable, reset password (SPEC-v2.md 9.6). */
-function usersCard() {
-  const listHost = h('div', { class: 'server-list' });
-  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+/** Settings link to the Admin dashboard (SPEC-v3.md 13.3: users moved there). */
+function adminLinkNote() {
+  return h(
+    'p',
+    { class: 'field-hint' },
+    h('a', { href: '#/admin' }, 'Manage users and roles in Admin'),
+    ' — add teammates, assign roles and reset passwords there.',
+  );
+}
 
-  async function refresh() {
-    let response;
+const LOGO_UPLOAD_MAX_BYTES = 512 * 1024;
+const LOGO_UPLOAD_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+/** Settings → Branding card (SPEC-v3.md section 8): app name and logo. */
+function brandingCard() {
+  const status = h('p', { class: 'field-hint', role: 'status' });
+  const nameInput = h('input', {
+    type: 'text',
+    maxlength: '40',
+    autocomplete: 'off',
+    value: brandName(),
+    'aria-label': 'App name',
+  });
+  const saveName = h('button', { class: 'btn btn-primary btn-small', type: 'button' }, 'Save name');
+  saveName.addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    if (name.length < 1 || name.length > 40) {
+      status.textContent = 'The app name must be between 1 and 40 characters.';
+      return;
+    }
+    saveName.disabled = true;
     try {
-      response = await sync.api('GET', '/api/users');
-    } catch (error) {
-      console.warn('Could not load the users list:', error);
-      listHost.replaceChildren(
-        h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'User management needs a connection to the server.'),
-      );
-      return;
-    }
-    if (!response.ok || !Array.isArray(response.data)) {
-      listHost.replaceChildren(
-        h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'Could not load the users list. Try again in a moment.'),
-      );
-      return;
-    }
-    const users = response.data;
-    try {
-      await db.setMeta('users', users);
-    } catch (error) {
-      console.warn('Could not cache the user list:', error);
-    }
-    teamUsers = users;
-    if (users.length === 0) {
-      listHost.replaceChildren(h('p', { class: 'muted', style: { margin: '0.5rem 0 0' } }, 'No users yet.'));
-      return;
-    }
-    listHost.replaceChildren(...users.map((user) => userRow(user)));
-  }
-
-  async function patchUser(user, fields, { confirmTitle, confirmMessage, danger } = {}) {
-    if (confirmTitle) {
-      const yes = await showConfirm({
-        title: confirmTitle,
-        message: confirmMessage,
-        confirmText: 'Continue',
-        cancelText: 'Cancel',
-        danger,
-      });
-      if (!yes) return null;
-    }
-    const response = await sync.api('PATCH', `/api/users/${encodeURIComponent(user.id)}`, fields);
-    if (!response.ok) {
-      errorBox.textContent = (response.data && response.data.message) || 'The server rejected the change.';
-      return null;
-    }
-    errorBox.textContent = '';
-    return response.data;
-  }
-
-  function userRow(user) {
-    const disabled = Boolean(user.disabled);
-    const stateButtons = [];
-
-    const toggle = h(
-      'button',
-      { class: `btn btn-small${disabled ? '' : ' btn-danger'}`, type: 'button' },
-      disabled ? 'Enable' : 'Disable',
-    );
-    toggle.addEventListener('click', async () => {
-      if (disabled) {
-        const next = await patchUser(user, { disabled: false });
-        if (next) {
-          toast(`${user.displayName || user.username} can sign in again.`);
-          await refresh();
-        }
+      const response = await sync.api('PUT', '/api/branding', { name });
+      if (!response.ok) {
+        status.textContent = (response.data && response.data.message) || 'The server rejected the name.';
         return;
       }
-      const next = await patchUser(
-        user,
-        { disabled: true },
-        {
-          confirmTitle: `Disable ${user.displayName || user.username}?`,
-          confirmMessage:
-            'They are signed out everywhere at once and cannot sign in until you re-enable them.',
-          danger: true,
+      await db.setMeta('branding', response.data);
+      applyBranding(response.data);
+      status.textContent = '';
+      toast('App name saved.');
+    } catch (error) {
+      status.textContent = 'Could not reach the server. Try again.';
+      console.warn('Branding name save failed (network):', error);
+    } finally {
+      saveName.disabled = false;
+    }
+  });
+
+  const previewHost = h('div', { class: 'branding-preview' });
+  const renderPreview = () => {
+    const logoUrl = brandLogoUrl();
+    previewHost.replaceChildren(
+      logoUrl
+        ? h('img', { class: 'brand-logo branding-logo-preview', src: logoUrl, alt: 'Current logo' })
+        : h('span', { class: 'muted' }, 'No logo yet.'),
+    );
+  };
+
+  const logoInput = h('input', {
+    type: 'file',
+    accept: LOGO_UPLOAD_TYPES.join(','),
+    class: 'sr-only',
+    'aria-label': 'Logo image file',
+  });
+  logoInput.addEventListener('change', async () => {
+    const file = logoInput.files && logoInput.files[0];
+    logoInput.value = '';
+    if (!file) return;
+    if (!LOGO_UPLOAD_TYPES.includes(String(file.type || ''))) {
+      status.textContent = 'The logo must be a PNG, JPEG or WebP image (no SVG).';
+      return;
+    }
+    if (file.size > LOGO_UPLOAD_MAX_BYTES) {
+      status.textContent = 'That image is too large. The maximum is 512 KB.';
+      return;
+    }
+    status.textContent = `Uploading ${file.name}…`;
+    try {
+      const response = await fetch('/api/branding/logo', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'X-Requested-With': 'maint-log',
+          'Content-Type': String(file.type),
+          'X-File-Name': encodeURIComponent(file.name || 'logo'),
         },
-      );
-      if (next) {
-        toast(`${user.displayName || user.username} is disabled.`);
-        await refresh();
-      }
-    });
-    stateButtons.push(toggle);
-
-    const reset = h('button', { class: 'btn btn-small', type: 'button' }, 'Reset password');
-    reset.addEventListener('click', async () => {
-      const password = await showInputDialog({
-        title: `Reset password for ${user.displayName || user.username}`,
-        message: 'They use the new password at the next sign-in. Minimum 6 characters.',
-        label: 'New temporary password',
-        initial: suggestPassword(),
-        confirmText: 'Reset password',
-      });
-      if (password === null) return;
-      if (password.trim().length < 6) {
-        toast('The password must be at least 6 characters.', 'warn');
-        return;
-      }
-      const next = await patchUser(user, { password: password.trim() });
-      if (next) toast(`Password reset for ${user.displayName || user.username}.`);
-    });
-    stateButtons.push(reset);
-
-    return h(
-      'div',
-      { class: `user-row${disabled ? ' is-disabled' : ''}` },
-      h(
-        'span',
-        { class: 'user-names' },
-        `${user.displayName || user.username}${disabled ? ' (disabled)' : ''}`,
-        h('span', { class: 'muted' }, user.username),
-      ),
-      h('span', { class: 'user-role' }, roleLabel(user)),
-      ...stateButtons,
-    );
-  }
-
-  const usernameInput = h('input', {
-    type: 'text',
-    autocomplete: 'off',
-    placeholder: 'e.g. maria',
-    'aria-label': 'New user username',
-  });
-  const displayNameInput = h('input', {
-    type: 'text',
-    autocomplete: 'off',
-    placeholder: 'e.g. Maria P.',
-    'aria-label': 'New user display name',
-  });
-  const roleSelect = selectFrom(['tech', 'admin'], 'tech', (value) =>
-    value === 'admin' ? 'Administrator' : 'Technician',
-  );
-  const passwordInput = h('input', {
-    type: 'text',
-    autocomplete: 'off',
-    value: suggestPassword(),
-    'aria-label': 'New user temporary password',
-  });
-
-  const addUser = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add user');
-  const addUserForm = h(
-    'form',
-    { class: 'form', novalidate: true },
-    errorBox,
-    h('div', { class: 'grid-2' }, field('Username', usernameInput), field('Display name', displayNameInput)),
-    h('div', { class: 'grid-2' }, field('Role', roleSelect), field('Temporary password', passwordInput)),
-    addUser,
-  );
-  addUserForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    errorBox.textContent = '';
-    const username = usernameInput.value.trim();
-    const displayName = displayNameInput.value.trim();
-    const password = passwordInput.value.trim();
-    if (!username || !displayName) {
-      errorBox.textContent = 'Enter a username and a display name.';
-      return;
-    }
-    if (password.length < 6) {
-      errorBox.textContent = 'The temporary password must be at least 6 characters.';
-      return;
-    }
-    addUser.disabled = true;
-    try {
-      const response = await sync.api('POST', '/api/users', {
-        username,
-        displayName,
-        role: roleSelect.value,
-        password,
+        body: file,
       });
       if (!response.ok) {
-        errorBox.textContent = (response.data && response.data.message) || 'The server rejected the new user.';
+        let message = `Upload failed (HTTP ${response.status}).`;
+        try {
+          const data = await response.json();
+          if (data && data.message) message = data.message;
+        } catch {
+          // keep the generic message
+        }
+        status.textContent = message;
         return;
       }
-      usernameInput.value = '';
-      displayNameInput.value = '';
-      passwordInput.value = suggestPassword();
-      roleSelect.value = 'tech';
-      toast(`User ${displayName} added. Give them the temporary password.`);
-      await refresh();
+      const data = await response.json();
+      await db.setMeta('branding', data);
+      applyBranding(data);
+      renderPreview();
+      status.textContent = '';
+      toast('Logo saved.');
     } catch (error) {
-      errorBox.textContent = 'Could not reach the server. Try again.';
-      console.warn('Add user failed (network):', error);
-    } finally {
-      addUser.disabled = false;
+      status.textContent = 'Could not reach the server. Try again.';
+      console.warn('Logo upload failed (network):', error);
     }
   });
 
-  refresh();
+  logoInput.id = `branding-logo-${++fieldCounter}`;
+  const uploadLogo = h('label', { class: 'btn btn-small', for: logoInput.id }, 'Upload logo…');
+
+  const removeLogo = h('button', { class: 'btn btn-small', type: 'button' }, 'Remove logo');
+  const syncRemoveLogo = () => {
+    removeLogo.hidden = !brandLogoUrl();
+  };
+  removeLogo.addEventListener('click', async () => {
+    removeLogo.disabled = true;
+    try {
+      const response = await sync.api('DELETE', '/api/branding/logo');
+      if (!response.ok) {
+        status.textContent = (response.data && response.data.message) || 'The server kept the logo.';
+        return;
+      }
+      await db.setMeta('branding', response.data);
+      applyBranding(response.data);
+      renderPreview();
+      syncRemoveLogo();
+      status.textContent = '';
+      toast('Logo removed.');
+    } catch (error) {
+      status.textContent = 'Could not reach the server. Try again.';
+      console.warn('Logo remove failed (network):', error);
+    } finally {
+      removeLogo.disabled = false;
+    }
+  });
+
+  renderPreview();
+  syncRemoveLogo();
   return h(
     'section',
     { class: 'card', style: { padding: '0.95rem 1rem', marginTop: '0.5rem' } },
-    h('h3', { class: 'card-title' }, 'Users'),
-    h('p', { class: 'field-hint' }, 'Add teammates, set roles, disable accounts and reset passwords. Disabled users are signed out at once.'),
-    listHost,
-    sectionTitle('Add a user'),
-    addUserForm,
+    h('h3', { class: 'card-title' }, 'Branding'),
+    h('p', { class: 'field-hint' }, 'The app name and logo show in the sidebar, header and sign-in card.'),
+    h('div', { class: 'button-row' }, field('App name', nameInput), saveName),
+    h('div', { class: 'button-row' }, previewHost, uploadLogo, logoInput, removeLogo),
+    status,
   );
 }
 
@@ -7122,13 +7082,13 @@ function renderSettings() {
     team ? null : importStatus,
     team
       ? [
-          sectionTitle('Backups on server'),
-          serverBackupsCard(),
+          can('backups') ? [sectionTitle('Backups on server'), serverBackupsCard()] : null,
           failedSyncSection(),
-          isAdmin() ? [sectionTitle('Users'), usersCard()] : null,
-          isAdmin() ? [sectionTitle('Import v1 data'), importV1Card()] : null,
-          // AI provider settings need settings Write (SPEC-v3.md 13.1).
-          canWriteArea('settings') ? [sectionTitle('AI assistant'), aiSettingsCard()] : null,
+          canAdminUI() ? adminLinkNote() : null,
+          canAdminUI() ? [sectionTitle('Import v1 data'), importV1Card()] : null,
+          // Branding, AI provider settings (SPEC-v3.md 13.1) need settings Write.
+          can('settings', 'write') ? [sectionTitle('Branding'), brandingCard()] : null,
+          can('settings', 'write') ? [sectionTitle('AI assistant'), aiSettingsCard()] : null,
         ]
       : [
           sectionTitle('Data'),
@@ -7140,6 +7100,716 @@ function renderSettings() {
           ),
           erasePanel,
         ],
+  );
+}
+
+/* ---------- Admin dashboard (SPEC-v3.md 13.3): users, roles matrix ---------- */
+
+function actionToast(message, { label, onAction, type = '' } = {}) {
+  const node = h('div', { class: `toast ${type}`.trim(), role: 'status' }, message, ' ');
+  const button = h('button', { class: 'btn btn-small toast-action', type: 'button' }, label);
+  button.addEventListener('click', () => {
+    node.remove();
+    if (typeof onAction === 'function') onAction();
+  });
+  node.append(button);
+  toastRoot.append(node);
+  setTimeout(() => node.remove(), 8000);
+  return node;
+}
+
+async function loadRoles() {
+  try {
+    const response = await sync.api('GET', '/api/roles');
+    if (response.ok && Array.isArray(response.data)) return response.data;
+  } catch (error) {
+    console.warn('Could not load the roles list:', error);
+  }
+  return null;
+}
+
+async function loadUsersOnce() {
+  try {
+    const response = await sync.api('GET', '/api/users');
+    if (response.ok && Array.isArray(response.data)) {
+      teamUsers = response.data;
+      await db.setMeta('users', teamUsers);
+      return response.data;
+    }
+  } catch (error) {
+    console.warn('Could not load the users list:', error);
+  }
+  return null;
+}
+
+function adminApiError(response, fallback) {
+  return (response && response.data && response.data.message) || fallback;
+}
+
+function roleSelectElement(roles, selectedRoleId, onPick) {
+  const select = h('select', { 'aria-label': 'Role' });
+  for (const role of roles) {
+    const option = h('option', { value: role.id }, role.name);
+    if (role.id === selectedRoleId) option.selected = true;
+    select.append(option);
+  }
+  if (typeof onPick === 'function') select.addEventListener('change', () => onPick(select.value));
+  return select;
+}
+
+async function patchUserFields(user, fields) {
+  try {
+    const response = await sync.api('PATCH', `/api/users/${encodeURIComponent(user.id)}`, fields);
+    if (!response.ok) return { ok: false, message: adminApiError(response, 'The server rejected the change.') };
+    return { ok: true, user: response.data };
+  } catch (error) {
+    console.warn('User patch failed (network):', error);
+    return { ok: false, message: 'Could not reach the server. Try again.' };
+  }
+}
+
+function adminUsersTable({ users, roles, onRoleChange, onToggle, onResetPassword }) {
+  const head = h(
+    'tr',
+    {},
+    h('th', { scope: 'col' }, 'Name'),
+    h('th', { scope: 'col' }, 'Username'),
+    h('th', { scope: 'col' }, 'Role'),
+    h('th', { scope: 'col' }, 'Status'),
+    h('th', { scope: 'col' }, 'Last sign-in'),
+    h('th', { scope: 'col' }, 'Created'),
+  );
+  const rows = [...users]
+    .sort((a, b) => String(a.displayName || a.username).localeCompare(String(b.displayName || b.username)))
+    .map((user) => {
+      const disabled = Boolean(user.disabled);
+      const toggle = h(
+        'button',
+        {
+          class: `btn btn-small${disabled ? '' : ' btn-danger'}`,
+          type: 'button',
+          onclick: () => onToggle(user),
+        },
+        disabled ? 'Enable' : 'Disable',
+      );
+      const reset = h(
+        'button',
+        { class: 'btn btn-small', type: 'button', onclick: () => onResetPassword(user) },
+        'Reset password',
+      );
+      return h(
+        'tr',
+        { class: disabled ? 'is-disabled' : '' },
+        h('td', {}, user.displayName || user.username),
+        h('td', {}, user.username || ''),
+        h('td', {}, roleSelectElement(roles, user.roleId, (roleId) => onRoleChange(user, roleId))),
+        h('td', {}, toggle, ' ', reset),
+        h('td', {}, user.lastSignIn ? formatSyncTime(user.lastSignIn) : '—'),
+        h('td', {}, user.createdAt ? formatDate(user.createdAt.slice(0, 10)) : '—'),
+      );
+    });
+  return h(
+    'div',
+    { class: 'table-wrap matrix-scroll' },
+    h(
+      'table',
+      { class: 'table admin-users-table' },
+      h('thead', {}, head),
+      h('tbody', {}, ...rows),
+    ),
+  );
+}
+
+function addUserDrawerBody({ roles, onDone }) {
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+  const usernameInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    placeholder: 'e.g. maria',
+    'aria-label': 'New user username',
+  });
+  const displayNameInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    placeholder: 'e.g. Maria P.',
+    'aria-label': 'New user display name',
+  });
+  const defaultRole = roles.find((role) => role.name === 'Technician') || roles[0];
+  const roleSelect = roleSelectElement(roles, defaultRole ? defaultRole.id : '');
+  const passwordInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    value: suggestPassword(),
+    'aria-label': 'New user temporary password',
+  });
+  const form = h(
+    'form',
+    { class: 'form', novalidate: true },
+    errorBox,
+    h('div', { class: 'grid-2' }, field('Username', usernameInput), field('Display name', displayNameInput)),
+    h('div', { class: 'grid-2' }, field('Role', roleSelect), field('Temporary password', passwordInput)),
+    h(
+      'p',
+      { class: 'field-hint' },
+      'They use the temporary password at the next sign-in. Minimum 6 characters.',
+    ),
+    h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add user'),
+  );
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const username = usernameInput.value.trim();
+    const displayName = displayNameInput.value.trim();
+    const password = passwordInput.value.trim();
+    if (!username || !displayName) {
+      errorBox.textContent = 'Enter a username and a display name.';
+      return;
+    }
+    if (password.length < 6) {
+      errorBox.textContent = 'The temporary password must be at least 6 characters.';
+      return;
+    }
+    try {
+      const response = await sync.api('POST', '/api/users', {
+        username,
+        displayName,
+        roleId: roleSelect.value,
+        password,
+      });
+      if (!response.ok) {
+        errorBox.textContent = adminApiError(response, 'The server rejected the new user.');
+        return;
+      }
+      toast(`User ${displayName} added. Give them the temporary password.`);
+      await onDone();
+      if (drawerHandle) drawerHandle.close();
+    } catch (error) {
+      errorBox.textContent = 'Could not reach the server. Try again.';
+      console.warn('Add user failed (network):', error);
+    }
+  });
+  return form;
+}
+
+/* Small inline-SVG lock for the Administrator matrix column. */
+function lockIconNode() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'matrix-lock-svg');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', '5');
+  rect.setAttribute('y', '11');
+  rect.setAttribute('width', '14');
+  rect.setAttribute('height', '9');
+  rect.setAttribute('rx', '2');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M8 11V7a4 4 0 0 1 8 0v4');
+  svg.append(rect, path);
+  return svg;
+}
+
+function rolesMatrixNode({ roles, draft, onChangeLevel }) {
+  const headRow = h('tr', {}, h('th', { scope: 'col', class: 'matrix-area' }, 'Area'));
+  for (const role of roles) {
+    const locked = adminUI.isAdministratorRole(role);
+    headRow.append(
+      h(
+        'th',
+        { scope: 'col', class: locked ? 'matrix-role is-locked' : 'matrix-role' },
+        h('span', {}, role.name),
+        locked
+          ? h(
+              'span',
+              {
+                class: 'matrix-lock',
+                title: 'The Administrator role keeps every permission and cannot be changed here.',
+                'aria-label': 'Administrator role is locked',
+              },
+              lockIconNode(),
+            )
+          : null,
+      ),
+    );
+  }
+  const bodyRows = [];
+  for (const area of AREAS) {
+    const row = h(
+      'tr',
+      {},
+      h('th', { scope: 'row', class: 'matrix-area' }, area.label),
+    );
+    for (const role of roles) {
+      const locked = adminUI.isAdministratorRole(role);
+      const value = draft && draft[role.id] ? draft[role.id][area.key] : 'none';
+      row.append(
+        h('td', {}, adminUI.renderLevelChoice(h, {
+          roleId: role.id,
+          area: area.key,
+          value,
+          disabled: locked,
+          onChange: locked ? null : (level) => onChangeLevel(role.id, area.key, level),
+        })),
+      );
+    }
+    bodyRows.push(row);
+  }
+  return h(
+    'div',
+    { class: 'table-wrap matrix-scroll' },
+    h(
+      'table',
+      { class: 'table roles-matrix' },
+      h('thead', {}, headRow),
+      h('tbody', {}, ...bodyRows),
+    ),
+  );
+}
+
+function openRoleHistoryDrawer(role) {
+  const listHost = h('div');
+  const drawerContent = h('div', {}, h('p', { class: 'muted' }, 'Loading history…'), listHost);
+  openDrawer({ title: `History · ${role.name}`, content: drawerContent });
+  sync
+    .api('GET', `/api/roles/${encodeURIComponent(role.id)}/history`)
+    .then((response) => {
+      if (!response.ok || !Array.isArray(response.data)) {
+        listHost.replaceChildren(
+          h('p', { class: 'muted' }, adminApiError(response, 'Could not load the role history. Try again in a moment.')),
+        );
+        return;
+      }
+      if (response.data.length === 0) {
+        listHost.replaceChildren(h('p', { class: 'muted' }, 'No history entries yet.'));
+        return;
+      }
+      listHost.replaceChildren(
+        adminUI.renderRoleHistoryList(h, response.data, { formatWhen: formatSyncTime }),
+      );
+    })
+    .catch(() => {
+      listHost.replaceChildren(h('p', { class: 'muted' }, 'Could not load the role history. Try again in a moment.'));
+    });
+}
+
+function rolesTabSection({ roles, users, dirty, errorBox }) {
+  const draft = adminUI.draftFromRoles(roles);
+  const unsavedBar = h('div', { class: 'unsaved-bar', hidden: true });
+  const matrixHost = h('div');
+
+  function refreshUnsaved() {
+    const changed = adminUI.changedRolePatches(roles, draft);
+    unsavedBar.hidden = changed.length === 0;
+  }
+
+  function renderMatrix() {
+    matrixHost.replaceChildren(
+      rolesMatrixNode({
+        roles,
+        draft,
+        onChangeLevel: (roleId, area, level) => {
+          draft[roleId][area] = level;
+          refreshUnsaved();
+        },
+      }),
+    );
+  }
+
+  renderMatrix();
+  refreshUnsaved();
+
+  const saveButton = h('button', { class: 'btn btn-primary btn-small', type: 'button' }, 'Save');
+  const discardButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Discard');
+  unsavedBar.append(
+    h('span', { class: 'unsaved-bar-text' }, 'You have unsaved changes'),
+    saveButton,
+    discardButton,
+  );
+
+  async function saveChanges() {
+    const patches = adminUI.changedRolePatches(roles, draft);
+    saveButton.disabled = true;
+    for (const patch of patches) {
+      try {
+        const response = await sync.api('PATCH', `/api/roles/${encodeURIComponent(patch.id)}`, {
+          permissions: patch.permissions,
+        });
+        if (!response.ok) {
+          errorBox.textContent = adminApiError(response, 'The server rejected the role change.');
+          saveButton.disabled = false;
+          return;
+        }
+        errorBox.textContent = '';
+      } catch (error) {
+        errorBox.textContent = 'Could not reach the server. Try again.';
+        saveButton.disabled = false;
+        return;
+      }
+    }
+    saveButton.disabled = false;
+    if (patches.length > 0) toast('Role permissions saved.');
+    dirty();
+  }
+
+  saveButton.addEventListener('click', saveChanges);
+
+  const newRoleButton = h('button', { class: 'btn btn-primary btn-small', type: 'button' }, 'New role');
+  newRoleButton.addEventListener('click', () => {
+    const errorBox2 = h('div', { class: 'form-error', role: 'alert' });
+    const nameInput = h('input', { type: 'text', autocomplete: 'off', placeholder: 'e.g. Supervisor', 'aria-label': 'New role name' });
+    const copyOptions = [h('option', { value: '' }, 'Start empty — no access')];
+    for (const role of roles) {
+      if (adminUI.isAdministratorRole(role)) continue;
+      copyOptions.push(h('option', { value: role.id }, `Copy from ${role.name}`));
+    }
+    const copySelect = h('select', { 'aria-label': 'Copy permissions from' }, ...copyOptions);
+    const form = h(
+      'form',
+      { class: 'form', novalidate: true },
+      errorBox2,
+      field('Name', nameInput, '1–40 characters, unique.'),
+      field('Copy permissions', copySelect, 'A new role can start from an existing one or from no access.'),
+      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Create role'),
+    );
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorBox2.textContent = '';
+      const name = nameInput.value.trim();
+      if (name.length < 1 || name.length > 40) {
+        errorBox2.textContent = 'The role name must be between 1 and 40 characters.';
+        return;
+      }
+      const body = copySelect.value ? { name, copyOf: copySelect.value } : { name, permissions: {} };
+      try {
+        const response = await sync.api('POST', '/api/roles', body);
+        if (!response.ok) {
+          errorBox2.textContent = adminApiError(response, 'The server rejected the new role.');
+          return;
+        }
+        toast(`Role "${response.data.name}" created.`);
+        dirty();
+        if (drawerHandle) drawerHandle.close();
+      } catch (error) {
+        errorBox2.textContent = 'Could not reach the server. Try again.';
+        console.warn('Create role failed (network):', error);
+      }
+    });
+    openDrawer({ title: 'New role', content: form });
+  });
+
+  const roleCardHost = h('div', {});
+  function renderRoleCards() {
+    roleCardHost.replaceChildren(
+      ...roles.map((role) => {
+        const locked = adminUI.isAdministratorRole(role);
+        const deleteReason = adminUI.roleDeleteReason(role, users);
+        const renameReason = adminUI.roleRenameReason(role);
+        const historyButton = h(
+          'button',
+          { class: 'btn btn-small', type: 'button', onclick: () => openRoleHistoryDrawer(role) },
+          'History',
+        );
+        const renameButton = h(
+          'button',
+          {
+            class: 'btn btn-small',
+            type: 'button',
+            disabled: Boolean(renameReason),
+            title: renameReason || 'Rename this role',
+          },
+          'Rename',
+        );
+        if (!renameReason) {
+          renameButton.addEventListener('click', async () => {
+            const name = await showInputDialog({
+              title: `Rename ${role.name}`,
+              message: '1–40 characters, unique.',
+              label: 'New name',
+              initial: role.name,
+              confirmText: 'Rename',
+            });
+            if (name === null) return;
+            const trimmed = name.trim();
+            if (trimmed.length < 1 || trimmed.length > 40) {
+              toast('The role name must be between 1 and 40 characters.', 'warn');
+              return;
+            }
+            try {
+              const response = await sync.api('PATCH', `/api/roles/${encodeURIComponent(role.id)}`, { name: trimmed });
+              if (!response.ok) {
+                toast(adminApiError(response, 'The server rejected the rename.'), 'warn');
+                return;
+              }
+              toast(`Renamed to "${trimmed}".`);
+              dirty();
+            } catch (error) {
+              toast('Could not reach the server. Try again.', 'warn');
+              console.warn('Role rename failed (network):', error);
+            }
+          });
+        }
+        const deleteButton = h(
+          'button',
+          {
+            class: 'btn btn-small btn-danger',
+            type: 'button',
+            disabled: Boolean(deleteReason),
+            title: deleteReason || `Delete ${role.name}`,
+            'aria-disabled': Boolean(deleteReason) || null,
+          },
+          'Delete',
+        );
+        if (!deleteReason) {
+          deleteButton.addEventListener('click', async () => {
+            const yes = await showConfirm({
+              title: `Delete the role "${role.name}"?`,
+              message: 'Roles that no user has can be deleted. This cannot be undone.',
+              confirmText: 'Delete',
+              cancelText: 'Cancel',
+              danger: true,
+            });
+            if (!yes) return;
+            try {
+              const response = await sync.api('DELETE', `/api/roles/${encodeURIComponent(role.id)}`);
+              if (!response.ok) {
+                toast(adminApiError(response, 'The server rejected the delete.'), 'warn');
+                return;
+              }
+              toast(`Role "${role.name}" deleted.`);
+              dirty();
+            } catch (error) {
+              toast('Could not reach the server. Try again.', 'warn');
+              console.warn('Role delete failed (network):', error);
+            }
+          });
+        }
+        const usersCount = users.filter((user) => user && user.roleId === role.id).length;
+        return h(
+          'div',
+          { class: 'role-card' },
+          h('strong', {}, role.name, locked ? h('span', { class: 'muted' }, ' (built-in)') : null),
+          h('span', { class: 'muted' }, `${usersCount} user${usersCount === 1 ? '' : 's'}`),
+          h('span', { class: 'role-card-actions' }, historyButton, renameButton, deleteButton),
+          deleteReason ? h('span', { class: 'muted role-delete-reason' }, deleteReason) : null,
+        );
+      }),
+    );
+  }
+  renderRoleCards();
+
+  discardButton.addEventListener('click', () => {
+    for (const role of roles) {
+      if (draft[role.id]) draft[role.id] = adminUI.fullPermissions(role.permissions);
+    }
+    errorBox.textContent = '';
+    renderMatrix();
+    refreshUnsaved();
+  });
+
+  return h(
+    'div',
+    {},
+    h('p', { class: 'field-hint' }, 'Each column is a role, each row a part of the app. None hides the area and Read keeps it view-only on every device.'),
+    errorBox,
+    matrixHost,
+    unsavedBar,
+    sectionTitle('Roles'),
+    newRoleButton,
+    roleCardHost,
+  );
+}
+
+async function renderAdminUsersTab({ reload }) {
+  const [roles, users] = await Promise.all([loadRoles(), loadUsersOnce()]);
+  if (!roles || !users) {
+    return h(
+      'section',
+      {},
+      emptyState('User management needs a connection', 'The users and roles come from the server. Try again in a moment.', [
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: () => render() }, 'Try again'),
+      ]),
+    );
+  }
+  return adminUsersPanel({ roles, users, reload });
+}
+
+function adminUsersPanel({ roles, users, reload }) {
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+  const tableHost = h('div');
+
+  function refreshTable(list) {
+    tableHost.replaceChildren(
+      adminUsersTable({
+        users: list,
+        roles,
+        onRoleChange: async (user, roleId) => {
+          const previous = user.roleId;
+          if (roleId === previous) return;
+          const result = await patchUserFields(user, { roleId });
+          if (!result.ok) {
+            errorBox.textContent = result.message;
+            await reload();
+            return;
+          }
+          errorBox.textContent = '';
+          teamUsers = teamUsers.map((entry) => (entry.id === user.id ? result.user : entry));
+          const next = result.user;
+          actionToast(`${next.displayName || next.username} is now ${next.roleName || roleNameOf(roles, roleId)}.`, {
+            label: 'Undo',
+            onAction: async () => {
+              const undo = await patchUserFields(next, { roleId: previous });
+              if (!undo.ok) {
+                toast(undo.message, 'warn');
+                await reload();
+                return;
+              }
+              teamUsers = teamUsers.map((entry) => (entry.id === next.id ? undo.user : entry));
+              toast(`Role restored for ${next.displayName || next.username}.`);
+              await reload();
+            },
+          });
+          await reload();
+        },
+        onToggle: async (user) => {
+          const disabling = !user.disabled;
+          if (disabling) {
+            const yes = await showConfirm({
+              title: `Disable ${user.displayName || user.username}?`,
+              message: 'They are signed out everywhere at once and cannot sign in until you re-enable them.',
+              confirmText: 'Disable',
+              cancelText: 'Cancel',
+              danger: true,
+            });
+            if (!yes) return;
+          }
+          const result = await patchUserFields(user, { disabled: disabling });
+          if (!result.ok) {
+            errorBox.textContent = result.message;
+            await reload();
+            return;
+          }
+          errorBox.textContent = '';
+          teamUsers = teamUsers.map((entry) => (entry.id === user.id ? result.user : entry));
+          toast(`${result.user.displayName || result.user.username} is ${disabling ? 'disabled' : 'able to sign in again'}.`);
+          await reload();
+        },
+        onResetPassword: async (user) => {
+          const password = await showInputDialog({
+            title: `Reset password for ${user.displayName || user.username}`,
+            message: 'They use the new password at the next sign-in. Minimum 6 characters.',
+            label: 'New temporary password',
+            initial: suggestPassword(),
+            confirmText: 'Reset password',
+          });
+          if (password === null) return;
+          const trimmed = password.trim();
+          if (trimmed.length < 6) {
+            toast('The password must be at least 6 characters.', 'warn');
+            return;
+          }
+          const result = await patchUserFields(user, { password: trimmed });
+          if (!result.ok) {
+            errorBox.textContent = result.message;
+            return;
+          }
+          errorBox.textContent = '';
+          toast(`Password reset for ${user.displayName || user.username}.`);
+        },
+      }),
+    );
+  }
+
+  refreshTable(users);
+
+  const addUserButton = h('button', { class: 'btn btn-primary btn-small', type: 'button' }, 'Add user');
+  addUserButton.addEventListener('click', () => {
+    openDrawer({
+      title: 'Add user',
+      content: addUserDrawerBody({
+        roles,
+        onDone: reload,
+      }),
+    });
+  });
+
+  return h(
+    'section',
+    {},
+    h('p', { class: 'field-hint' }, 'Role changes save immediately and can be undone from the toast. Disabled users are signed out at once.'),
+    errorBox,
+    addUserButton,
+    tableHost,
+  );
+}
+
+function roleNameOf(roles, roleId) {
+  const role = roles.find((entry) => entry && entry.id === roleId);
+  return role ? role.name : '';
+}
+
+async function renderAdminRolesTab({ reload }) {
+  const [roles, users] = await Promise.all([loadRoles(), loadUsersOnce()]);
+  if (!roles) {
+    return emptyState(
+      'Roles need a connection',
+      'The roles come from the server. Try again in a moment.',
+      [h('button', { class: 'btn btn-primary', type: 'button', onclick: () => render() }, 'Try again')],
+    );
+  }
+  return rolesTabSection({ roles, users: users || [], dirty: reload });
+}
+
+const ADMIN_TABS = [
+  { key: 'users', label: 'Users', href: '#/admin/users' },
+  { key: 'roles', label: 'Roles & permissions', href: '#/admin/roles' },
+];
+
+function adminTabLinks(activeKey) {
+  return h(
+    'nav',
+    { class: 'stats-tabs admin-tabs', 'aria-label': 'Admin views' },
+    ...ADMIN_TABS.map((tab) =>
+      h(
+        'a',
+        { class: 'stats-tab', href: tab.href, 'aria-current': tab.key === activeKey ? 'page' : null },
+        tab.label,
+      ),
+    ),
+  );
+}
+
+/* The admin page renders its content asynchronously; the host is filled by
+   the panel once the users/roles lists arrive. */
+function renderAdmin(route) {
+  setTitle('Admin');
+  // Only roles with admin Write manage users (SPEC-v3.md 13.1/13.3).
+  if (!canAdminUI()) {
+    return noAccessPage('Admin', 'Users & roles');
+  }
+  const tab = route.segments[1] === 'roles' ? 'roles' : 'users';
+  const reload = () => render();
+  const host = h('div', {});
+  const renderTab = tab === 'roles' ? renderAdminRolesTab : renderAdminUsersTab;
+  renderTab({ reload }).then(
+    (content) => host.replaceChildren(content),
+    (error) => {
+      console.error('Could not render the Admin page:', error);
+      host.replaceChildren(
+        emptyState('Could not load Admin', 'Try again in a moment.', [
+          h('button', { class: 'btn btn-primary', type: 'button', onclick: reload }, 'Try again'),
+        ]),
+      );
+    },
+  );
+  return page(
+    pageHead('Admin'),
+    adminTabLinks(tab),
+    host,
   );
 }
 
@@ -7412,10 +8082,10 @@ function renderStatisticsReports() {
 
   /* Chart stores gate on the area permissions (SPEC-v3.md 13.3): a chart is
      only built from stores this user can read. */
-  const showOrders = canViewArea('serviceOrders');
-  const showMachines = canViewArea('machines');
-  const showCoworkers = canViewArea('coworkers');
-  const showContractors = canViewArea('contractors');
+  const showOrders = can('serviceOrders');
+  const showMachines = can('machines');
+  const showCoworkers = can('coworkers');
+  const showContractors = can('contractors');
   const includeCost = canReadRates();
 
   const cards = [];
@@ -7648,14 +8318,14 @@ async function render() {
   }
   // The phone "More" button lights up while a sheet page is shown.
   if (moreButton) {
-    if (['parts', 'statistics', 'coworkers', 'contractors', 'help', 'settings'].includes(tab)) {
+    if (['parts', 'statistics', 'coworkers', 'contractors', 'help', 'settings', 'admin'].includes(tab)) {
       moreButton.setAttribute('aria-current', 'page');
     } else {
       moreButton.removeAttribute('aria-current');
     }
   }
   updateNavCounts();
-  if (tab !== 'settings' && tab !== 'help') storageSet(LAST_TAB_KEY, tab);
+  if (tab !== 'settings' && tab !== 'help' && tab !== 'admin') storageSet(LAST_TAB_KEY, tab);
 
   let content;
   let isDetail = false;
@@ -7666,16 +8336,22 @@ async function render() {
     content = renderHome();
   } else if (root === 'jobs') {
     let jobDrawer = false;
-    if (!second) {
+    if (!can('serviceOrders')) {
+      content = noAccessPage('Service Orders', 'Service Orders');
+    } else if (!second) {
       content = renderJobs(route);
     } else if (second === 'new') {
-      // Desktop opens the form in the drawer (SPEC-v3.md section 3 item 6);
-      // below 1024 px the full-page form stays.
-      jobDrawer = maybeOpenJobDrawer(route);
-      if (jobDrawer) {
-        content = renderJobs({ segments: ['jobs'], params: route.params });
+      if (!can('serviceOrders', 'write')) {
+        content = noAccessPage('New service order', 'Service Orders');
       } else {
-        content = renderJobNew(route);
+        // Desktop opens the form in the drawer (SPEC-v3.md section 3 item 6);
+        // below 1024 px the full-page form stays.
+        jobDrawer = maybeOpenJobDrawer(route);
+        if (jobDrawer) {
+          content = renderJobs({ segments: ['jobs'], params: route.params });
+        } else {
+          content = renderJobNew(route);
+        }
       }
     } else {
       content = renderJobDetail(route);
@@ -7683,17 +8359,23 @@ async function render() {
       splitListRoot = 'jobs';
     }
   } else if (root === 'machines') {
-    if (!second) {
+    if (!can('machines')) {
+      content = noAccessPage('Machines', 'Machines');
+    } else if (!second) {
       content = renderMachines(route);
     } else if (second === 'new' || third === 'edit') {
-      // M2 drawer usage (SPEC-v3.md section 10): the machine form opens in
-      // the right drawer on desktop; phones and tablets keep the full page.
-      machineDrawer = maybeOpenMachineDrawer(route);
-      if (machineDrawer) {
-        content = renderMachines({ segments: [], params: route.params });
+      if (!can('machines', 'write')) {
+        content = noAccessPage(machineFormTitle(second === 'new' ? null : { name: '' }), 'Machines');
       } else {
-        content = renderMachineForm(route);
-        if (second !== 'new') isDetail = true;
+        // M2 drawer usage (SPEC-v3.md section 10): the machine form opens in
+        // the right drawer on desktop; phones and tablets keep the full page.
+        machineDrawer = maybeOpenMachineDrawer(route);
+        if (machineDrawer) {
+          content = renderMachines({ segments: [], params: route.params });
+        } else {
+          content = renderMachineForm(route);
+          if (second !== 'new') isDetail = true;
+        }
       }
     } else {
       content = renderMachineDetail(route);
@@ -7701,28 +8383,40 @@ async function render() {
       splitListRoot = 'machines';
     }
   } else if (root === 'parts') {
-    if (!second) content = renderParts(route);
-    else if (second === 'new') content = renderPartForm(route);
-    else if (third === 'edit') {
-      content = renderPartForm(route);
-      isDetail = true;
+    if (!can('parts')) {
+      content = noAccessPage('Parts', 'Parts & Stock');
+    } else if (!second) {
+      content = renderParts(route);
+    } else if (second === 'new' || third === 'edit') {
+      if (!can('parts', 'write')) {
+        content = noAccessPage(second === 'new' ? 'Add part' : 'Edit part', 'Parts & Stock');
+      } else {
+        content = renderPartForm(route);
+        if (second !== 'new') isDetail = true;
+      }
     } else {
       content = renderPartDetail(route);
       isDetail = true;
       splitListRoot = 'parts';
     }
   } else if (root === 'pm') {
-    if (!second) {
+    if (!can('pm')) {
+      content = noAccessPage('Preventive Maintenance', 'Preventive Maintenance');
+    } else if (!second) {
       content = renderPM(route);
     } else if (second === 'new' || third === 'edit') {
-      // Desktop opens the PM form in the drawer (SPEC-v3.md section 4);
-      // below 1024 px the full-page form stays.
-      const pmDrawer = maybeOpenPMDrawer(route);
-      if (pmDrawer) {
-        content = renderPM({ segments: ['pm'], params: route.params });
+      if (!can('pm', 'write')) {
+        content = noAccessPage('Preventive Maintenance', 'Preventive Maintenance');
       } else {
-        content = renderPMTaskForm(route);
-        if (second !== 'new') isDetail = true;
+        // Desktop opens the PM form in the drawer (SPEC-v3.md section 4);
+        // below 1024 px the full-page form stays.
+        const pmDrawer = maybeOpenPMDrawer(route);
+        if (pmDrawer) {
+          content = renderPM({ segments: ['pm'], params: route.params });
+        } else {
+          content = renderPMTaskForm(route);
+          if (second !== 'new') isDetail = true;
+        }
       }
     } else {
       content = renderPMTaskDetail(route);
@@ -7730,7 +8424,7 @@ async function render() {
     }
   } else if (root === 'coworkers') {
     // People pages (SPEC-v3.md section 5, permissions section 13).
-    if (!canViewArea('coworkers')) {
+    if (!can('coworkers')) {
       content = noAccessPage('Coworkers', 'Coworkers');
     } else if (!second) {
       content = renderCoworkers(route);
@@ -7750,7 +8444,7 @@ async function render() {
       splitListRoot = 'coworkers';
     }
   } else if (root === 'contractors') {
-    if (!canViewArea('contractors')) {
+    if (!can('contractors')) {
       content = noAccessPage('Outside Contractors', 'Outside Contractors');
     } else if (!second) {
       content = renderContractors(route);
@@ -7770,7 +8464,7 @@ async function render() {
   } else if (root === 'statistics') {
     // Statistics tabs (SPEC-v3.md section 7); the area itself is gated by
     // the statistics permission (SPEC-v3.md 13.3).
-    if (!canViewArea('statistics')) {
+    if (!can('statistics')) {
       setTitle('Statistics');
       content = noAccessPage('Statistics', 'Statistics');
     } else if (!second || second === 'monitor') {
@@ -7785,9 +8479,12 @@ async function render() {
         ]),
       );
     }
+  } else if (root === 'admin') {
+    // Admin dashboard (SPEC-v3.md 13.3): needs admin Write on this route.
+    content = renderAdmin(route);
   } else if (root === 'help') {
     setTitle('Help');
-    content = renderHelp(h);
+    content = renderHelp(h, { isAdmin: canAdminUI() });
   } else if (root === 'settings') {
     content = renderSettings();
   } else {
@@ -7825,7 +8522,7 @@ async function render() {
   }
 
   backButton.hidden = !isDetail;
-  fab.hidden = !(tab === 'home' || (tab === 'jobs' && !second));
+  fab.hidden = !(can('serviceOrders', 'write') && (tab === 'home' || (tab === 'jobs' && !second)));
   appMain.replaceChildren(content);
 }
 
@@ -8008,7 +8705,7 @@ function closeDrawerForRouteChange() {
    desktop (phone and tablet keep the full-page form). */
 function maybeOpenMachineDrawer(route) {
   if (!desktopMedia.matches) return false;
-  if (!canWriteArea('machines')) return false;
+  if (!can('machines', 'write')) return false;
   const id = route.segments[1];
   const editing = Boolean(id && id !== 'new');
   const existing = editing ? machineById(id) : null;
@@ -8054,7 +8751,7 @@ function maybeOpenPMDrawer(route) {
     // Keep the full-page "add a machine first" empty state.
     return false;
   }
-  if (!canWriteArea('pm')) {
+  if (!can('pm', 'write')) {
     // Read-only roles see the full-page "View only" state instead.
     return false;
   }
@@ -8099,6 +8796,7 @@ const NAV_ICONS = {
     'M9 8h6',
     'M17 16h6',
   ],
+  admin: ['M12 2.5 4 5.5v5c0 5 3.4 8.4 8 10.5 4.6-2.1 8-5.5 8-10.5v-5l-8-3Z'],
 };
 
 let moreSheetOpen = false;
@@ -8134,16 +8832,18 @@ function openMoreSheet() {
   closeUserMenu();
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const items = [
-    { label: 'Parts', icon: NAV_ICONS.parts, href: '#/parts' },
+    can('parts') && { label: 'Parts', icon: NAV_ICONS.parts, href: '#/parts' },
     // Statistics follows its own permission (SPEC-v3.md 13.3).
-    canViewArea('statistics') && { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
+    can('statistics') && { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
     // People follow the coworkers/contractors permissions (SPEC-v3.md 13.3).
-    canViewArea('coworkers') && { label: 'Coworkers', icon: NAV_ICONS.coworkers, href: '#/coworkers' },
-    canViewArea('contractors') && {
+    can('coworkers') && { label: 'Coworkers', icon: NAV_ICONS.coworkers, href: '#/coworkers' },
+    can('contractors') && {
       label: 'Outside Contractors',
       icon: NAV_ICONS.contractors,
       href: '#/contractors',
     },
+    // The Admin dashboard needs admin Write (SPEC-v3.md 13.3).
+    canAdminUI() && { label: 'Admin', icon: NAV_ICONS.admin, href: '#/admin' },
     { label: 'Help', icon: NAV_ICONS.help, href: '#/help' },
     { label: 'Settings', icon: NAV_ICONS.settings, href: '#/settings' },
   ].filter(Boolean);
@@ -8192,7 +8892,8 @@ function globalSearchMatches(query) {
   const results = [];
 
   let matched = 0;
-  for (const order of sortWorkOrdersNewest(state.workOrders)) {
+  // Only readable areas are searched (SPEC-v3.md 13.3).
+  for (const order of can('serviceOrders') ? sortWorkOrdersNewest(state.workOrders) : []) {
     if (matched >= 4) break;
     const label = serviceOrderLabel(order);
     const title = String(order.title || '');
@@ -8211,7 +8912,7 @@ function globalSearchMatches(query) {
   }
 
   let machineMatches = 0;
-  for (const machine of state.machines) {
+  for (const machine of can('machines') ? state.machines : []) {
     if (machineMatches >= 3) break;
     const fits = [machine.name, machine.model, machine.serial, machine.location]
       .filter(Boolean)
@@ -8228,7 +8929,7 @@ function globalSearchMatches(query) {
   }
 
   let partMatches = 0;
-  for (const part of state.parts) {
+  for (const part of can('parts') ? state.parts : []) {
     if (partMatches >= 3) break;
     const fits = [part.name, part.partNumber, part.supplier]
       .filter(Boolean)
@@ -8246,7 +8947,7 @@ function globalSearchMatches(query) {
 
   // People (SPEC-v3.md section 10): coworkers by name, contractors by company
   // and trade — only the areas this user may see (13.3).
-  if (canViewArea('coworkers')) {
+  if (can('coworkers')) {
     let coworkerMatches = 0;
     for (const coworker of contactSearch(state.coworkers, needle, [
       'name',
@@ -8265,7 +8966,7 @@ function globalSearchMatches(query) {
       });
     }
   }
-  if (canViewArea('contractors')) {
+  if (can('contractors')) {
     let contractorMatches = 0;
     for (const contractor of contactSearch(state.contractors, needle, [
       'company',
@@ -8414,16 +9115,29 @@ function setUpSidebarRail() {
 /* People areas with permission None leave the sidebar and the phone More
    sheet (SPEC-v3.md 13.3); the routes themselves answer "You do not have
    access". Local mode (no team user) sees everything. */
+/* Navigation follows the role permissions (SPEC-v3.md 13.3): every area with
+   None hides its sidebar link, phone tab and More sheet entry. Settings and
+   Help always stay visible; the "+ Service order" button needs Write. */
+const NAV_TAB_AREAS = {
+  jobs: 'serviceOrders',
+  pm: 'pm',
+  machines: 'machines',
+  parts: 'parts',
+  coworkers: 'coworkers',
+  contractors: 'contractors',
+  statistics: 'statistics',
+  admin: 'admin',
+};
+
 function applyNavPermissions() {
-  const showCoworkers = canViewArea('coworkers');
-  const showContractors = canViewArea('contractors');
-  const showStatistics = canViewArea('statistics');
-  const coworkersLink = document.querySelector('.sidebar a[data-tab="coworkers"]');
-  if (coworkersLink) coworkersLink.hidden = !showCoworkers;
-  const contractorsLink = document.querySelector('.sidebar a[data-tab="contractors"]');
-  if (contractorsLink) contractorsLink.hidden = !showContractors;
-  const statisticsLink = document.querySelector('.sidebar a[data-tab="statistics"]');
-  if (statisticsLink) statisticsLink.hidden = !showStatistics;
+  const sidebarNew = document.querySelector('.sidebar-new');
+  if (sidebarNew) sidebarNew.hidden = !can('serviceOrders', 'write');
+  for (const link of document.querySelectorAll('.tab, .sidebar a[data-tab]')) {
+    const area = NAV_TAB_AREAS[link.dataset.tab];
+    if (area) link.hidden = area === 'admin' ? !canAdminUI() : !can(area);
+  }
+  const showCoworkers = can('coworkers');
+  const showContractors = can('contractors');
   const peopleGroup = document.querySelector('.sidebar-group');
   if (peopleGroup) peopleGroup.hidden = !(showCoworkers || showContractors);
 }
@@ -8713,6 +9427,9 @@ function handleSyncSessionExpired() {
 async function handleSyncApplied(event) {
   if (!teamUser || loginActive) return;
   const detail = event.detail || {};
+  // Roles can change without any record changing for this device, so the
+  // permissions are refreshed on every sync round (SPEC-v3.md 13.3).
+  await refreshMyPermissions({ forceRender: false });
   if (!(detail.applied > 0)) return;
   await refreshState();
   // Keep any form the user is filling in; closed <details> forms (phone
@@ -8722,6 +9439,89 @@ async function handleSyncApplied(event) {
   render();
 }
 
+/* Permission changes follow the user around (SPEC-v3.md 13.3): GET /api/me
+   is refreshed after every sync round and on a 30 s timer. When an area
+   became None its local store is cleared from IndexedDB and the page is
+   left when it is now hidden. */
+const AREA_STORES = {
+  serviceOrders: 'workOrders',
+  pm: 'pmTasks',
+  machines: 'machines',
+  parts: 'parts',
+  coworkers: 'coworkers',
+  contractors: 'contractors',
+};
+
+const PERMISSION_REFRESH_MS = 30000;
+let permissionTimer = null;
+
+async function refreshMyPermissions({ forceRender = true } = {}) {
+  if (!teamUser || loginActive) return;
+  let response;
+  try {
+    response = await sync.api('GET', '/api/me');
+  } catch (error) {
+    return;
+  }
+  if (!response.ok || !response.data || !response.data.id) return;
+  const next = response.data;
+  const previous = teamUser.permissions || {};
+  const nextPermissions = next.permissions || {};
+  const changed = [];
+  for (const key of AREA_KEYS) {
+    const before = previous[key] === 'write' || previous[key] === 'read' ? previous[key] : 'none';
+    const after = nextPermissions[key] === 'write' || nextPermissions[key] === 'read' ? nextPermissions[key] : 'none';
+    if (before !== after) changed.push(key);
+  }
+  teamUser = { ...teamUser, ...next };
+  try {
+    await db.setMeta('me', teamUser);
+  } catch (error) {
+    console.warn('Could not cache the signed-in user:', error);
+  }
+  applyNavPermissions();
+  if (changed.length === 0 && forceRender) {
+    render();
+    return;
+  }
+  if (changed.length === 0) return;
+  const hiddenNow = [];
+  for (const area of changed) {
+    if (!can(area) && AREA_STORES[area]) {
+      await db.clear(AREA_STORES[area]);
+      hiddenNow.push(area);
+    }
+  }
+  if (hiddenNow.length > 0) {
+    await refreshState();
+    toast('Your permissions changed. Pages you can no longer see were closed.', 'warn');
+  }
+  const route = routeInfo();
+  const root = route.segments[0] || 'home';
+  const tabArea = NAV_TAB_AREAS[root];
+  if (tabArea && !can(tabArea)) {
+    navigate('#/home');
+    return;
+  }
+  if (forceRender || hiddenNow.length > 0) render();
+}
+
+function startPermissionRefresh() {
+  if (permissionTimer || !teamUser) return;
+  permissionTimer = setInterval(() => {
+    if (!teamUser || loginActive) return;
+    if (document.visibilityState === 'hidden') return;
+    refreshMyPermissions({ forceRender: false });
+  }, PERMISSION_REFRESH_MS);
+}
+
+function stopPermissionRefresh() {
+  if (permissionTimer) {
+    clearInterval(permissionTimer);
+    permissionTimer = null;
+  }
+}
+
 function bindSyncEvents() {
   if (syncEventsBound) return;
   syncEventsBound = true;
@@ -8729,6 +9529,7 @@ function bindSyncEvents() {
   window.addEventListener('sync-conflict', handleSyncConflict);
   window.addEventListener('sync-session', handleSyncSessionExpired);
   window.addEventListener('sync-applied', handleSyncApplied);
+  startPermissionRefresh();
 }
 
 async function loadTeamUsers() {
@@ -8936,6 +9737,7 @@ function setupTeamHeader() {
 }
 
 function teardownTeamHeader() {
+  stopPermissionRefresh();
   if (syncPill) {
     syncPill.hidden = true;
     syncPill.replaceChildren();
@@ -8981,10 +9783,23 @@ function showLoginScreen() {
   window.__maintLogReady = true;
 }
 
+const LAST_TAB_AREAS = {
+  jobs: 'serviceOrders',
+  machines: 'machines',
+  parts: 'parts',
+  pm: 'pm',
+  coworkers: 'coworkers',
+  contractors: 'contractors',
+  statistics: 'statistics',
+};
+
 function restoreLastTab() {
   if (location.hash) return;
   const last = storageGet(LAST_TAB_KEY);
-  if (last && ['home', 'jobs', 'machines', 'parts', 'pm', 'coworkers', 'contractors', 'statistics'].includes(last)) {
+  const allowed = ['home', 'jobs', 'machines', 'parts', 'pm', 'coworkers', 'contractors', 'statistics'];
+  if (last && allowed.includes(last)) {
+    const area = LAST_TAB_AREAS[last];
+    if (area && !can(area)) return;
     history.replaceState(null, '', `#/${last}`);
   }
 }
@@ -9071,7 +9886,7 @@ function registerServiceWorker() {
    this app's api, permission helpers and records. */
 initAiChat({
   api: sync.api,
-  areaLevel,
+  can,
   machines: () => state.machines,
   isSignedIn: () => Boolean(teamUser),
   navigate,

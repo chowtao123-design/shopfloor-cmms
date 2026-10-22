@@ -11,6 +11,7 @@ import {
   toLocalRecord,
   toServerData,
 } from './logic-sync.js';
+import { areaLabel } from './permissions.js';
 
 const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors'];
 const PULL_INTERVAL_MS = 30000;
@@ -269,6 +270,13 @@ async function pushOne(entry) {
     return 'retry';
   }
   if (response.status === 401) return 'login';
+  if (response.status === 403) {
+    // Roles can change while changes wait offline (SPEC-v3.md 13.3): the
+    // failed list says which area was taken away.
+    const deniedArea = response.data && response.data.area ? response.data.area : entry.store;
+    await moveEntryToFailed(entry, `You no longer have permission to change ${areaLabel(deniedArea)}.`);
+    return 'failed';
+  }
   if (response.status === 400) {
     const message = response.data && response.data.message ? response.data.message : 'The server rejected this change.';
     await moveEntryToFailed(entry, message);

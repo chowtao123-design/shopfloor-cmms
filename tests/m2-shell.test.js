@@ -96,8 +96,9 @@ test('app.js: renames and no leftover v2 wording in user-facing strings', () => 
 test('app.js: statistics and the people pages are real routes (M5/M6b)', () => {
   const src = read('app.js');
   assert.match(src, /root === 'statistics'\)/);
-  // The last-tab restore accepts the new tabs.
-  assert.match(src, /'coworkers', 'contractors', 'statistics'\]\.includes\(last\)/);
+  // The last-tab restore accepts the new tabs (V3-M9: gated by `can`).
+  assert.match(src, /'coworkers', 'contractors', 'statistics'\]/);
+  assert.match(src, /allowed\.includes\(last\)/);
   // Statistics really renders since V3-M6b; no placeholder is left.
   assert.match(src, /function renderStatisticsMonitor\(\)/);
   assert.match(src, /function renderStatisticsReports\(\)/);

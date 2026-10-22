@@ -423,8 +423,8 @@ export function updateAiChatButton() {
   const usable =
     deps !== null &&
     deps.isSignedIn() &&
-    typeof deps.areaLevel === 'function' &&
-    deps.areaLevel('aiAssistant') !== 'none' &&
+    typeof deps.can === 'function' &&
+    deps.can('aiAssistant') &&
     aiEnabled === true;
   chatButton.hidden = !usable;
 }
@@ -437,7 +437,7 @@ export function resetAiChat() {
 }
 
 function readableMachines() {
-  if (!deps || typeof deps.machines !== 'function' || deps.areaLevel('machines') === 'none') return [];
+  if (!deps || typeof deps.machines !== 'function' || typeof deps.can !== 'function' || !deps.can('machines')) return [];
   const machines = deps.machines();
   return Array.isArray(machines) ? machines : [];
 }
@@ -457,7 +457,7 @@ function draftCardNode(draft) {
   addRow('Priority', facts.priority);
   addRow('Category', facts.category);
   addRow('Problem', facts.problem);
-  const canSave = deps && typeof deps.areaLevel === 'function' && deps.areaLevel('serviceOrders') === 'write';
+  const canSave = deps && typeof deps.can === 'function' && deps.can('serviceOrders', 'write');
   const openButton = el(
     'button',
     { class: 'btn btn-primary btn-small', type: 'button' },
@@ -760,12 +760,12 @@ function closePanel() {
 
 /**
  * Build the fixed chat button and wire the panel. Called once from app.js
- * with: { api, areaLevel, machines, isSignedIn, navigate, showConfirm }.
+ * with: { api, can, machines, isSignedIn, navigate, showConfirm }.
  */
 export function initAiChat(options) {
   deps = {
     api: options.api,
-    areaLevel: options.areaLevel,
+    can: options.can,
     machines: options.machines,
     isSignedIn: options.isSignedIn,
     navigate: options.navigate,

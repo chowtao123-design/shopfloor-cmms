@@ -291,8 +291,8 @@ test('app.js: chat is wired — init, visibility on render, status on sign-in, r
   assert.match(source, /applyNavPermissions\(\);\s*\n\s*\/\/ AI chat button.*\n\s*updateAiChatButton\(\);/s);
   assert.match(source, /await refreshAiStatus\(\);\s*\n\s*updateAiChatButton\(\);/);
   assert.match(source, /resetAiChat\(\);/);
-  // Settings card appears only with settings Write.
-  assert.match(source, /canWriteArea\('settings'\) \? \[sectionTitle\('AI assistant'\), aiSettingsCard\(\)\]/);
+  // Settings card appears only with settings Write (V3-M9: can() form).
+  assert.match(source, /can\('settings', 'write'\) \? \[sectionTitle\('AI assistant'\), aiSettingsCard\(\)\]/);
   // The draft opens the normal new service order form pre-filled (phone page
   // and desktop drawer both consume the stashed draft).
   assert.match(source, /prefillFromAiDraft\(consumeAiDraft\(\) \|\| \{\}\)/);

@@ -202,7 +202,7 @@ test('app.js: statistics routes, tabs and the permission gate', () => {
   assert.match(src, /function renderStatisticsMonitor\(\)/);
   assert.match(src, /function renderStatisticsReports\(\)/);
   // The area gate answers "You do not have access" (SPEC-v3.md 13.3).
-  assert.match(src, /canViewArea\('statistics'\)/);
+  assert.match(src, /can\('statistics'\)/);
   assert.match(src, /content = noAccessPage\('Statistics', 'Statistics'\)/);
   // Two tabs at #/statistics and #/statistics/reports.
   assert.match(src, /\{ key: 'monitor', label: 'Status monitor', href: '#\/statistics' \}/);
@@ -273,16 +273,16 @@ test('app.js: chart costs and whole charts follow the role permissions', () => {
   assert.match(src, /const includeCost = canReadRates\(\);/);
   assert.match(src, /\.\.\.\(includeCost \? \[\{ key: 'cost', label: 'Cost' \}\] : \[\]\),/);
   // Charts only from readable stores.
-  assert.match(src, /const showContractors = canViewArea\('contractors'\);/);
-  assert.match(src, /const showCoworkers = canViewArea\('coworkers'\);/);
-  assert.match(src, /const showOrders = canViewArea\('serviceOrders'\);/);
-  assert.match(src, /const showMachines = canViewArea\('machines'\);/);
-  // Sidebar + phone More sheet hide Statistics with permission None.
-  const nav = src.slice(src.indexOf('function applyNavPermissions'));
-  assert.match(nav, /const showStatistics = canViewArea\('statistics'\);/);
-  assert.match(nav, /a\[data-tab="statistics"\]/);
+  assert.match(src, /const showContractors = can\('contractors'\);/);
+  assert.match(src, /const showCoworkers = can\('coworkers'\);/);
+  assert.match(src, /const showOrders = can\('serviceOrders'\);/);
+  assert.match(src, /const showMachines = can\('machines'\);/);
+  // Sidebar + phone tabs + More sheet hide Statistics with permission None.
+  const nav = src.slice(src.indexOf('const NAV_TAB_AREAS'));
+  assert.match(nav, /statistics: 'statistics',/);
+  assert.match(nav, /link\.hidden = area === 'admin' \? !canAdminUI\(\) : !can\(area\)/);
   const moreSheet = src.slice(src.indexOf('function openMoreSheet'));
-  assert.match(moreSheet, /canViewArea\('statistics'\) && \{ label: 'Statistics'/);
+  assert.match(moreSheet, /can\('statistics'\) && \{ label: 'Statistics'/);
 });
 
 test('app.js: chart markup mounts without innerHTML; sync refreshes the monitor', () => {

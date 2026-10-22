@@ -156,27 +156,27 @@ test('app.js: contact actions render tel:/mailto: links with a Copy button', () 
 
 test('app.js: permissions hide pages and buttons (SPEC-v3.md 13.3)', () => {
   const src = read('app.js');
-  assert.match(src, /function areaLevel\(area\)/);
-  assert.match(src, /function canViewArea\(area\)/);
+  // V3-M9: can() is the one check everywhere.
+  assert.match(src, /function can\(area, level = 'read'\)/);
+  assert.match(src, /function isReadOnly\(area\)/);
   // Routes answer "You do not have access" for hidden areas.
   assert.match(src, /function noAccessPage\(title, areaLabel\)/);
   assert.match(src, /'You do not have access'/);
-  assert.match(src, /if \(!canViewArea\('coworkers'\)\)/);
-  assert.match(src, /if \(!canViewArea\('contractors'\)\)/);
-  // Sidebar links and the People group hide with None.
+  assert.match(src, /if \(!can\('coworkers'\)\)/);
+  assert.match(src, /if \(!can\('contractors'\)\)/);
+  // Sidebar links, phone tabs and the People group hide with None.
   assert.match(src, /function applyNavPermissions\(\)/);
-  assert.match(src, /coworkersLink\.hidden = !showCoworkers/);
-  assert.match(src, /contractorsLink\.hidden = !showContractors/);
+  assert.match(src, /link\.hidden = area === 'admin' \? !canAdminUI\(\) : !can\(area\)/);
   assert.match(src, /peopleGroup\.hidden = !\(showCoworkers \|\| showContractors\)/);
   assert.match(src, /applyNavPermissions\(\);/);
   // The phone More sheet filters them the same way.
-  assert.match(src, /canViewArea\('coworkers'\) && \{ label: 'Coworkers'/);
-  assert.match(src, /canViewArea\('contractors'\) && \{/);
+  assert.match(src, /can\('coworkers'\) && \{ label: 'Coworkers'/);
+  assert.match(src, /can\('contractors'\) && \{/);
   // Read-only pages carry a View only badge and no add/edit/delete.
   assert.match(src, /function viewOnlyBadge\(\)/);
   assert.match(src, /'View only'/);
-  assert.match(src, /areaLevel\('coworkers'\) === 'read' \? viewOnlyBadge\(\) : null/);
-  assert.match(src, /areaLevel\('contractors'\) === 'read' \? viewOnlyBadge\(\) : null/);
+  assert.match(src, /isReadOnly\('coworkers'\) \? viewOnlyBadge\(\) : null/);
+  assert.match(src, /isReadOnly\('contractors'\) \? viewOnlyBadge\(\) : null/);
 });
 
 test('app.js: contractor rates follow the contractorRates permission', () => {
@@ -201,8 +201,8 @@ test('app.js: global search finds coworkers and contractors', () => {
   assert.match(src, /href: `#\/coworkers\/\$\{encodeURIComponent\(coworker\.id\)\}`/);
   assert.match(src, /href: `#\/contractors\/\$\{encodeURIComponent\(contractor\.id\)\}`/);
   // And only in areas the user may see.
-  assert.match(src, /if \(canViewArea\('coworkers'\)\) \{/);
-  assert.match(src, /if \(canViewArea\('contractors'\)\) \{/);
+  assert.match(src, /if \(can\('coworkers'\)\) \{/);
+  assert.match(src, /if \(can\('contractors'\)\) \{/);
 });
 
 test('app.js: split view lists people beside their detail pages', () => {

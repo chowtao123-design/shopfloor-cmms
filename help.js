@@ -7,6 +7,7 @@ const HELP_SECTIONS = [
   { id: 'help-install', title: 'Install on your phone' },
   { id: 'help-desktop', title: 'Desktop tips' },
   { id: 'help-ai', title: 'AI assistant' },
+  { id: 'help-roles', title: 'Roles and permissions' },
   { id: 'help-faq', title: 'FAQ' },
 ];
 
@@ -364,6 +365,16 @@ function helpFaq(h) {
       'Will I lose data if the app is updated?',
       'No. Updates replace the app itself, not the records. Records live on the team server (and each device keeps a working copy); an update just refreshes the app shell.',
     ),
+    ...helpQa(
+      h,
+      'Why does a page say “View only”?',
+      'Your role gives you Read access to that area: you can open and read everything, but the create, edit and delete controls stay hidden. An administrator can change that in Admin → Roles & permissions. Areas you have no access to at all are simply not shown.',
+    ),
+    ...helpQa(
+      h,
+      'I changed something while I still could — why is it in the failed list?',
+      'If an administrator took away write access between your edit and the next sync, the server rejects that change. Settings shows “You no longer have permission to change …” with a Retry button in case it was a mistake.',
+    ),
   );
 }
 
@@ -405,7 +416,37 @@ function helpAi(h) {
   );
 }
 
-export function renderHelp(h) {
+/* Roles and permissions (SPEC-v3.md section 13, client help for V3-M9).
+   The section itself is for administrators; the "View only" note for
+   everyone lives in the FAQ below. */
+function helpRoles(h) {
+  return helpSection(
+    h,
+    'help-roles',
+    'Roles and permissions',
+    h(
+      'p',
+      {},
+      'Admin → Roles & permissions shows a matrix: every column is a role, every row a part of the app. Each cell is None (the area disappears and stays hidden on that device), Read (view only) or Write (create, edit, delete).',
+    ),
+    helpList(h, [
+      [h('strong', {}, 'Who manages this: '), 'only roles with Write on Users & roles see the Admin page and can change other roles, disable accounts or reset passwords.'],
+      [h('strong', {}, 'Changing levels: '), 'pick Read or Write in the matrix and press Save. A bar reminds you while changes are unsaved; Discard puts the role back.'],
+      [h('strong', {}, 'New roles: '), 'create one from scratch or as a copy of an existing role, then rename or delete it. A role that still has users cannot be deleted — move them first.'],
+      [h('strong', {}, 'Built-in roles: '), 'Administrator, Technician and Viewer come with the app. The Administrator role keeps every permission and cannot be changed or deleted.'],
+      [h('strong', {}, 'History: '), 'every role lists who changed which areas, from what level to what. Entries written by the migration itself say "System".'],
+      [h('strong', {}, 'Takes effect right away: '), 'the server re-checks the role on every request, and everyone\'s app follows on their next sync. A change you do not have permission for anymore lands in the failed-changes list in Settings.'],
+    ]),
+    h(
+      'p',
+      {},
+      'Areas: Service Orders, Preventive Maintenance, Machines, Parts & Stock, Coworkers, Outside Contractors, Contractor rates & costs, Statistics, Photos & files, Backups, AI assistant, Branding & AI settings, and Users & roles.',
+    ),
+  );
+}
+
+export function renderHelp(h, { isAdmin = false } = {}) {
+  const sections = isAdmin ? HELP_SECTIONS : HELP_SECTIONS.filter((section) => section.id !== 'help-roles');
   return h(
     'div',
     { class: 'page help-page' },
@@ -421,7 +462,7 @@ export function renderHelp(h) {
       h(
         'ul',
         {},
-        ...HELP_SECTIONS.map((section) =>
+        ...sections.map((section) =>
           h(
             'li',
             {},
@@ -442,6 +483,7 @@ export function renderHelp(h) {
     helpInstall(h),
     helpDesktop(h),
     helpAi(h),
+    isAdmin ? helpRoles(h) : null,
     helpFaq(h),
   );
 }

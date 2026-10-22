@@ -97,8 +97,8 @@ node server/admin.js create-user --admin <username> "<Display Name>"
 
 It prompts on the terminal (hidden input) for the password; add
 `--password-stdin` to read it from stdin instead. There is no self sign-up:
-admins add every other account later on the Settings screen (Users card) or
-with the same command without `--admin`.
+admins add every other account later in the app on the **Admin page (Users
+tab)** or with the same command without `--admin`.
 
 ### Start
 
@@ -180,6 +180,15 @@ Branding & AI settings, Users & roles).
 - The server checks the signed-in user's role permissions on **every
   request**; a change takes effect on the user's next request. A denied call
   returns `403` with `{error: "forbidden", area, needed}`.
+- In the app, roles are managed on the **Admin page** (sidebar "Admin", only
+  for roles with *Users & roles → Write*): a **Users** tab (role select with
+  an Undo toast, enable/disable, reset password, add user) and a **Roles &
+  permissions** tab (the matrix with a locked Administrator column, Save /
+  Discard for unsaved changes, per-role History). Every other page follows
+  your own role: None hides the area, Read shows a "View only" badge and no
+  create/edit controls, and a change someone no longer has permission for
+  lands in the Settings failed list as "You no longer have permission to
+  change …".
 - Safety rails: the last enabled user with *Users & roles → Write* cannot be
   disabled or demoted, and nobody can strip that Write from their own role.
 - Manage roles over the API (`GET/POST /api/roles`, `PATCH/DELETE
