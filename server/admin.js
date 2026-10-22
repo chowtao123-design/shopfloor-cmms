@@ -9,6 +9,7 @@ import { BACKUP_NAME_RE, formatBackupStamp, isValidBackupName } from './backup.j
 import { can } from './permissions.js';
 import { importV1 } from './records.js';
 import { openStore } from './store.js';
+import { ensureAgentUser } from './apiTokens.js';
 import { isMainModule } from './is-main.js';
 
 const DATA_DIR =
@@ -20,6 +21,9 @@ const USAGE = `Usage:
   node server/admin.js disable-user <username>
   node server/admin.js enable-user <username>
   node server/admin.js list-users
+  node server/admin.js token create --name "<label>" [--scope read|write] [--agent <username>]
+  node server/admin.js token list
+  node server/admin.js token revoke <token-id>
   node server/admin.js import-v1 <file> --as <username>
   node server/admin.js restore <backup-file> [--yes]
 
@@ -365,6 +369,83 @@ async function cmdRestore(args) {
   return 0;
 }
 
+async function cmdToken(args) {
+  const [sub, ...rest] = args;
+  if (sub === 'list') {
+    if (rest.length > 0) return usageError();
+    const store = openStore(DATA_DIR);
+    try {
+      const tokens = store.listApiTokens();
+      if (tokens.length === 0) {
+        console.log('No API tokens. Create one with:');
+        console.log('  node server/admin.js token create --name "Muse" --scope write');
+        return 0;
+      }
+      const header = ['id', 'name', 'scope', 'agent', 'last used', 'revoked'];
+      console.log(header.map((name) => name.padEnd(20)).join('').trimEnd());
+      for (const token of tokens) {
+        const cells = [
+          token.id,
+          token.name,
+          token.scope,
+          token.userId,
+          token.lastUsedAt ?? 'never',
+          token.revokedAt ?? 'no',
+        ];
+        console.log(cells.map((cell) => String(cell).padEnd(20)).join('').trimEnd());
+      }
+      return 0;
+    } finally {
+      if (typeof store.close === 'function') store.close();
+    }
+  }
+  if (sub === 'create') {
+    let name = null;
+    let scope = 'read';
+    let agent = null;
+    for (let i = 0; i < rest.length; i += 1) {
+      const arg = rest[i];
+      if (arg === '--name') name = rest[(i += 1)];
+      else if (arg === '--scope') scope = rest[(i += 1)];
+      else if (arg === '--agent') agent = rest[(i += 1)];
+      else return usageError();
+    }
+    if (typeof name !== 'string' || name.trim() === '') return usageError();
+    if (scope !== 'read' && scope !== 'write') {
+      console.error('--scope must be "read" or "write"');
+      return 1;
+    }
+    const store = openStore(DATA_DIR);
+    try {
+      const user = ensureAgentUser(store, agent === null ? {} : { username: agent });
+      const { token, record } = store.createApiToken({ name: name.trim(), scope, userId: user.id });
+      console.log(`Created token "${record.name}" (${record.scope}) for ${user.display_name ?? user.displayName} [${user.username}]`);
+      console.log(`id:    ${record.id}`);
+      console.log(`token: ${token}`);
+      console.log('Copy this token now: only its hash is stored and it will not be shown again.');
+      return 0;
+    } finally {
+      if (typeof store.close === 'function') store.close();
+    }
+  }
+  if (sub === 'revoke') {
+    if (rest.length !== 1) return usageError();
+    const store = openStore(DATA_DIR);
+    try {
+      const row = store.revokeApiToken(rest[0]);
+      if (row === null) {
+        console.error(`No API token with id "${rest[0]}"`);
+        return 1;
+      }
+      console.log(`Revoked token "${row.name}" (${row.id}) at ${row.revokedAt}`);
+      return 0;
+    } finally {
+      if (typeof store.close === 'function') store.close();
+    }
+  }
+  return usageError();
+}
+
 async function main(argv) {
   const [command, ...args] = argv;
   switch (command) {
@@ -378,6 +459,8 @@ async function main(argv) {
       return cmdEnableUser(args);
     case 'list-users':
       return cmdListUsers(args);
+    case 'token':
+      return cmdToken(args);
     case 'import-v1':
       return cmdImportV1(args);
     case 'restore':

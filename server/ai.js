@@ -2,8 +2,9 @@
 
 import crypto from 'node:crypto';
 
-import { ApiError, UUID_RE } from './records.js';
-import { can, storeArea } from './permissions.js';
+import { hashPassword } from './auth.js';
+import { ApiError, UUID_RE, putRecord } from './records.js';
+import { can, normalizePermissions, storeArea } from './permissions.js';
 
 /**
  * AI assistant server parts (SPEC-v3.md section 9): provider
@@ -293,13 +294,15 @@ export const SYSTEM_PROMPT = [
   '- Parts is the spare-part inventory; a part is low stock when qtyOnHand is below its minQty.',
   '- Coworkers are internal staff; Outside Contractors are external companies with a trade.',
   '- Users are login accounts; service orders are reported by users or requested by staff.',
-  'The data below is a READ-ONLY snapshot of the shop taken for this question. You cannot change, create or delete anything: you have no tools and no writing ability. If the user asks to change something, tell them which screen to use.',
-  'If the user needs a new service order, you may propose one by writing a fenced JSON block exactly like this:',
+  'The data below is a READ-ONLY snapshot of the shop taken for this question. You cannot write anything directly: you can only propose changes that the user applies with one click. Never claim something is saved, created or deleted by you.',
+  'You can propose changes to machines, service orders and preventive maintenance tasks. To propose up to 3 changes, end your answer with fenced JSON blocks exactly like this:',
   '```json',
-  '{"draftServiceOrder": {"title": "...", "machineId": "...", "priority": "medium", "problem": "..."}}',
+  '{"proposals": [{"store": "machines", "id": "<record id from the snapshot, or omit for a new record>", "summary": "one short sentence", "fields": {"status": "down", "notes": "..."}}]}',
   '```',
-  'In a draftServiceOrder use only these fields: title, machineId, kind, priority, category, dueDate, requestedBy, problem, actionTaken, checklist, assignees, labour, partsUsed. Never invent machine ids: use ids from the snapshot. The user reviews and saves the draft themselves; nothing is saved automatically.',
+  'In a proposal, store must be machines, workOrders or pmTasks; fields holds only the fields to change (for a new record, the fields it needs). Use real record ids from the snapshot and never invent one for an existing record. Never propose deletes and never send id, version, number, createdBy or updatedBy as fields. The user must press Apply: nothing is saved until they do, so say that. When you propose a change, do not tell the user to edit the record by hand - tell them to press Apply. Propose only when the user asks for a change or agrees to one.',
   'Only state facts that appear in the snapshot. Do not guess causes, parts, people, dates or next steps that the records do not contain; if something is not recorded, say "not recorded" and suggest which field to fill in. When you give a reason, quote the record it comes from (service order number, title or problem text).',
+  'For every "how many" question use the "Shop totals" lines. The extract under them is capped and incomplete, so never count its rows; a record may legitimately appear once as a machine and again inside a PM task or service order. If a figure is not in the totals, say it is not recorded rather than estimating.',
+  'Questions like "what is most of the work", "which type is the majority" or "what do the PM tasks cover" are answered from the breakdown lines in "Shop totals" (machine types, PM task titles, priorities and categories, most common first). Quote those counts; do not answer "not recorded" when a breakdown line covers it.',
   'Otherwise answer briefly and helpfully in plain text. Use **bold** and "- " bullet lists only; no other Markdown.',
 ].join('\n');
 
@@ -489,6 +492,19 @@ function questionKeywords(question) {
   return keywords;
 }
 
+/** Counts records by a label, most common first: [[label, count], ...]. */
+function countEntries(records, labelFor) {
+  const counts = new Map();
+  for (const record of records) {
+    const label = labelFor(record);
+    if (label === null || label === undefined || label === '') continue;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort(
+    (a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])),
+  );
+}
+
 /**
  * Build the read-only data snapshot for one question (SPEC-v3.md
  * section 9 with section 13): open and overdue service orders, down
@@ -584,15 +600,85 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
       ...contractors.map((record) => ({ store: 'contractor', entry: contractorEntry(record, includeRate) })),
     ];
     const matches = [];
+    const seenMatches = new Set();
     for (const record of searchable) {
       if (matches.length >= 20) break;
+      const entryKey = `${record.store}:${record.entry.id}`;
+      if (seenMatches.has(entryKey)) continue;
       const haystack = JSON.stringify(record.entry).toLowerCase();
       if (keywords.some((word) => haystack.includes(word))) {
+        seenMatches.add(entryKey);
         matches.push({ store: record.store, ...record.entry });
       }
     }
     addSection('Records matching words of the question', matches, 20);
   }
+
+  // Totals are stated explicitly, in front of the extract: the extract is
+  // capped, and a capped list is what makes a model answer "20 machines" when
+  // 114 exist. These lines are the authoritative counts for "how many".
+  const totals = [];
+  if (readMachines) {
+    const countStatus = (status) =>
+      machinesList.filter((record) => (record.data.status ?? 'running') === status).length;
+    const typeCounts = new Map();
+    for (const record of machinesList) {
+      const label = record.data.typeLabel || record.data.type || 'unknown';
+      typeCounts.set(label, (typeCounts.get(label) ?? 0) + 1);
+    }
+    const byType = [...typeCounts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([label, count]) => `${label} ${count}`)
+      .join(', ');
+    totals.push(
+      `Machines: ${machinesList.length} total (${countStatus('running')} running, ${countStatus('down')} down, ${countStatus('in-storage')} in storage, ${countStatus('retired')} retired)${byType ? `; by type: ${byType}` : ''}.`,
+    );
+  } else {
+    totals.push('Machines: not visible to this user.');
+  }
+  if (read('pmTasks')) {
+    // Tasks on in-storage or retired machines are paused (SPEC-v2.md 15.3),
+    // so they are left out of the active counts and of the breakdowns.
+    const pmInService = pmTasks.filter((record) => {
+      if (record.data.active === false) return false;
+      const machine = machines.get(record.data.machineId ?? '') ?? null;
+      const status = machine === null ? null : machine.data.status;
+      return status !== 'in-storage' && status !== 'retired';
+    });
+    totals.push(
+      `PM tasks: ${pmTasks.length} total, ${pmInService.length} active, ${pmDue.length} due within 7 days (including overdue).`,
+    );
+    const summarise = (entries, limit = 5) => {
+      const shown = entries
+        .slice(0, limit)
+        .map(([label, count]) => `${label} ${count}`)
+        .join(', ');
+      return entries.length > limit ? `${shown} (+${entries.length - limit} more)` : shown;
+    };
+    const titles = countEntries(pmInService, (record) => record.data.title);
+    if (titles.length > 0) totals.push(`PM task titles (most common first): ${summarise(titles)}.`);
+    const priorities = countEntries(pmInService, (record) => record.data.priority ?? 'medium');
+    if (priorities.length > 0) totals.push(`PM task priorities: ${summarise(priorities)}.`);
+    const categories = countEntries(pmInService, (record) => record.data.category);
+    if (categories.length > 0) totals.push(`PM task categories: ${summarise(categories)}.`);
+  } else {
+    totals.push('PM tasks: not visible to this user.');
+  }
+  if (read('workOrders')) {
+    totals.push(
+      `Service orders: ${workOrders.length} total, ${openOrders.length} open, ${overdue.length} overdue.`,
+    );
+  } else {
+    totals.push('Service orders: not visible to this user.');
+  }
+  if (read('parts')) totals.push(`Parts: ${parts.length} total, ${lowStock.length} low stock.`);
+  if (read('coworkers')) totals.push(`Coworkers: ${coworkers.length}.`);
+  if (read('contractors')) totals.push(`Contractors: ${contractors.length}.`);
+  lines.unshift(
+    'Shop totals (authoritative counts - never count the extract below to answer "how many"):',
+    ...totals.map((line) => `- ${line}`),
+    'The extract below is capped (up to 30 rows per section, 20 keyword matches), so it is not a complete list.',
+  );
 
   // Cap the snapshot, keeping the urgent sections first (SPEC-v3.md 9).
   let text = '';
@@ -906,6 +992,166 @@ export function parseDraftServiceOrder(reply) {
 }
 
 // ---------------------------------------------------------------------------
+// Assistant edits: the model may propose changes to machines, service orders
+// and PM tasks. Nothing is written until the signed-in user presses Apply in
+// the chat; the write itself is made by the dedicated "AI Assistant" user, so
+// created_by/updated_by and the history row name the assistant.
+// ---------------------------------------------------------------------------
+
+export const AI_ASSISTANT_USERNAME = 'ai-assistant';
+export const AI_ASSISTANT_DISPLAY_NAME = 'AI Assistant';
+export const AI_ASSISTANT_ROLE_NAME = 'AI Assistant';
+export const AI_EDITABLE_STORES = Object.freeze(['machines', 'workOrders', 'pmTasks']);
+export const AI_MAX_PROPOSALS = 3;
+
+/** Fields the model may never set through a proposal. */
+const ASSISTANT_PROTECTED_FIELDS = new Set(['id', 'version', 'number', 'createdBy', 'updatedBy']);
+
+/**
+ * The AI Assistant user, created on first use (idempotent): its own role with
+ * Write on exactly the three editable areas, and disabled so nobody can sign
+ * in as it. Returns the user row.
+ */
+export function ensureAiAssistantUser(store) {
+  const existing = store.getUserByUsername(AI_ASSISTANT_USERNAME);
+  if (existing !== null) return asSessionUser(existing);
+  let role = store.getRoleByName(AI_ASSISTANT_ROLE_NAME);
+  if (role === null) {
+    role = store.createRole({
+      name: AI_ASSISTANT_ROLE_NAME,
+      permissions: normalizePermissions({
+        serviceOrders: 'write',
+        pm: 'write',
+        machines: 'write',
+        parts: 'read',
+        coworkers: 'read',
+        contractors: 'read',
+        statistics: 'read',
+        files: 'read',
+        aiAssistant: 'write',
+      }),
+    });
+  }
+  const created = store.createUser({
+    username: AI_ASSISTANT_USERNAME,
+    displayName: AI_ASSISTANT_DISPLAY_NAME,
+    roleId: role.id,
+    passwordHash: hashPassword(crypto.randomBytes(32).toString('hex')),
+  });
+  store.updateUser(created.id, { disabled: 1 });
+  // The store returns a raw users row; can() expects the session shape.
+  return asSessionUser(store.getUserById(created.id));
+}
+
+/** Raw users row (snake_case) -> the {id, roleId} shape can() reads. */
+function asSessionUser(row) {
+  return { ...row, roleId: row.role_id ?? row.roleId ?? null };
+}
+
+/** Keep one proposed change only if it targets an editable store and plain fields. */
+function sanitizeProposal(raw) {
+  if (!isPlainObject(raw)) return null;
+  const storeName = typeof raw.store === 'string' ? raw.store : '';
+  if (!AI_EDITABLE_STORES.includes(storeName)) return null;
+  if (!isPlainObject(raw.fields)) return null;
+  const fields = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(raw.fields)) {
+    if (!/^[A-Za-z][A-Za-z0-9]{0,40}$/.test(key)) continue;
+    if (ASSISTANT_PROTECTED_FIELDS.has(key)) continue;
+    fields[key] = value;
+    count += 1;
+    if (count >= 40) break;
+  }
+  if (count === 0) return null;
+  const id = typeof raw.id === 'string' && raw.id !== '' && raw.id.length <= 80 ? raw.id : null;
+  const summary = typeof raw.summary === 'string' ? raw.summary.slice(0, 200) : '';
+  return { store: storeName, id, summary, fields };
+}
+
+/**
+ * Proposals in a reply: fenced JSON blocks shaped
+ * `{"proposals": [{store, id, summary, fields}]}`, at most AI_MAX_PROPOSALS.
+ * Invalid blocks are ignored, so a broken proposal never breaks the answer.
+ */
+export function parseProposals(reply) {
+  if (typeof reply !== 'string') return [];
+  const fence = /```(?:json)?[ \t]*\r?\n?([\s\S]*?)```/g;
+  const proposals = [];
+  let match = fence.exec(reply);
+  while (match !== null) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(match[1]);
+    } catch {
+      parsed = null;
+    }
+    const list = isPlainObject(parsed) && Array.isArray(parsed.proposals) ? parsed.proposals : [];
+    for (const raw of list) {
+      const proposal = sanitizeProposal(raw);
+      if (proposal !== null) proposals.push(proposal);
+      if (proposals.length >= AI_MAX_PROPOSALS) return proposals;
+    }
+    match = fence.exec(reply);
+  }
+  return proposals;
+}
+
+/**
+ * POST /api/ai/apply: apply one proposal the user approved in the chat.
+ * The requester needs Write on the target area, and so does the AI Assistant
+ * role. Updates merge the proposed fields onto the current record, so the
+ * model never has to send a whole record back.
+ */
+export async function aiApplyProposal(ctx, req, body) {
+  const { store, user } = ctx;
+  if (!isPlainObject(body)) throw badRequest('Expected a JSON object body');
+  for (const key of Object.keys(body)) {
+    if (!['store', 'id', 'fields', 'summary'].includes(key)) {
+      throw badRequest(`Unknown field "${key}"; expected store, id, fields, summary`);
+    }
+  }
+  const storeName = body.store;
+  if (!AI_EDITABLE_STORES.includes(storeName)) {
+    throw badRequest(`The assistant can only change ${AI_EDITABLE_STORES.join(', ')}`);
+  }
+  const area = storeArea(storeName) ?? storeName;
+  if (!can(user, area, 'write')) {
+    throw bad(403, 'forbidden', `You need write access to ${area} to approve this change`);
+  }
+  const proposal = sanitizeProposal(body);
+  if (proposal === null) throw badRequest('The proposed fields are empty or not allowed');
+  const assistant = ensureAiAssistantUser(store);
+  const actor = { ...assistant, store };
+  if (!can(actor, area, 'write')) {
+    throw bad(403, 'forbidden', 'The AI Assistant role may not write there; an admin can change its role');
+  }
+  const id = proposal.id ?? crypto.randomUUID();
+  const current = store.getRecord(storeName, id);
+  const data = current === null ? proposal.fields : { ...JSON.parse(current.data), ...proposal.fields };
+  const approver = store.displayName(user.id) ?? user.username;
+  const applied = putRecord(store, {
+    storeName,
+    id,
+    body: {
+      data,
+      baseVersion: current === null ? null : Number(current.version),
+      clientId: AI_ASSISTANT_USERNAME,
+      clientTime: new Date().toISOString(),
+    },
+    user: actor,
+    note: `from AI chat, approved by ${approver}`,
+  });
+  return {
+    status: 200,
+    body: {
+      record: applied.record,
+      appliedBy: { id: assistant.id, displayName: assistant.display_name ?? assistant.displayName },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Request handlers (returns {status, body, headers}; ApiError on failure)
 // ---------------------------------------------------------------------------
 
@@ -1087,5 +1333,5 @@ export async function aiPostChat(ctx, req, body) {
     content: reply,
     at: aiAt(),
   });
-  return { status: 200, body: { conversationId, reply, draftServiceOrder } };
+  return { status: 200, body: { conversationId, reply, draftServiceOrder, proposals: parseProposals(reply) } };
 }

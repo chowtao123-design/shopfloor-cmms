@@ -112,7 +112,22 @@ CREATE TABLE IF NOT EXISTS counters (
   value INTEGER NOT NULL
 );
 
--- v3 (SPEC-v3.md section 8): key/value app settings (branding name, logo file id).
+  -- v3 API tokens for agents (Muse): the raw token is shown once and only
+  -- its SHA-256 hash is stored. Scope is read or write; revocation keeps the
+  -- row for the audit trail.
+  CREATE TABLE IF NOT EXISTS api_tokens (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    scope TEXT NOT NULL CHECK (scope IN ('read', 'write')),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    created_by TEXT,
+    last_used_at TEXT,
+    revoked_at TEXT
+  );
+
+  -- v3 (SPEC-v3.md section 8): key/value app settings (branding name, logo file id).
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -264,9 +279,31 @@ function publicHistory(row) {
 const USER_SELECT = `SELECT u.*, r.name AS role_name, r.permissions AS role_permissions
   FROM users u LEFT JOIN roles r ON r.id = u.role_id`;
 
-/** Public JSON shape of one ai_messages row (SPEC-v3.md section 9). */
-function publicAiMessage(row) {
+/** Agent API tokens: prefix, entropy and one-way hashing. */
+const API_TOKEN_PREFIX = 'mlt_';
+const API_TOKEN_BYTES = 32;
+
+/** SHA-256 of a raw token; only this hash is ever stored or compared. */
+export function hashApiToken(raw) {
+  return crypto.createHash('sha256').update(String(raw)).digest('hex');
+}
+
+/** Public JSON shape of one api_tokens row (no hash, no raw value). */
+function apiTokenJson(row) {
   return {
+    id: row.id,
+    name: row.name,
+    scope: row.scope,
+    userId: row.user_id,
+    createdAt: row.created_at,
+    createdBy: row.created_by,
+    lastUsedAt: row.last_used_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
+/** Public JSON shape of one ai_messages row (SPEC-v3.md section 9). */
+function publicAiMessage(row) {  return {
     id: Number(row.id),
     conversationId: row.conversation_id,
     role: row.role,
@@ -337,6 +374,57 @@ export function openStore(dataDir) {
         )
         .get();
       return Number(row.value);
+    },
+    /**
+     * Create an API token for an agent user. Returns the raw token once; only
+     * its SHA-256 hash is stored, so it can never be shown again.
+     */
+    createApiToken({ name, scope, userId, createdBy = null }) {
+      const token = `${API_TOKEN_PREFIX}${crypto.randomBytes(API_TOKEN_BYTES).toString('base64url')}`;
+      const id = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO api_tokens (id, name, token_hash, scope, user_id, created_at, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(id, name, hashApiToken(token), scope, userId, new Date().toISOString(), createdBy);
+      return { token, record: this.getApiToken(id) };
+    },
+    /** One token's public metadata (never the hash or the raw token). */
+    getApiToken(id) {
+      const row = db
+        .prepare(
+          `SELECT id, name, scope, user_id, created_at, created_by, last_used_at, revoked_at
+           FROM api_tokens WHERE id = ?`
+        )
+        .get(id);
+      return row === undefined ? null : apiTokenJson(row);
+    },
+    listApiTokens() {
+      return db
+        .prepare(
+          `SELECT id, name, scope, user_id, created_at, created_by, last_used_at, revoked_at
+           FROM api_tokens ORDER BY created_at DESC`
+        )
+        .all()
+        .map(apiTokenJson);
+    },
+    /** The live token row for a raw token hash, or null (revoked/unknown). */
+    findApiTokenByHash(hash) {
+      const row = db
+        .prepare(
+          `SELECT id, name, scope, user_id, revoked_at FROM api_tokens
+           WHERE token_hash = ? AND revoked_at IS NULL`
+        )
+        .get(hash);
+      return row === undefined ? null : row;
+    },
+    touchApiToken(id) {
+      db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+    },
+    /** Revoke a token; the row stays for the audit trail. */
+    revokeApiToken(id) {
+      const now = new Date().toISOString();
+      db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(now, id);
+      return this.getApiToken(id);
     },
     /** Settings value by key, or null (SPEC-v3.md section 8). */
     getSetting(key) {

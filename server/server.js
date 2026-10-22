@@ -52,6 +52,7 @@ import {
   setBrandingName,
 } from './branding.js';
 import {
+  aiApplyProposal,
   aiDeleteHistory,
   aiGetConfig,
   aiGetHistory,
@@ -69,7 +70,9 @@ import {
   permissionsOf,
   storeArea,
 } from './permissions.js';
-import { openStore } from './store.js';
+import { hashApiToken, openStore } from './store.js';
+import { ensureAgentUser, tokenPathAllowed, validTokenRequest } from './apiTokens.js';
+import { openApiSpec } from './openapi.js';
 
 /**
  * Shop Maintenance Log v2 team server: config from env, HTTP(S) server,
@@ -673,7 +676,52 @@ function meHandler(req, res, ctx) {
   });
 }
 
-function listUsersHandler(req, res, ctx) {
+  // --- Agent API tokens (admin only). Tokens never manage tokens. -----------
+
+  function listTokensHandler(req, res, ctx) {
+    requireArea(ctx, 'admin', 'read');
+    sendJson(req, res, 200, ctx.store.listApiTokens());
+  }
+
+  async function createTokenHandler(req, res, ctx) {
+    requireArea(ctx, 'admin', 'write');
+    const body = await readJsonBody(req);
+    const parsed = validTokenRequest(body);
+    if (!parsed.ok) throw new HttpError(400, 'bad_request', parsed.message);
+    const agent = ensureAgentUser(
+      ctx.store,
+      parsed.value.username === undefined ? {} : { username: parsed.value.username }
+    );
+    if (agent.disabled !== 1 && agent.disabled !== true) {
+      throw new HttpError(
+        409,
+        'conflict',
+        `User "${agent.username}" can sign in; pass a dedicated agent username instead`
+      );
+    }
+    const { token, record } = ctx.store.createApiToken({
+      name: parsed.value.name,
+      scope: parsed.value.scope,
+      userId: agent.id,
+      createdBy: ctx.user.id,
+    });
+    // The raw token is part of this response only; it is never stored.
+    sendJson(req, res, 201, {
+      ...record,
+      username: agent.username,
+      displayName: agent.display_name ?? agent.displayName ?? null,
+      token,
+    });
+  }
+
+  function revokeTokenHandler(req, res, ctx, params) {
+    requireArea(ctx, 'admin', 'write');
+    const row = ctx.store.revokeApiToken(params.id);
+    if (row === null) throw new HttpError(404, 'not_found', `No API token with id "${params.id}"`);
+    sendJson(req, res, 200, row);
+  }
+
+  function listUsersHandler(req, res, ctx) {
   sendJson(req, res, 200, ctx.store.listUsers().map(publicUserWithDisabled));
 }
 
@@ -987,7 +1035,11 @@ const ROUTES = [
   compileRoute('GET', '/api/health', { auth: false }, healthHandler),
   compileRoute('POST', '/api/login', { auth: false }, loginHandler),
   compileRoute('POST', '/api/logout', { auth: true }, logoutHandler),
-  compileRoute('GET', '/api/me', { auth: true }, meHandler),
+    compileRoute('GET', '/api/me', { auth: true }, meHandler),
+    // Agent tokens: created and revoked by admins from a signed-in session.
+    compileRoute('GET', '/api/tokens', { auth: true }, listTokensHandler),
+    compileRoute('POST', '/api/tokens', { auth: true }, createTokenHandler),
+    compileRoute('DELETE', '/api/tokens/:id', { auth: true }, revokeTokenHandler),
   // Any signed-in user may list users (SPEC-v2.md section 7: "edited by"
   // names); managing them (create/patch) needs `admin` Write in the handler.
   compileRoute('GET', '/api/users', { auth: true }, listUsersHandler),
@@ -1021,6 +1073,7 @@ const ROUTES = [
   compileRoute('POST', '/api/ai/test', { auth: true }, aiRoute(aiPostTest, 'settings', 'write')),
   compileRoute('GET', '/api/ai/status', { auth: true }, aiRoute(aiGetStatus, 'aiAssistant', 'read')),
   compileRoute('POST', '/api/ai/chat', { auth: true }, aiRoute(aiPostChat, 'aiAssistant', 'read')),
+  compileRoute('POST', '/api/ai/apply', { auth: true }, aiRoute(aiApplyProposal, 'aiAssistant', 'read')),
   compileRoute('GET', '/api/ai/history', { auth: true }, aiRoute(aiGetHistory, 'aiAssistant', 'read')),
   compileRoute('DELETE', '/api/ai/history', { auth: true }, aiRoute(aiDeleteHistory, 'aiAssistant', 'read')),
 ];
@@ -1045,6 +1098,20 @@ function requireUser(req, ctx) {
   return validateSession(ctx.store, token, ctx.sessionDays);
 }
 
+/**
+ * `Authorization: Bearer mlt_…`. Returns null when the header is absent,
+ * {invalid:true} when it is malformed, or {token} with the raw value.
+ */
+function bearerToken(req) {
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || header.trim() === '') return null;
+  const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
+  if (match === null) return { invalid: true };
+  return { token: match[1] };
+}
+
+const BEARER_CHALLENGE = { 'WWW-Authenticate': 'Bearer realm="shopfloor-cmms"' };
+
 async function handleApi(req, res, decodedPath, ctx) {
   const effectiveMethod = req.method === 'HEAD' ? 'GET' : req.method;
   const matched = matchRoute(effectiveMethod, decodedPath);
@@ -1053,8 +1120,27 @@ async function handleApi(req, res, decodedPath, ctx) {
     return;
   }
   const { route, params } = matched;
-  const context = { ...ctx, user: null };
-  if (route.auth) {
+  const context = { ...ctx, user: null, auth: null };
+  // Bearer tokens authenticate machines/agents; cookies authenticate humans.
+  const bearer = bearerToken(req);
+  let tokenAuth = null;
+  if (bearer !== null) {
+    const row =
+      bearer.invalid === true ? null : context.store.findApiTokenByHash(hashApiToken(bearer.token));
+    if (row === null) {
+      sendJson(req, res, 401, errorResponse('invalid_token', 'API token is missing, revoked or invalid'), BEARER_CHALLENGE);
+      return;
+    }
+    const user = context.store.getUserById(row.user_id);
+    if (user === null) {
+      sendJson(req, res, 401, errorResponse('invalid_token', 'The token owner no longer exists'), BEARER_CHALLENGE);
+      return;
+    }
+    context.store.touchApiToken(row.id);
+    tokenAuth = { kind: 'token', id: row.id, name: row.name, scope: row.scope };
+    context.auth = tokenAuth;
+    context.user = { ...user, roleId: user.role_id ?? user.roleId ?? null, store: context.store };
+  } else if (route.auth) {
     const user = requireUser(req, context);
     if (user === null) {
       sendJson(req, res, 401, errorResponse('login_required', 'Sign in to use the API'));
@@ -1063,8 +1149,22 @@ async function handleApi(req, res, decodedPath, ctx) {
     // The session user carries the store handle so can() can re-read the
     // role's permissions from the database on every request (13.2).
     context.user = { ...user, store: context.store };
+    context.auth = { kind: 'session' };
   }
-  if (effectiveMethod !== 'GET') {
+  // A token may only reach records/history/identity, and a read token may
+  // only GET; everything else (users, roles, tokens, backups, AI, settings)
+  // stays human-only.
+  if (tokenAuth !== null && tokenPathAllowed(effectiveMethod, decodedPath, tokenAuth.scope) !== true) {
+    sendJson(
+      req,
+      res,
+      403,
+      errorResponse('forbidden', 'This API token may only read shop records, or edit them with write scope')
+    );
+    return;
+  }
+  // CSRF applies to cookie sessions only; a Bearer token is not ambient.
+  if (effectiveMethod !== 'GET' && tokenAuth === null) {
     const csrfError = checkCsrf(req);
     if (csrfError !== null) {
       sendJson(req, res, 403, errorResponse('forbidden', csrfError));
@@ -1101,6 +1201,22 @@ export function createRequestHandler(context = {}) {
         }
         if (decodedPath === '/api' || decodedPath.startsWith('/api/')) {
           await handleApi(req, res, decodedPath, context);
+          return;
+        }
+        // Agent-facing public probes: no session, no token (GET only).
+        if (decodedPath === '/health' || decodedPath === '/openapi.json') {
+          if (req.method !== 'GET' && req.method !== 'HEAD') {
+            send(req, res, 405, {
+              'Content-Type': 'application/json; charset=utf-8',
+              Allow: 'GET, HEAD',
+            }, JSON.stringify(errorResponse('method_not_allowed', 'This path only allows GET and HEAD')));
+            return;
+          }
+          if (decodedPath === '/health') {
+            sendJson(req, res, 200, { ok: true, version: SERVER_VERSION });
+          } else {
+            sendJson(req, res, 200, openApiSpec(SERVER_VERSION));
+          }
           return;
         }
         const resolved = resolveStatic(req.url);

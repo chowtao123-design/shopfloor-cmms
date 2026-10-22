@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,11 +12,13 @@ import * as auth from '../server/auth.js';
 import { ApiError } from '../server/records.js';
 import { startServer } from '../server/server.js';
 import {
+  AI_ASSISTANT_USERNAME,
   OPENCODE_DISABLED_TOOLS,
   SYSTEM_PROMPT,
   aiSystemPrompt,
   buildContext,
   callOpenAICompatible,
+  parseProposals,
   sendOpencodeMessage,
 } from '../server/ai.js';
 
@@ -510,7 +512,7 @@ Ask Ace Juki Service if it persists.`,
   assert.equal(messages[messages.length - 1].content, QUESTION);
   const system = messages[0];
   assert.equal(system.role, 'system');
-  assert.ok(system.content.includes('draftServiceOrder'));
+  assert.ok(system.content.includes('proposals'));
   assert.ok(system.content.includes('READ-ONLY'));
   assert.ok(system.content.includes('Juki DDL-8700'), 'context includes the down machine');
   assert.ok(system.content.includes('PM Bernina looper oil'), 'context includes PM due within 7 days');
@@ -623,7 +625,7 @@ test('opencode provider: session per conversation, Basic auth, all tools disable
   assert.ok(messageRequest);
   assert.equal(messageRequest.authorization, authHeader);
   assert.deepEqual(messageRequest.body.model, { providerID: 'prov-1', modelID: 'model-7' });
-  assert.ok(String(messageRequest.body.system).includes('draftServiceOrder'));
+  assert.ok(String(messageRequest.body.system).includes('proposals'));
   assert.ok(
     Array.isArray(messageRequest.body.parts) &&
       messageRequest.body.parts.some(
@@ -949,4 +951,166 @@ test('aiAssistant none: 403 on chat, status and history; Technician still allowe
   assert.equal(techConfig.body.area, 'settings');
   const adminConfig = await api(anna, '/api/ai/config');
   assert.equal(adminConfig.res.status, 200);
+});
+
+// ---------------------------------------------------------------------------
+// Assistant edits (machines, service orders, PM tasks): the model only
+// proposes, the user presses Apply, and the write is attributed to the
+// dedicated AI Assistant account.
+// ---------------------------------------------------------------------------
+
+test('parseProposals: editable stores only, protected fields dropped, junk ignored', () => {
+  const reply = [
+    'Sure, I can do that.',
+    '```json',
+    JSON.stringify({
+      proposals: [
+        {
+          store: 'machines',
+          id: machineDownId,
+          summary: 'Mark it running',
+          fields: { status: 'running', number: 9, updatedBy: 'x' },
+        },
+        { store: 'parts', id: 'p-1', fields: { qtyOnHand: 1 } },
+        { store: 'pmTasks', fields: { title: 'Oil', intervalDays: 45 } },
+      ],
+    }),
+    '```',
+  ].join('\n');
+  const proposals = parseProposals(reply);
+  assert.equal(proposals.length, 2);
+  assert.deepEqual(proposals[0], {
+    store: 'machines',
+    id: machineDownId,
+    summary: 'Mark it running',
+    fields: { status: 'running' },
+  });
+  assert.equal(proposals[1].id, null);
+  assert.deepEqual(proposals[1].fields, { title: 'Oil', intervalDays: 45 });
+  assert.deepEqual(parseProposals('no json here'), []);
+});
+
+test('POST /api/ai/apply: updates as the AI Assistant user with an approved-by note', async () => {
+  const applied = await api(anna, '/api/ai/apply', {
+    method: 'POST',
+    body: {
+      store: 'machines',
+      id: machineDownId,
+      summary: 'Back to running',
+      fields: { status: 'running', notes: 'guard replaced' },
+    },
+  });
+  assert.equal(applied.res.status, 200);
+  const assistant = handle.store.getUserByUsername(AI_ASSISTANT_USERNAME);
+  assert.ok(assistant !== null, 'the AI Assistant user exists after the first apply');
+  assert.equal(assistant.display_name, 'AI Assistant');
+  assert.equal(Number(assistant.disabled), 1, 'the bot account cannot sign in');
+  assert.equal(applied.body.record.updatedBy, assistant.id);
+  assert.equal(applied.body.appliedBy.displayName, 'AI Assistant');
+  assert.equal(applied.body.record.data.status, 'running');
+  assert.equal(applied.body.record.data.notes, 'guard replaced');
+  assert.equal(applied.body.record.data.name, 'Juki DDL-8700', 'untouched fields survive the merge');
+  const historyRow = handle.store.db
+    .prepare('SELECT user_id, note FROM history WHERE store = ? AND record_id = ? ORDER BY hid DESC LIMIT 1')
+    .get('machines', machineDownId);
+  assert.equal(historyRow.user_id, assistant.id);
+  assert.match(historyRow.note, /approved by Anna Admin/);
+});
+
+test('POST /api/ai/apply: creates a record when no id is given', async () => {
+  const created = await api(anna, '/api/ai/apply', {
+    method: 'POST',
+    body: {
+      store: 'pmTasks',
+      summary: 'New PM task',
+      fields: { title: 'Clean bobbin case', machineId: machineBerninaId, intervalDays: 30 },
+    },
+  });
+  assert.equal(created.res.status, 200);
+  const assistant = handle.store.getUserByUsername(AI_ASSISTANT_USERNAME);
+  assert.equal(created.body.record.createdBy, assistant.id);
+  assert.equal(created.body.record.data.title, 'Clean bobbin case');
+});
+
+test('POST /api/ai/apply: a new service order gets its SO number and the bot as author', async () => {
+  const created = await api(anna, '/api/ai/apply', {
+    method: 'POST',
+    body: {
+      store: 'workOrders',
+      summary: 'New service order',
+      fields: {
+        title: 'Juki oil leak',
+        machineId: machineDownId,
+        priority: 'high',
+        status: 'open',
+        category: 'mechanical',
+      },
+    },
+  });
+  assert.equal(created.res.status, 200);
+  assert.ok(
+    Number.isInteger(created.body.record.data.number) && created.body.record.data.number >= 1,
+    'the server assigned the work order number',
+  );
+  const assistant = handle.store.getUserByUsername(AI_ASSISTANT_USERNAME);
+  assert.equal(created.body.record.createdBy, assistant.id);
+});
+
+test('POST /api/ai/apply: requires write on the area and rejects bad proposals', async () => {
+  const noWrite = await api(ivan, '/api/ai/apply', {
+    method: 'POST',
+    body: { store: 'machines', id: machineDownId, fields: { status: 'down' } },
+  });
+  assert.equal(noWrite.res.status, 403);
+
+  const wrongStore = await api(anna, '/api/ai/apply', {
+    method: 'POST',
+    body: { store: 'parts', fields: { name: 'x' } },
+  });
+  assert.equal(wrongStore.res.status, 400);
+
+  const onlyProtected = await api(anna, '/api/ai/apply', {
+    method: 'POST',
+    body: { store: 'machines', id: machineDownId, fields: { number: 7 } },
+  });
+  assert.equal(onlyProtected.res.status, 400);
+
+  const invalidValue = await api(anna, '/api/ai/apply', {
+    method: 'POST',
+    body: { store: 'machines', id: machineDownId, fields: { type: 'sewing-robot' } },
+  });
+  assert.equal(invalidValue.res.status, 400, JSON.stringify(invalidValue.body));
+});
+
+test('POST /api/ai/chat returns the proposals parsed from the reply', async () => {
+  const set = await putAiConfig(anna, {
+    provider: 'openai-compatible',
+    openai: { baseURL: openaiFake.url, model: 'test-model', apiKey: OPENAI_API_KEY },
+  });
+  assert.equal(set.res.status, 200);
+  openaiFake.state.chatStatus = 200;
+  openaiFake.state.chatReply = {
+    choices: [
+      {
+        message: {
+          content: [
+            'I can open that ticket.',
+            '```json',
+            JSON.stringify({
+              proposals: [
+                { store: 'workOrders', fields: { title: 'Juki skipping stitches', machineId: machineDownId } },
+              ],
+            }),
+            '```',
+          ].join('\n'),
+        },
+      },
+    ],
+  };
+  const response = await chat(anna, 'Please open a ticket for the Juki');
+  assert.equal(response.res.status, 200);
+  assert.equal(response.body.proposals.length, 1);
+  assert.equal(response.body.proposals[0].store, 'workOrders');
+  assert.equal(response.body.proposals[0].id, null);
+  assert.equal(response.body.proposals[0].fields.title, 'Juki skipping stitches');
 });

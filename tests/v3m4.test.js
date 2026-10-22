@@ -203,13 +203,13 @@ test('pmTasks: legacy priority normal is stored as medium; default is medium', a
   assert.ok(!('category' in fresh.body.record.data), 'no category when none was sent');
 });
 
-test('pmTasks: quarter-hour estimatedHours steps and bounds', async () => {
+test('pmTasks: estimatedHours allows 0–1000 with up to two decimals', async () => {
   const base = { title: 'Belt check', machineId: uuid(), intervalDays: 21 };
-  for (const estimatedHours of [0.25, 2.75, 1000]) {
+  for (const estimatedHours of [0, 0.1, 0.75, 2.75, 1000]) {
     const ok = await put(anna, 'pmTasks', uuid(), { ...base, estimatedHours });
     assert.equal(ok.res.status, 200, `estimatedHours ${estimatedHours} should be accepted`);
   }
-  for (const estimatedHours of [0, 0.1, 0.3, 1000.25, 1001, -1]) {
+  for (const estimatedHours of [0.125, 1000.25, 1001, -1]) {
     const bad = await put(anna, 'pmTasks', uuid(), { ...base, estimatedHours });
     assert.equal(bad.res.status, 400, `estimatedHours ${estimatedHours} should be rejected`);
   }

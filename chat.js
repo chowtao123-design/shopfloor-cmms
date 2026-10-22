@@ -83,7 +83,9 @@ export function stripDraftFences(text) {
     if (inner) {
       try {
         const parsed = JSON.parse(inner[1]);
-        isDraft = isPlainObject(parsed) && isPlainObject(parsed.draftServiceOrder);
+        isDraft =
+          isPlainObject(parsed) &&
+          (isPlainObject(parsed.draftServiceOrder) || Array.isArray(parsed.proposals));
       } catch {
         isDraft = false;
       }
@@ -482,18 +484,170 @@ function draftCardNode(draft) {
   );
 }
 
+/* ----- Proposed changes (assistant edits) ----- */
+
+const PROPOSAL_STORES = {
+  machines: { area: 'machines', label: 'Machine' },
+  workOrders: { area: 'serviceOrders', label: 'Service order' },
+  pmTasks: { area: 'pm', label: 'PM task' },
+};
+
+const PROPOSAL_BLOCKED_FIELDS = ['id', 'version', 'number', 'createdBy', 'updatedBy'];
+
+/** Proposed changes in a reply (client copy of parseProposals in server/ai.js). */
+export function parseProposals(text) {
+  if (typeof text !== 'string') return [];
+  const fence = /```(?:json)?[ \t]*\r?\n?([\s\S]*?)```/g;
+  const proposals = [];
+  let match = fence.exec(text);
+  while (match !== null) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(match[1]);
+    } catch {
+      parsed = null;
+    }
+    const list = isPlainObject(parsed) && Array.isArray(parsed.proposals) ? parsed.proposals : [];
+    for (const raw of list) {
+      if (!isPlainObject(raw) || !PROPOSAL_STORES[raw.store] || !isPlainObject(raw.fields)) continue;
+      const fields = {};
+      for (const [key, value] of Object.entries(raw.fields)) {
+        if (!/^[A-Za-z][A-Za-z0-9]{0,40}$/.test(key)) continue;
+        if (PROPOSAL_BLOCKED_FIELDS.includes(key)) continue;
+        fields[key] = value;
+      }
+      if (Object.keys(fields).length === 0) continue;
+      proposals.push({
+        store: raw.store,
+        id: typeof raw.id === 'string' && raw.id !== '' ? raw.id : null,
+        summary: typeof raw.summary === 'string' ? raw.summary.slice(0, 200) : '',
+        fields,
+      });
+      if (proposals.length >= 3) return proposals;
+    }
+    match = fence.exec(text);
+  }
+  return proposals;
+}
+
+function valueText(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (Array.isArray(value)) {
+    return value.length === 0 ? '—' : value.map((item) => valueText(item)).join(', ');
+  }
+  if (typeof value === 'object') {
+    const label = value.name ?? value.title ?? value.label ?? value.id;
+    return label === undefined ? JSON.stringify(value) : String(label);
+  }
+  return String(value);
+}
+
+function currentRecordFor(store, id) {
+  if (!deps || typeof deps.records !== 'function' || !id) return null;
+  const rows = deps.records(store);
+  if (!Array.isArray(rows)) return null;
+  return rows.find((row) => row && row.id === id) ?? null;
+}
+
+function proposalCardNode(proposal) {
+  const entry = PROPOSAL_STORES[proposal.store];
+  if (!entry) return null;
+  const current = currentRecordFor(proposal.store, proposal.id);
+  const currentData = current && isPlainObject(current.data) ? current.data : {};
+  const rows = Object.entries(proposal.fields).map(([key, value]) => {
+    const before = currentData[key];
+    const changed = current !== null && valueText(before) !== valueText(value);
+    return el(
+      'div',
+      { class: 'ai-draft-row' },
+      el('dt', {}, key),
+      el('dd', {}, changed ? `${valueText(before)} → ${valueText(value)}` : valueText(value)),
+    );
+  });
+  const status = el('p', { class: 'field-hint', role: 'status' });
+  const actions = el('div', { class: 'ai-proposal-actions' });
+  const canApply = Boolean(deps && typeof deps.can === 'function' && deps.can(entry.area, 'write'));
+  const dismiss = el('button', { class: 'btn btn-small', type: 'button' }, 'Dismiss');
+  dismiss.addEventListener('click', () => card.remove());
+  if (!canApply) {
+    status.textContent = `You do not have write access to ${entry.label.toLowerCase()}s, so this change cannot be applied from here.`;
+    actions.append(dismiss);
+  } else {
+    status.textContent =
+      'Nothing is saved until you press Apply. The record will show AI Assistant as the editor.';
+    const apply = el('button', { class: 'btn btn-primary btn-small', type: 'button' }, 'Apply');
+    apply.addEventListener('click', async () => {
+      apply.disabled = true;
+      dismiss.disabled = true;
+      try {
+        const payload = { store: proposal.store, summary: proposal.summary, fields: proposal.fields };
+        if (proposal.id !== null) payload.id = proposal.id;
+        const response = await deps.api('POST', '/api/ai/apply', payload);
+        if (!response.ok) {
+          status.className = 'form-error';
+          status.textContent = aiErrorText(response.status, response.data);
+          apply.disabled = false;
+          dismiss.disabled = false;
+          return;
+        }
+        actions.remove();
+        status.className = 'ai-proposal-done';
+        status.textContent = `Saved · ${entry.label} ${proposal.id === null ? 'created' : 'updated'} by AI Assistant`;
+        if (typeof deps.refresh === 'function') {
+          try {
+            await deps.refresh();
+          } catch (error) {
+            console.warn('Refresh after an AI change failed:', error);
+          }
+        }
+      } catch (error) {
+        console.warn('AI apply failed (network):', error);
+        status.className = 'form-error';
+        status.textContent = AI_OFFLINE_TEXT;
+        apply.disabled = false;
+        dismiss.disabled = false;
+      }
+    });
+    actions.append(apply, dismiss);
+  }
+  const card = el(
+    'div',
+    { class: 'card ai-proposal-card' },
+    el('h3', { class: 'ai-draft-title' }, `Proposed change · ${entry.label}`),
+    proposal.summary ? el('p', { class: 'ai-proposal-summary' }, proposal.summary) : null,
+    current
+      ? el(
+          'p',
+          { class: 'field-hint' },
+          `Record: ${valueText(current.data && (current.data.title ?? current.data.name))} · ${proposal.id}`,
+        )
+      : null,
+    el('dl', { class: 'ai-draft-facts' }, ...rows),
+    status,
+    actions,
+  );
+  return card;
+}
+
 /* ----- Message list ----- */
 
 function userMessageNode(text) {
   return el('div', { class: 'ai-msg is-user' }, el('p', { class: 'chat-para' }, text));
 }
 
-function assistantMessageNode(content, draft) {
+function assistantMessageNode(content, draft, proposals) {
   const bubble = el('div', { class: 'ai-msg is-assistant' });
   bubble.append(...renderChatText(el, stripDraftFences(content)));
+  const nodes = [bubble];
   const card = draftCardNode(draft !== undefined ? draft : null);
-  if (card !== null) return [bubble, card];
-  return [bubble];
+  if (card !== null) nodes.push(card);
+  const list = Array.isArray(proposals) ? proposals : [];
+  for (const proposal of list) {
+    const proposalCard = proposalCardNode(proposal);
+    if (proposalCard !== null) nodes.push(proposalCard);
+  }
+  return nodes;
 }
 
 function startersNode(onPick) {
@@ -644,7 +798,8 @@ async function ask(question) {
     }
     const draft =
       isPlainObject(data.draftServiceOrder) ? data.draftServiceOrder : parseDraftServiceOrder(data.reply);
-    panel.list.append(...assistantMessageNode(data.reply || '', draft));
+    const proposals = Array.isArray(data.proposals) ? data.proposals : parseProposals(data.reply);
+    panel.list.append(...assistantMessageNode(data.reply || '', draft, proposals));
   } catch (error) {
     console.warn('AI chat failed (network):', error);
     showError(AI_OFFLINE_TEXT);
@@ -697,7 +852,7 @@ async function loadHistory() {
         nodes.push(userMessageNode(stripDraftFences(row.content)));
       } else {
         const draft = parseDraftServiceOrder(row.content);
-        nodes.push(...assistantMessageNode(row.content, draft));
+        nodes.push(...assistantMessageNode(row.content, draft, parseProposals(row.content)));
       }
     }
     panel.list.replaceChildren(...nodes);
@@ -760,16 +915,20 @@ function closePanel() {
 
 /**
  * Build the fixed chat button and wire the panel. Called once from app.js
- * with: { api, can, machines, isSignedIn, navigate, showConfirm }.
+ * with: { api, can, machines, records, isSignedIn, navigate, showConfirm,
+ * refresh }. `records(store)` returns the cached rows of a store, `refresh()`
+ * reloads them from the server after the assistant's change is applied.
  */
 export function initAiChat(options) {
   deps = {
     api: options.api,
     can: options.can,
     machines: options.machines,
+    records: options.records,
     isSignedIn: options.isSignedIn,
     navigate: options.navigate,
     showConfirm: options.showConfirm,
+    refresh: options.refresh,
   };
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('class', 'ai-chat-icon');

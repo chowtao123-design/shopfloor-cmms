@@ -163,7 +163,8 @@ test('non-GET API requests need X-Requested-With and a matching Origin (403 othe
   assert.equal(health.status, 200);
 
   const other = await fetch(`${base}/health`);
-  assert.equal(other.status, 404);
+  assert.equal(other.status, 200);
+  assert.deepEqual(await other.json(), { ok: true, version: '2.0.0' });
 });
 
 test('unknown user, wrong password and disabled user all get the same generic error', async () => {

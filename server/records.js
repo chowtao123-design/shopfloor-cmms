@@ -305,17 +305,17 @@ function expectAttachments(store, key, value) {
 }
 
 // SPEC-v3.md section 4 (V3-M4): a PM task's estimated hours — a number
-// 0.25–1000 in quarter-hour steps, or null for "no estimate".
+// 0–1000 in hundredth-hour steps, or null for "no estimate".
 function expectEstimatedHours(store, key, value) {
   if (value === null) return value;
   if (
     typeof value !== 'number' ||
     !Number.isFinite(value) ||
-    value < 0.25 ||
+    value < 0 ||
     value > 1000 ||
-    !Number.isInteger(value * 4)
+    Math.abs(value * 100 - Math.round(value * 100)) > 1e-6
   ) {
-    throw bad(`${store}.${key} must be 0.25–1000 in steps of 0.25, or null`);
+    throw bad(`${store}.${key} must be 0–1000 with up to two decimals, or null`);
   }
   return value;
 }
@@ -651,9 +651,11 @@ function recordJson(
  * PUT /api/records/:store/:id — create or update, last save wins
  * (SPEC-v2.md 7.1). `updated_by`/`created_by` always come from the session
  * user. Parts updates ignore incoming qtyOnHand (server-owned, 7.3).
+ * `note` (optional) is written on the history row; the AI apply path uses it
+ * to record who approved the change.
  * @returns {{record: object, conflict: null | object}}
  */
-export function putRecord(store, { storeName, id, body, user }) {
+export function putRecord(store, { storeName, id, body, user, note = null }) {
   checkStoreAndId(storeName, id);
   if (!isPlainObject(body)) throw bad('Request body must be a JSON object');
   for (const key of Object.keys(body)) {
@@ -738,7 +740,7 @@ export function putRecord(store, { storeName, id, body, user }) {
       before,
       after: dataJson,
       conflict: conflict ? 1 : 0,
-      note: conflict ? conflictNote(conflict) : null,
+      note: [note, conflict ? conflictNote(conflict) : null].filter(Boolean).join('; ') || null,
     });
     return {
       record: recordJson(

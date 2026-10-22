@@ -644,6 +644,7 @@ export function labourTotal(order) {
 
 /** "1.75 h" / "—" for labour hour displays. */
 export function formatHours(hours) {
+  if (hours === null || hours === undefined || hours === '') return '—';
   const value = Number(hours);
   if (!Number.isFinite(value) || value <= 0) return '—';
   const rounded = Math.round(value * 100) / 100;

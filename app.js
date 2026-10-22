@@ -6122,11 +6122,11 @@ function pmTaskFormBody({ existing = null, cancelTo = undefined } = {}) {
   );
   const estimatedHoursInput = h('input', {
     type: 'number',
-    min: '0.25',
+    min: '0',
     max: '1000',
-    step: '0.25',
+    step: '0.01',
     inputmode: 'decimal',
-    placeholder: 'e.g. 1.5',
+    placeholder: 'e.g. 0.75',
     value:
       base.estimatedHours === null || base.estimatedHours === undefined
         ? ''
@@ -6178,7 +6178,7 @@ function pmTaskFormBody({ existing = null, cancelTo = undefined } = {}) {
       field('Interval (days)', intervalInput, 'The task is due again this many days after it was last done.'),
       field('Priority', prioritySelect),
     ),
-    h('div', { class: 'grid-2' }, field('Category', categorySelect), field('Estimated hours', estimatedHoursInput, 'Rough time this check takes, in quarter-hour steps.')),
+    h('div', { class: 'grid-2' }, field('Category', categorySelect), field('Estimated hours', estimatedHoursInput, 'Rough time this check takes, in hours. Decimals allowed, e.g. 0.75.')),
     field('Last done', lastDoneInput, 'Leave empty if this task has never been done; it will be due today.'),
     sectionTitle('Assign'),
     assigneeEditor.element,
@@ -6217,12 +6217,12 @@ function pmTaskFormBody({ existing = null, cancelTo = undefined } = {}) {
     let estimatedHours = null;
     if (rawEstimated !== '') {
       const value = Number(rawEstimated);
-      if (!Number.isFinite(value) || value < 0.25 || value > 1000 || !Number.isInteger(value * 4)) {
-        errorBox.textContent = 'Estimated hours must be 0.25–1000 in steps of 0.25.';
+      if (!Number.isFinite(value) || value < 0 || value > 1000 || Math.abs(value * 100 - Math.round(value * 100)) > 1e-6) {
+        errorBox.textContent = 'Estimated hours must be 0–1000 with up to two decimals (e.g. 0.75).';
         estimatedHoursInput.focus();
         return;
       }
-      estimatedHours = Math.round(value * 4) / 4;
+      estimatedHours = Math.round(value * 100) / 100;
     }
     const lastDone = lastDoneInput.value;
     if (lastDone && !isISODate(lastDone)) {
@@ -8527,9 +8527,30 @@ async function render() {
               : renderParts(listRoute);
     content = h(
       'div',
-      { class: 'split' },
+      { class: 'split', 'data-split-root': splitListRoot },
       h('section', { class: 'split-list' }, listPage),
-      h('section', { class: 'split-detail' }, content),
+      h(
+        'section',
+        { class: 'split-detail' },
+        h(
+          'div',
+          { class: 'split-detail-bar' },
+          h(
+            'button',
+            {
+              class: 'btn split-close',
+              type: 'button',
+              title: 'Close (Esc)',
+              'aria-label': 'Close the detail panel and go back to the list',
+              onclick: () => navigate(`#/${splitListRoot}`),
+            },
+            h('span', { class: 'split-close-icon', 'aria-hidden': 'true' }, '<<'),
+            'Close',
+            h('span', { class: 'split-close-hint', 'aria-hidden': 'true' }, 'Esc'),
+          ),
+        ),
+        content,
+      ),
     );
     setTitle(detailTitle);
   }
@@ -8547,6 +8568,20 @@ backButton.addEventListener('click', () => {
 window.addEventListener('hashchange', () => {
   window.scrollTo(0, 0);
   render();
+});
+
+/* Esc retracts the desktop detail pane (machines, jobs, parts, people) back to
+   the list. Drawers, dialogs and sheets own Esc while they are open, and Esc in
+   a text field keeps its normal behaviour (clearing/undoing the insert). */
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.defaultPrevented) return;
+  if (drawerHandle) return;
+  if (document.querySelector('.dialog, .dialog-backdrop, .sheet')) return;
+  const split = document.querySelector('.split[data-split-root]');
+  if (!split) return;
+  const active = document.activeElement;
+  if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return;
+  navigate(`#/${split.dataset.splitRoot}`);
 });
 
 /* Re-render when the viewport crosses the 1024px desktop breakpoint so the
@@ -9901,9 +9936,15 @@ initAiChat({
   api: sync.api,
   can,
   machines: () => state.machines,
+  records: (storeName) => (Array.isArray(state[storeName]) ? state[storeName] : []),
   isSignedIn: () => Boolean(teamUser),
   navigate,
   showConfirm,
+  refresh: async () => {
+    if (teamUser) await sync.pull();
+    await refreshState();
+    await render();
+  },
 });
 
 start();
