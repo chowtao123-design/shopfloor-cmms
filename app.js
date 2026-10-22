@@ -8849,12 +8849,16 @@ const NAV_ICONS = {
 
 let moreSheetOpen = false;
 let moreSheetRoot = null;
+let moreSheetBackdrop = null;
 
 function closeMoreSheet({ refocus = false } = {}) {
   if (!moreSheetRoot) return;
   const previousFocus =
     moreSheetRoot._morePreviousFocus instanceof HTMLElement ? moreSheetRoot._morePreviousFocus : null;
   moreSheetRoot.remove();
+  // The backdrop is a separate node; left behind it blocks every tap until reload.
+  if (moreSheetBackdrop) moreSheetBackdrop.remove();
+  moreSheetBackdrop = null;
   moreSheetRoot = null;
   moreSheetOpen = false;
   document.removeEventListener('keydown', onMoreSheetKey);
@@ -8896,6 +8900,7 @@ function openMoreSheet() {
     { label: 'Settings', icon: NAV_ICONS.settings, href: '#/settings' },
   ].filter(Boolean);
   const backdrop = h('div', { class: 'sheet-backdrop' });
+  moreSheetBackdrop = backdrop;
   moreSheetRoot = h(
     'section',
     { class: 'sheet', id: 'more-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'More pages' },
