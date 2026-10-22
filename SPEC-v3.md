@@ -221,3 +221,99 @@ library), coloured from theme tokens, each with a text table toggle for accessib
 7. **V3-M7 AI server:** `server/ai.js`, providers, context builder, rate limit, history, Settings
    card, tests with a fake provider.
 8. **V3-M8 AI chat UI + docs:** chat button/panel, draft-card flow, Help and README updates.
+
+---
+
+## 13. Roles and permissions (admin dashboard) — client request 2026-10-21
+
+Replaces the fixed `admin` / `tech` split. An admin defines **roles** and, for each role, the
+access level to every function. This also decides contractor rates/costs (section 5 "admins
+only" rules become the `contractorRates` permission below).
+
+### 13.1 Model
+
+- Levels per area: **None** (area hidden; server returns nothing), **Read** (view only),
+  **Write** (create, edit, delete; implies Read).
+- Areas (keys are fixed in code, labels shown in the UI):
+
+| Key | Label | Covers |
+|---|---|---|
+| `serviceOrders` | Service Orders | workOrders store, labour, checklists, attachments on orders |
+| `pm` | Preventive Maintenance | pmTasks store, Mark done (also needs `serviceOrders` Write) |
+| `machines` | Machines | machines store, machine photos/manuals |
+| `parts` | Parts & Stock | parts store, stock moves (+1/−1, job deductions need `parts` Write **or** come from a Service Order save by a user with `serviceOrders` Write) |
+| `coworkers` | Coworkers | coworkers store |
+| `contractors` | Outside Contractors | contractors store except rates |
+| `contractorRates` | Contractor rates & costs | `hourlyRate` field (Read = see rates and costs in contractor pages and Statistics; Write = edit rates) |
+| `statistics` | Statistics | Statistics page (data shown is still limited by the other areas) |
+| `files` | Photos & files | upload (Write) and view (Read) attachments |
+| `backups` | Backups | Read = list; Write = "Back up now" and download |
+| `aiAssistant` | AI assistant | Read or Write = may use the chat (only areas the user can read are put into the AI context) |
+| `settings` | Branding & AI settings | Write = change branding and AI provider settings |
+| `admin` | Users & roles | Write = this dashboard; **only roles with this permission may manage users, roles and permissions** |
+
+- Built-in roles, created on migration:
+  - **Administrator**: every area Write; cannot be edited or deleted.
+  - **Technician** (existing `tech` users): Write on serviceOrders, pm, machines, parts, coworkers,
+    contractors, contractorRates, files, aiAssistant; Read on statistics, backups; None on
+    settings, admin. (Default chosen by the PM; the admin can change it.)
+  - **Viewer**: Read on serviceOrders, pm, machines, parts, coworkers, contractors, statistics,
+    files; None elsewhere.
+- Admins may create custom roles (name 1–40 chars, unique, e.g. "Supervisor", "Contractor"),
+  copy an existing role, rename, change levels, and delete a role that no user has.
+
+### 13.2 Server
+
+- Tables: `roles(id, name UNIQUE, builtin INTEGER, permissions TEXT /* JSON {area: level} */,
+  created_at, updated_at, updated_by)`; `users.role_id` (migration from the old `role` column:
+  admin → Administrator, tech → Technician; keep the old column readable for one version, stop
+  writing it). Every role/permission change is written to `history` (store `roles`) with
+  before/after, like records.
+- One function `can(user, area, level)` used by **every** route; no other place decides access.
+  - `GET /api/changes` and `/api/history` return only stores the user can Read; contractor
+    `hourlyRate` only with `contractorRates` Read.
+  - `PUT/DELETE /api/records/:store/:id` need Write on that store's area; a contractor `PUT`
+    without `contractorRates` Write keeps the stored rate.
+  - Stock moves, files, backups, branding, AI config, AI chat, users and roles routes: as in the table.
+  - 403 body `{error: "forbidden", area, needed: "read"|"write"}`.
+- Permissions are read from the database on every request (no caching in the session), so a
+  change takes effect on the user's next request.
+- Safety rules: the Administrator role cannot be changed or deleted; the last enabled user with
+  the `admin` permission cannot be disabled, demoted or deleted (409 with a clear message); a
+  user cannot remove `admin` Write from their own role.
+- `GET /api/me` adds `{roleId, roleName, permissions}`. New admin routes (need `admin` Write):
+  `GET/POST /api/roles`, `PATCH/DELETE /api/roles/:id`, `PATCH /api/users/:id {roleId}`;
+  `GET /api/roles/:id/history`.
+- `admin.js create-user --admin` assigns Administrator; new `--role "<name>"` option.
+
+### 13.3 Client
+
+- **Admin dashboard** (sidebar "Admin", visible only with `admin` permission), two tabs:
+  1. **Users**: table (name, username, role dropdown, status, last sign-in, created), add user,
+     disable/enable, reset password; role changes save immediately with an undo toast.
+  2. **Roles & permissions**: a matrix, areas as rows, roles as columns, each cell a
+     None / Read / Write segmented control; Administrator column locked; "New role", "Copy",
+     "Rename", "Delete" (disabled while users have the role); unsaved-changes bar with
+     Save / Discard; a per-role "History" drawer.
+- Everywhere else the UI follows `permissions` from `/api/me`: hide sidebar items with None,
+  disable or hide create/edit/delete buttons with Read, show a "View only" badge on read-only
+  pages. The server stays the authority: a 403 on sync moves the change to the failed list with
+  "You no longer have permission to change Service Orders".
+- After a pull, if an area became None, clear that store from IndexedDB on this device.
+- Contractor rates and the cost columns in Statistics appear only with `contractorRates` Read.
+
+### 13.4 Acceptance criteria (add to section 11)
+
+- [ ] Server tests: migration maps old roles; `can()` matrix for each level; each route
+      family returns 403 for None/Read where Write is needed; changes feed hides None stores;
+      rates hidden without `contractorRates` Read and preserved on PUT without Write; last-admin
+      protections (409); self-demotion blocked; Administrator role immutable; role history entries;
+      permission change takes effect on the next request without signing out.
+- [ ] Browser: as a Viewer the sidebar hides None areas, pages show "View only", no edit buttons;
+      as an admin the matrix saves and a second signed-in user sees the change after the next pull.
+
+### 13.5 Milestones (insert before V3-M2 resumes)
+
+- **V3-M1b RBAC server:** roles table + migration, `can()`, route enforcement, me/roles/users
+  routes, history, CLI `--role`, tests. Must merge cleanly with `v3-ai` (AI routes use `can()`).
+- **V3-M9 Admin dashboard UI + permission-aware client:** after M2 (needs the shell/drawer).
