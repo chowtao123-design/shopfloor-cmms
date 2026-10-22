@@ -1,7 +1,16 @@
 const DB_NAME = 'maint-log';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
-export const STORES = ['machines', 'parts', 'workOrders', 'pmTasks'];
+// v3 (SPEC-v3.md section 5): coworkers and contractors sync like records,
+// so the pull can store them offline (read by the service order form).
+export const STORES = [
+  'machines',
+  'parts',
+  'workOrders',
+  'pmTasks',
+  'coworkers',
+  'contractors',
+];
 export const OUTBOX_STORE = 'outbox';
 export const META_STORE = 'meta';
 

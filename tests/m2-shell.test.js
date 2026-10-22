@@ -121,7 +121,9 @@ test('app.js: global search matches service orders by number and title', () => {
   const src = read('app.js');
   assert.match(src, /function globalSearchMatches\(query\)/);
   assert.match(src, /function serviceOrderLabel\(order\)/);
-  assert.match(src, /SO-\$\{String\(Math\.floor\(number\)\)\.padStart\(4, '0'\)\}/);
+  // The SO-number formatting lives in the pure helper logic.js:formatOrderNumber.
+  assert.match(src, /formatOrderNumber\(number\)/);
+  assert.match(read('logic.js'), /`SO-\$\{String\(Math\.floor\(Math\.abs\(value\)\)\)\.padStart\(4, '0'\)\}`/);
   assert.match(src, /searchBox\('Search service orders'/);
   // Keyboard navigation: ArrowUp/ArrowDown/Enter on the results dropdown.
   assert.match(src, /event\.key === 'ArrowDown' \|\| event\.key === 'ArrowUp'/);
@@ -170,7 +172,8 @@ test('manifest keeps the default app name', () => {
 
 test('sw.js: cache version bumped and the shell still caches the client files', () => {
   const src = read('sw.js');
-  assert.match(src, /CACHE_VERSION = 12;/);
+  // Bumped with each shell change (13 in V3-M3).
+  assert.match(src, /CACHE_VERSION = 13;/);
   for (const file of ['index.html', 'styles.css', 'app.js', 'help.js', 'db.js', 'sync.js']) {
     assert.match(src, new RegExp(`'\\./${file.replace('.', '\\.')}'`), file);
   }

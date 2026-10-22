@@ -276,8 +276,11 @@ time {
   padding: 0.3rem 0.15rem;
   color: var(--muted);
   text-decoration: none;
-  font-size: 0.82rem;
+  /* V3-M3 review fix: "Prev. Maint." must stay on one line at 390 px. */
+  font-size: 0.76rem;
   font-weight: 650;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
   border-top: 3px solid transparent;
 }
 
@@ -2449,4 +2452,936 @@ body.logged-out .global-search {
   height: 20px;
   flex: none;
   color: var(--muted);
+}
+
+/* ==========================================================================
+   V3-M3 (SPEC-v3.md section 3): service orders toolbar (view switch, search,
+   Filters), removable filter chips, table pagination, phone cards, board
+   with drag-and-drop, calendar, drawer form sections (assignees, checklist,
+   labour, attachments), avatars, priority badges. Phone bottom bar fix
+   above (.tab). This section comes last so it can override earlier rules.
+   ========================================================================== */
+
+/* ----- Service orders page layout ----- */
+
+.so-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.6rem;
+}
+
+.so-toolbar-search {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.so-toolbar-search .search-wrap {
+  margin-bottom: 0;
+}
+
+/* View switch: List · Board · Calendar (desktop only, SPEC-v3.md 3.1). */
+.view-switch {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .view-switch {
+    display: inline-flex;
+    gap: 0.2rem;
+    padding: 0.2rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+  }
+}
+
+.view-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0.2rem 0.8rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.view-switch-btn:hover {
+  color: var(--accent-strong);
+  background: var(--surface-2);
+}
+
+.view-switch-btn.is-active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* ----- Removable filter chips + Clear all ----- */
+
+.so-chips-host:empty {
+  display: none;
+}
+
+.so-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.3rem 0.22rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.filter-chip-label {
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-chip-x {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.filter-chip-x:hover {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.clear-all {
+  border: 0;
+  padding: 0.2rem 0.35rem;
+  background: none;
+  color: var(--focus);
+  font-size: 0.85rem;
+  font-weight: 650;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ----- Filter popover (desktop) and phone bottom sheet ----- */
+
+.filter-popover {
+  position: fixed;
+  z-index: 90;
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(72vh, 640px);
+  overflow-y: auto;
+  padding: 0.9rem 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.filter-popover-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.filter-controls {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.filter-group {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.filter-group legend {
+  padding: 0;
+  margin-bottom: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.filter-chips {
+  flex-wrap: wrap;
+  overflow: visible;
+  padding: 0;
+}
+
+.chip.chip-toggle {
+  min-height: 38px;
+  padding: 0.25rem 0.7rem;
+}
+
+.chip.chip-toggle .tick {
+  font-size: 0.8rem;
+}
+
+.filter-chips .chip[aria-pressed="true"],
+.filter-chips .chip.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.filter-selects {
+  gap: 0.55rem;
+}
+
+.filter-actions {
+  margin-top: 0.2rem;
+}
+
+.filter-sheet {
+  max-height: 82vh;
+  overflow-y: auto;
+  gap: 0.45rem;
+}
+
+.filter-sheet-grid,
+.filter-sheet .filter-controls {
+  display: grid;
+}
+
+.filter-sheet-grip {
+  width: 42px;
+  height: 5px;
+  margin: 0.15rem auto 0.25rem;
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+
+/* ----- Phone service order cards ----- */
+
+.so-card .so-number {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.due-overdue {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.text-overdue {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+/* ----- Pagination (desktop list) ----- */
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.9rem;
+  padding: 0.25rem 0.1rem;
+}
+
+.pager-status {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pager select {
+  width: auto;
+  min-height: 38px;
+  padding: 0.3rem 0.5rem;
+}
+
+/* ----- Avatars + assignee stack ----- */
+
+.avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  flex: none;
+}
+
+.avatar-contractor {
+  background: var(--waiting-bg);
+  color: var(--waiting-fg);
+}
+
+.avatar-coworker {
+  background: var(--open-bg);
+  color: var(--open-fg);
+}
+
+.avatar-user {
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+.avatar-stack {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.avatar-stack .avatar + .avatar {
+  margin-left: -7px;
+}
+
+.avatar-names {
+  font-size: 0.82rem;
+}
+
+.assignees-view .avatar-names {
+  display: block;
+  margin-top: 0.3rem;
+}
+
+/* ----- Priority badges (SPEC-v3.md 3.3: badge + text) ----- */
+
+.pill-priority {
+  border: 1px solid currentColor;
+  background: transparent;
+}
+
+.priority-none {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+}
+
+.priority-low {
+  background: var(--open-bg);
+  color: var(--open-fg);
+}
+
+.priority-medium {
+  background: var(--progress-bg);
+  color: var(--progress-fg);
+}
+
+.priority-high {
+  background: var(--waiting-bg);
+  color: var(--waiting-fg);
+}
+
+.priority-urgent {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+/* ----- Board view (SPEC-v3.md 3.4) ----- */
+
+.board {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(235px, 1fr);
+  gap: 0.75rem;
+  overflow-x: auto;
+  padding-bottom: 0.5rem;
+}
+
+.board-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+}
+
+.board-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
+}
+
+.board-col-title {
+  font-weight: 750;
+  font-size: 0.9rem;
+}
+
+.board-column.status-done .board-col-title {
+  color: var(--done-fg);
+}
+
+.board-col-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.45rem;
+  height: 1.45rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.75rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.board-list {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0 0.55rem 0.7rem;
+  min-height: 74px;
+}
+
+.board-list.is-drop-target {
+  outline: 3px dashed var(--accent);
+  outline-offset: -3px;
+  border-radius: 10px;
+}
+
+.board-card {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.6rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: grab;
+}
+
+.board-card:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.board-card.is-dragging {
+  opacity: 0.55;
+}
+
+.board-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.board-card-number {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+}
+
+.board-card-number:hover {
+  color: var(--accent-strong);
+}
+
+.board-card-title {
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: var(--text);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.board-card-title:hover {
+  color: var(--accent-strong);
+}
+
+.board-card-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.board-card-due {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.board-card-due.is-overdue {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.board-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+
+.board-move {
+  min-height: 32px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.8rem;
+  flex: none;
+}
+
+/* "Move to…" popup menu (keyboard/touch alternative to drag and drop). */
+.move-menu {
+  position: fixed;
+  z-index: 92;
+  display: grid;
+  min-width: 170px;
+  padding: 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.move-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 40px;
+  padding: 0.35rem 0.6rem;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.move-menu-item:hover:not(:disabled),
+.move-menu-item:focus-visible {
+  background: var(--surface-2);
+}
+
+.move-menu-item.is-current {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* ----- Calendar view (SPEC-v3.md 3.5) ----- */
+
+.cal-wrap {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.cal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.cal-month {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.cal-nav {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.cal-weekday {
+  padding: 0.25rem 0.3rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cal-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-height: 92px;
+  padding: 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.cal-cell.is-out {
+  background: var(--surface-3);
+  border-color: var(--border);
+}
+
+.cal-cell.is-out .cal-day,
+.cal-cell.is-out .cal-item {
+  opacity: 0.55;
+}
+
+.cal-cell.is-today {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
+.cal-day {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  background: var(--neutral-bg);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.cal-item:hover {
+  background: var(--accent-soft);
+}
+
+.cal-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-item.status-open {
+  background: var(--open-bg);
+  color: var(--open-fg);
+}
+
+.cal-item.status-in-progress {
+  background: var(--progress-bg);
+  color: var(--progress-fg);
+}
+
+.cal-item.status-waiting-parts,
+.cal-item.status-waiting-tech {
+  background: var(--waiting-bg);
+  color: var(--waiting-fg);
+}
+
+.cal-item.status-done {
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+.cal-item.is-overdue {
+  outline: 1px solid var(--danger);
+}
+
+.cal-more {
+  border: 0;
+  padding: 0.1rem 0.4rem;
+  background: none;
+  color: var(--focus);
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cal-empty-note {
+  margin: 0;
+}
+
+/* ----- Assign people picker ----- */
+
+.assignee-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.assignee-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.assignee-chip-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.assignee-add {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.assignee-add select {
+  width: 100%;
+}
+
+/* ----- Checklist editor + view ----- */
+
+.checklist-edit {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.check-edit-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.check-edit-actions {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.check-edit-actions .btn {
+  min-height: 34px;
+  padding: 0.1rem 0.4rem;
+}
+
+.check-add {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+}
+
+.checklist-view {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.check-progress {
+  margin: 0 0 0.15rem;
+}
+
+.check-view-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.check-view-item.is-done .check-view-text {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.check-box {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-top: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--done-bg);
+  color: var(--done-fg);
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.check-box.is-empty {
+  background: var(--surface);
+}
+
+/* ----- Labour editor + view ----- */
+
+.labour-edit {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.labour-add {
+  display: grid;
+  grid-template-columns: 2fr auto auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.labour-add-note {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.labour-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 0.88rem;
+}
+
+.labour-row.is-legacy {
+  background: var(--surface-3);
+}
+
+.labour-person {
+  font-weight: 650;
+}
+
+.labour-date,
+.labour-hours {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.labour-note {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.labour-view {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.labour-view .labour-row {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.labour-total {
+  margin: 0.25rem 0 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ----- Attachments grid ----- */
+
+.attach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 0.5rem;
+}
+
+.attach-grid-edit {
+  grid-template-columns: repeat(auto-fill, minmax(86px, 1fr));
+}
+
+.attach-cell {
+  position: relative;
+}
+
+.attach-thumb {
+  display: block;
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.attach-file {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  aspect-ratio: 1;
+  padding: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: center;
+  text-decoration: none;
+}
+
+.attach-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+
+.attach-file-name {
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.attach-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 24px;
+  height: 24px;
+}
+
+/* Details drawer form sections breathing room. */
+.so-form .section-title {
+  margin-top: 1.5rem;
+}
+
+.so-form .section-title:first-of-type {
+  margin-top: 0.25rem;
+}
+
+/* Split-view sidebar (list pane) keeps the new table readable. */
+.split-list .data-table [data-col="labour"],
+.split-list .data-table [data-col="category"],
+.split-list .data-table [data-col="age"] {
+  display: none;
 }

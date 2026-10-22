@@ -9,3 +9,4 @@ import './v3-server.test.js';
 import './ui.test.js';
 import './m2-shell.test.js';
 import './is-main.test.js';
+import './v3m3.test.js';

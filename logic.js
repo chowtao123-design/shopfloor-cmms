@@ -60,6 +60,18 @@ export const WORK_ORDER_KINDS = ['breakdown', 'pm', 'facility', 'install', 'othe
 // not offered any more but stays readable (server stores it as `medium`).
 export const PRIORITIES = ['none', 'low', 'medium', 'high', 'urgent'];
 export const WORK_ORDER_STATUSES = ['open', 'in-progress', 'waiting-parts', 'waiting-tech', 'done'];
+// SPEC-v3.md section 2: service order categories.
+export const WORK_ORDER_CATEGORIES = [
+  'mechanical',
+  'electrical',
+  'pneumatic',
+  'facility',
+  'safety',
+  'cleaning',
+  'other',
+];
+// SPEC-v3.md section 3 item 2: due filters for the service order list.
+export const SO_DUE_FILTERS = ['overdue', 'this-week', 'none'];
 export const PM_STATES = ['overdue', 'due-soon', 'ok'];
 
 /** Map a stored priority to its current value; legacy `normal` reads as `medium`. */
@@ -100,6 +112,20 @@ export const LABELS = {
     'waiting-parts': 'Waiting parts',
     'waiting-tech': 'Waiting tech',
     done: 'Done',
+  },
+  category: {
+    mechanical: 'Mechanical',
+    electrical: 'Electrical',
+    pneumatic: 'Pneumatic',
+    facility: 'Facility',
+    safety: 'Safety',
+    cleaning: 'Cleaning',
+    other: 'Other',
+  },
+  personKind: {
+    user: 'User',
+    coworker: 'Coworker',
+    contractor: 'Contractor',
   },
   pmState: {
     overdue: 'Overdue',
@@ -509,6 +535,147 @@ export function sortWorkOrdersNewest(workOrders) {
     const aKey = `${a.reportedAt || ''}T${a.createdAt || ''}`;
     const bKey = `${b.reportedAt || ''}T${b.createdAt || ''}`;
     return bKey.localeCompare(aKey);
+  });
+}
+
+/* ---------- Service order helpers (SPEC-v3.md sections 2 and 3) ---------- */
+
+/**
+ * "SO-0001" for a server-assigned order number, "SO-pending" for an
+ * offline-created order that has not been synced yet (SPEC-v3.md section 2).
+ */
+export function formatOrderNumber(number) {
+  const value = Number(number);
+  if (number === null || number === undefined || number === '' || !Number.isFinite(value)) {
+    return 'SO-pending';
+  }
+  return `SO-${String(Math.floor(Math.abs(value))).padStart(4, '0')}`;
+}
+
+/** Total labour hours: entries + the legacy minutesSpent / 60 (SPEC-v3.md 3). */
+export function labourTotal(order) {
+  const entries = (order && Array.isArray(order.labour) ? order.labour : []).filter(Boolean);
+  let total = 0;
+  for (const entry of entries) total += Math.max(0, Number(entry.hours) || 0);
+  total += (Number(order && order.minutesSpent) || 0) / 60;
+  return Math.round(total * 100) / 100;
+}
+
+/** "1.75 h" / "—" for labour hour displays. */
+export function formatHours(hours) {
+  const value = Number(hours);
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  const rounded = Math.round(value * 100) / 100;
+  return `${rounded} h`;
+}
+
+/**
+ * Due state used by the "due" filter: 'none' (no due date), 'overdue'
+ * (before today), 'this-week' (today through the next 7 days) or 'later'.
+ */
+export function serviceOrderDueState(order, today = todayISO()) {
+  if (!order || !order.dueDate) return 'none';
+  if (String(order.dueDate) < today) return 'overdue';
+  const days = daysBetween(today, order.dueDate);
+  if (days !== null && days >= 0 && days <= 6) return 'this-week';
+  return 'later';
+}
+
+/** Date the order was finished: completedAt, or updatedAt as a fallback. */
+export function doneDateOf(order) {
+  return (order && (order.completedAt || order.updatedAt)) || '';
+}
+
+/** Done within the last `days` days (the board's Done column, SPEC-v3.md 3.4). */
+export function isRecentDone(order, days = 7, today = todayISO()) {
+  if (!order || order.status !== 'done') return false;
+  const day = String(doneDateOf(order)).slice(0, 10);
+  if (!day) return false;
+  const from = addDays(today, -Math.max(1, Math.floor(days))) || '';
+  return day >= from && day <= today;
+}
+
+/**
+ * Default service order filters (SPEC-v3.md section 3 item 2): status not
+ * Done. Stored per device; "Clear all" returns here.
+ */
+export function defaultServiceOrderFilters() {
+  return { status: ['not-done'] };
+}
+
+function asList(value) {
+  if (value === null || value === undefined || value === '') return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function createdDayOf(order) {
+  const created = order && (order.createdAt || order.reportedAt);
+  return String(created || '').slice(0, 10);
+}
+
+/**
+ * Filter service orders (SPEC-v3.md section 3 item 2). All arrays are
+ * multi-select; single-value filters (category, machine type, machine,
+ * assignee) take a string / {kind,id}. `context` carries the machines (for
+ * machine/type lookups) and `today` (ISO date). Returns a new array.
+ *
+ * Filters: status (incl. the pseudo value 'not-done'), priority (legacy
+ * 'normal' counts as 'medium'), category, machineType (built-in `type` value
+ * or a custom type label), machine (id), assignee {kind,id}, kind,
+ * due ('overdue' | 'this-week' | 'none'), createdFrom/createdTo date range.
+ * Default filters (status not Done) apply when `filters` is null/undefined.
+ */
+export function filterServiceOrders(workOrders, filters = null, context = {}) {
+  const today = (context && context.today) || todayISO();
+  const machines = (context && context.machines) || [];
+  const machinesById = new Map(machines.map((machine) => [machine.id, machine]));
+  const effective =
+    filters && typeof filters === 'object' ? filters : defaultServiceOrderFilters();
+
+  const status = asList(effective.status);
+  const priority = asList(effective.priority);
+  const kind = asList(effective.kind);
+  const due = asList(effective.due);
+  const category = asList(effective.category);
+  const machineType = asList(effective.machineType);
+  const machineIds = asList(effective.machineId).map(String);
+  const assignee = effective.assignee || null;
+  const createdFrom = effective.createdFrom || '';
+  const createdTo = effective.createdTo || '';
+
+  return (workOrders || []).filter((order) => {
+    if (status.length > 0) {
+      const matches =
+        status.includes('not-done') && order.status !== 'done'
+          ? true
+          : status.includes(order.status);
+      if (!matches) return false;
+    }
+    if (priority.length > 0 && !priority.includes(priorityValue(order.priority))) return false;
+    if (category.length > 0 && !category.includes(order.category)) return false;
+    if (kind.length > 0 && !kind.includes(order.kind)) return false;
+    if (due.length > 0 && !due.includes(serviceOrderDueState(order, today))) return false;
+    if (machineIds.length > 0 && !machineIds.includes(String(order.machineId))) return false;
+    if (machineType.length > 0) {
+      const machine = machinesById.get(order.machineId);
+      if (!machine) return false;
+      const label = machine.type === 'other' ? machine.typeLabel : machine.type;
+      if (!machineType.includes(machine.type) && !machineType.includes(label)) return false;
+    }
+    if (assignee) {
+      const assignees = (order.assignees || []).filter(Boolean);
+      const matches = assignees.some(
+        (entry) => entry.kind === assignee.kind && entry.id === assignee.id,
+      );
+      if (!matches) return false;
+    }
+    if (createdFrom || createdTo) {
+      const day = createdDayOf(order);
+      if (!day) return false;
+      if (createdFrom && day < createdFrom) return false;
+      if (createdTo && day > createdTo) return false;
+    }
+    return true;
   });
 }
 

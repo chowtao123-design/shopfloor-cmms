@@ -229,25 +229,32 @@ and every device syncs automatically.
 
 ## App tour
 
-- **Home** – counters and a "Needs attention" list (overdue PM, urgent jobs,
-  low stock), plus a reminder chip when the last backup is 7+ days old.
-- **Jobs** – the log. Filter chips, search, one-tap status changes, and the
-  floating **+ Log repair** button for the under-60-seconds quick form.
+- **Home** – counters and a "Needs attention" list (overdue PM, urgent service
+  orders, low stock), plus a reminder chip when the last backup is 7+ days old.
+- **Service Orders** – the log. Search, filters (status, priority, category,
+  machine, assignee, kind, due date, created range) with removable chips, a
+  sortable table with pagination, and **List · Board · Calendar** views on
+  desktop. Board cards move by drag and drop or with a **Move to…** menu; the
+  calendar shows the month by due date. Phones get compact cards and the same
+  filters in a bottom sheet, and the **+ Service order** form covers
+  assignments, checklist, labour hours and photo/PDF attachments.
 - **Machines** – asset register; each machine shows full repair history, its PM
-  tasks and the parts that fit it.
+  tasks and the parts that fit it (open service orders are counted in the
+  "Open orders" column).
 - **Parts** – searchable inventory with a low-stock filter, +1/−1 stock buttons
-  and "used on work orders" per part. Parts used on a job are deducted from
-  stock when the job is marked **Done** (exactly once, even if it is reopened
-  and closed again).
+  and "used on service orders" per part. Parts used on a service order are
+  deducted from stock when it is marked **Done** (exactly once, even if it is
+  reopened and closed again).
 - **PM** – grouped Overdue / Due soon / Upcoming; **Mark done** logs a completed
-  PM work order and reschedules the task.
+  PM service order and reschedules the task.
 
 ## Decisions
 
 Choices made where SPEC.md was silent or ambiguous:
 
-1. **Jobs default filter** is "All open" (everything not done). The "Waiting"
-   chip combines `waiting-parts` and `waiting-tech`, matching Home's counter.
+1. **Service order default filter** is "Not done" (everything not done); the
+   Home "Waiting" link combines `waiting-parts` and `waiting-tech`. Filter
+   state is stored per device and "Clear all" returns to the default.
 2. **Quick-log machine picker** is a type-to-search input (datalist) with
    recently-used machines first, rather than a plain `<select>` — faster with
    one hand. An exact or unique partial match is accepted.
@@ -255,10 +262,10 @@ Choices made where SPEC.md was silent or ambiguous:
    load path says "example data" in the confirm/toast. Record names themselves
    are realistic and not prefixed, so the trial feels like a real shop; loading
    twice is safe (fixed ids just overwrite).
-4. **Done-job stock edits**: stock is deducted exactly once per spec rule 4
-   (flagged with `stockDeducted`). Editing `partsUsed` on a job that is already
-   done does not re-adjust stock; reopen the job once if the quantities need to
-   be redone.
+4. **Done-order stock edits**: stock is deducted exactly once per spec rule 4
+   (flagged with `stockDeducted`). Editing `partsUsed` on a service order that
+   is already done does not re-adjust stock; reopen it once if the quantities
+   need to be redone.
 5. **Backup reminder** also says "No backup yet" the first time the device has
    data but no export, and only once data exists (an empty shop is not nagged).
 6. **Deleting a machine** keeps its work orders and PM history in the log; their

@@ -12,7 +12,7 @@ import {
   toServerData,
 } from './logic-sync.js';
 
-const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks'];
+const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors'];
 const PULL_INTERVAL_MS = 30000;
 const PULL_PAGE_LIMIT = 500;
 const MAX_PULL_PAGES = 200;
@@ -342,6 +342,10 @@ export async function push() {
       // Entries enqueued while this push ran flush right away.
       if (remaining.length > 0) schedulePush();
     }
+    // Pushed records were applied to the local store by the push itself
+    // (with server version/number/updatedBy); the page refreshes like after
+    // a pull so e.g. an order's SO number replaces "SO-pending".
+    if (applied > 0 && stopped !== 'login') dispatch('sync-applied', { applied });
     if (applied > 0 && stopped !== 'login') schedulePull();
     return { ok: stopped === null, applied };
   } finally {

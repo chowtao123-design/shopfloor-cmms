@@ -7,6 +7,8 @@ import {
   MACHINE_TYPE_GROUPS,
   MACHINE_TYPES,
   PRIORITIES,
+  SO_DUE_FILTERS,
+  WORK_ORDER_CATEGORIES,
   WORK_ORDER_KINDS,
   WORK_ORDER_STATUSES,
   applyWorkOrderSave,
@@ -16,13 +18,19 @@ import {
   compactSyncLabel,
   dashboardCounts,
   daysBetween,
+  defaultServiceOrderFilters,
+  filterServiceOrders,
   filterWorkOrders,
   formatDate,
+  formatHours,
+  formatOrderNumber,
   formatPartsUsed,
   groupPMTasks,
   initialsOf,
   isISODate,
   isLowStock,
+  isRecentDone,
+  labourTotal,
   machineTypeLabel,
   needsAttention,
   openBreakdownCount,
@@ -30,8 +38,10 @@ import {
   pmDueDate,
   pmPaused,
   pmState,
+  priorityValue,
   searchParts,
   searchWorkOrders,
+  serviceOrderDueState,
   shouldOfferMachineDown,
   shouldOfferMachineRunning,
   sortRows,
@@ -79,6 +89,9 @@ const state = {
   parts: [],
   workOrders: [],
   pmTasks: [],
+  // v3 people stores (SPEC-v3.md section 5; synced since M3 for the form).
+  coworkers: [],
+  contractors: [],
 };
 
 let fieldCounter = 0;
@@ -252,16 +265,20 @@ function setTitle(title) {
 }
 
 async function refreshState() {
-  const [machines, parts, workOrders, pmTasks] = await Promise.all([
+  const [machines, parts, workOrders, pmTasks, coworkers, contractors] = await Promise.all([
     db.getAll('machines'),
     db.getAll('parts'),
     db.getAll('workOrders'),
     db.getAll('pmTasks'),
+    db.getAll('coworkers'),
+    db.getAll('contractors'),
   ]);
   state.machines = machines;
   state.parts = parts;
   state.workOrders = workOrders;
   state.pmTasks = pmTasks;
+  state.coworkers = coworkers;
+  state.contractors = contractors;
 }
 
 function routeInfo() {
@@ -304,6 +321,95 @@ function pmTaskById(id) {
 function machineName(id) {
   const machine = machineById(id);
   return machine ? machine.name : 'Unknown machine';
+}
+
+function coworkerById(id) {
+  return state.coworkers.find((coworker) => coworker.id === id);
+}
+
+function contractorById(id) {
+  return state.contractors.find((contractor) => contractor.id === id);
+}
+
+function teamUserById(id) {
+  return teamUsers.find((user) => user && user.id === id);
+}
+
+/** Display name of an assignee / labour person {kind, id} (SPEC-v3.md 2). */
+function personName(entry) {
+  if (!entry || !entry.id) return '';
+  if (entry.kind === 'coworker') {
+    const coworker = coworkerById(entry.id);
+    return coworker ? coworker.name : 'Coworker';
+  }
+  if (entry.kind === 'contractor') {
+    const contractor = contractorById(entry.id);
+    if (contractor) return contractor.contactName ? `${contractor.company} (${contractor.contactName})` : contractor.company;
+    return 'Contractor';
+  }
+  if (entry.kind === 'user') {
+    const user = teamUserById(entry.id);
+    return user ? user.displayName : 'User';
+  }
+  return '';
+}
+
+/** Round initials avatar with the full name in `title` (SPEC-v3.md 3.3). */
+function personAvatar(name, kind = '') {
+  const text = String(name || '');
+  return h(
+    'span',
+    { class: `avatar avatar-${kind || 'none'}`, 'aria-hidden': 'true', title: text },
+    initialsOf(text) || '··',
+  );
+}
+
+/** Assignee visuals: stacked avatars + names in title attributes. */
+function assigneeAvatars(assignees = [], { showNames = false } = {}) {
+  const entries = (assignees || []).filter(Boolean).slice(0, 10);
+  if (entries.length === 0) return h('span', { class: 'muted' }, 'Unassigned');
+  const names = entries.map((entry) => personName(entry) || 'Unknown');
+  const wrap = h(
+    'span',
+    { class: 'avatar-stack', title: names.join(', ') },
+    ...entries.map((entry) => personAvatar(personName(entry), entry.kind)),
+  );
+  return showNames ? [wrap, h('span', { class: 'avatar-names muted' }, names.join(', '))] : wrap;
+}
+
+/** Coloured priority badge (SPEC-v3.md 3.3: badge + text). */
+function priorityBadge(priority) {
+  const value = priorityValue(priority) || 'medium';
+  const label = LABELS.priority[priority] || LABELS.priority[value] || priority;
+  return h('span', { class: `pill pill-priority priority-${value}` }, label);
+}
+
+/** Selectable people for the Assign section and filters (SPEC-v3.md 3.6). */
+function assignablePeople() {
+  const people = [];
+  for (const coworker of state.coworkers) {
+    if (coworker && coworker.active === false) continue;
+    people.push({
+      kind: 'coworker',
+      id: coworker.id,
+      name: coworker.name,
+      sub: coworker.role || LABELS.personKind.coworker,
+    });
+  }
+  for (const contractor of state.contractors) {
+    if (contractor && contractor.active === false) continue;
+    people.push({
+      kind: 'contractor',
+      id: contractor.id,
+      name: contractor.company,
+      sub: contractor.trade || LABELS.personKind.contractor,
+    });
+  }
+  for (const user of teamUsers) {
+    if (!user || user.disabled) continue;
+    people.push({ kind: 'user', id: user.id, name: user.displayName, sub: LABELS.personKind.user });
+  }
+  return people.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
 
 function statusPill(status, labels) {
@@ -785,29 +891,11 @@ function editedByColumn() {
   };
 }
 
+/* Service order card row (phone lists, machine history): number, priority
+   badge, status, machine, due (SPEC-v3.md section 3 item 7; soPhoneCard does
+   the work, this keeps the machine-history call site). */
 function jobRow(order) {
-  return h(
-    'a',
-    { class: 'row', href: `#/jobs/${encodeURIComponent(order.id)}` },
-    h(
-      'div',
-      { class: 'row-main' },
-      h('div', { class: 'row-title' }, order.title),
-      h(
-        'div',
-        { class: 'row-sub' },
-        `${machineName(order.machineId)} · ${formatDate(order.reportedAt)}`,
-        editedTag(order),
-      ),
-    ),
-    h(
-      'div',
-      { class: 'row-side' },
-      statusPill(order.status, LABELS.status),
-      h('span', {}, formatAge(workOrderAgeDays(order))),
-    ),
-    h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
-  );
+  return soPhoneCard(order);
 }
 
 function machineRow(machine) {
@@ -956,25 +1044,62 @@ function jobsTableColumns() {
   const today = todayISO();
   return [
     {
+      key: 'number',
+      label: 'Number',
+      value: (order) => formatOrderNumber(order.number),
+      sortValue: (order) => {
+        const value = Number(order.number);
+        return Number.isFinite(value) ? Math.floor(value) : null;
+      },
+      cell: (order) => h('span', { class: 'so-number' }, formatOrderNumber(order.number)),
+    },
+    {
       key: 'status',
       label: 'Status',
       value: (order) => LABELS.status[order.status] || order.status,
       cell: (order) => statusPill(order.status, LABELS.status),
     },
     { key: 'title', label: 'Title', value: (order) => order.title },
-    { key: 'machine', label: 'Machine', value: (order) => machineName(order.machineId) },
-    { key: 'kind', label: 'Kind', value: (order) => LABELS.kind[order.kind] || order.kind },
     {
       key: 'priority',
       label: 'Priority',
       value: (order) => LABELS.priority[order.priority] || order.priority,
-      sortValue: (order) => PRIORITIES.indexOf(order.priority),
+      cell: (order) => priorityBadge(order.priority),
+      sortValue: (order) => PRIORITIES.indexOf(priorityValue(order.priority)),
+    },
+    { key: 'machine', label: 'Machine', value: (order) => machineName(order.machineId) },
+    {
+      key: 'category',
+      label: 'Category',
+      value: (order) => (order.category ? LABELS.category[order.category] || order.category : '—'),
     },
     {
-      key: 'reported',
-      label: 'Reported',
-      value: (order) => formatDate(order.reportedAt),
-      sortValue: (order) => order.reportedAt,
+      key: 'assignedTo',
+      label: 'Assigned to',
+      value: (order) => {
+        const names = (order.assignees || []).filter(Boolean).map((entry) => personName(entry));
+        return names.length > 0 ? names.join(', ') : 'Unassigned';
+      },
+      cell: (order) =>
+        (order.assignees || []).filter(Boolean).length === 0
+          ? h('span', { class: 'muted' }, 'Unassigned')
+          : assigneeAvatars(order.assignees),
+      sortValue: (order) => {
+        const names = (order.assignees || []).filter(Boolean).map((entry) => personName(entry));
+        return names.length > 0 ? names.join(', ') : '';
+      },
+    },
+    {
+      key: 'due',
+      label: 'Due',
+      value: (order) => orderDueParts(order, today).text,
+      sortValue: (order) => (order.dueDate ? String(order.dueDate) : ''),
+      cell: (order) => {
+        const due = orderDueParts(order, today);
+        return due.text
+          ? [h('span', { class: due.overdue ? 'text-overdue' : '' }, due.text)]
+          : h('span', { class: 'muted' }, '—');
+      },
     },
     {
       key: 'age',
@@ -983,10 +1108,10 @@ function jobsTableColumns() {
       sortValue: (order) => workOrderAgeDays(order, today),
     },
     {
-      key: 'downtime',
-      label: 'Downtime',
-      value: (order) => `${toInteger(order.downtimeMinutes)} min`,
-      sortValue: (order) => toInteger(order.downtimeMinutes),
+      key: 'labour',
+      label: 'Labour h',
+      value: (order) => formatHours(labourTotal(order)),
+      sortValue: (order) => labourTotal(order),
     },
     editedByColumn(),
   ];
@@ -1019,7 +1144,7 @@ function machinesTableColumns() {
     },
     {
       key: 'openJobs',
-      label: 'Open jobs',
+      label: 'Open orders',
       value: (machine) => String(openJobCount(state.workOrders, machine.id)),
       sortValue: (machine) => openJobCount(state.workOrders, machine.id),
     },
@@ -1062,85 +1187,1129 @@ function partsTableColumns() {
   ];
 }
 
-/* ---------- Work orders ---------- */
+/* ---------- Service order filters (SPEC-v3.md section 3 item 2) ----------
+   Filter state is kept per device in localStorage ("Clear all" returns to
+   the default: status not Done). The panel/sheet builders below return the
+   same controls for the desktop popover and the phone bottom sheet. */
+
+const SO_FILTERS_KEY = 'maint-log:so-filters';
+const SO_VIEW_KEY = 'maint-log:so-view';
+const SO_PAGE_SIZE_KEY = 'maint-log:so-page-size';
+
+const SO_STATUS_OPTIONS = ['not-done', ...WORK_ORDER_STATUSES];
+const SO_STATUS_LABELS = { ...LABELS.status, 'not-done': 'Not done' };
+const SO_DUE_LABELS = {
+  overdue: 'Overdue',
+  'this-week': 'Due this week',
+  none: 'No due date',
+};
+const SO_KIND_LABELS = {
+  ...LABELS.kind,
+  pm: 'PM',
+};
+const SO_CREATED_MAX = '2100-01-01';
+
+/** Fresh set of the default filters (never a shared object). */
+function initialSOFilters() {
+  return normalizeSOFilters(defaultServiceOrderFilters());
+}
+
+/** Keep only known filter keys with well-formed values. */
+function normalizeSOFilters(raw) {
+  const filters = raw && typeof raw === 'object' ? raw : {};
+  const list = (value, allowed) =>
+    Array.isArray(value)
+      ? value.map((item) => String(item)).filter((item) => allowed.includes(item))
+      : [];
+  const single = (value, allowed) => {
+    const text = typeof value === 'string' ? value : '';
+    return text && allowed.includes(text) ? text : '';
+  };
+  const dateOrEmpty = (value) => (isISODate(value) ? value : '');
+  const assignee = filters.assignee;
+  return {
+    status: list(filters.status, SO_STATUS_OPTIONS),
+    priority: list(filters.priority, PRIORITIES),
+    category: single(filters.category, WORK_ORDER_CATEGORIES),
+    machineType: typeof filters.machineType === 'string' ? filters.machineType : '',
+    machineId: typeof filters.machineId === 'string' ? filters.machineId : '',
+    assignee:
+      assignee && typeof assignee === 'object' && typeof assignee.kind === 'string'
+        ? { kind: assignee.kind, id: String(assignee.id || '') }
+        : null,
+    kind: list(filters.kind, WORK_ORDER_KINDS),
+    due: list(filters.due, SO_DUE_FILTERS),
+    createdFrom: dateOrEmpty(filters.createdFrom),
+    createdTo: dateOrEmpty(filters.createdTo),
+  };
+}
+
+/** Load the per-device filter state; absent/corrupt storage falls back. */
+function loadSOFilters() {
+  const raw = storageGet(SO_FILTERS_KEY);
+  if (!raw) return initialSOFilters();
+  try {
+    return normalizeSOFilters(JSON.parse(raw));
+  } catch (error) {
+    console.warn('Ignoring invalid saved service order filters:', error);
+    return initialSOFilters();
+  }
+}
+
+function saveSOFilters(filters) {
+  try {
+    storageSet(SO_FILTERS_KEY, JSON.stringify(filters));
+  } catch {
+    // Storage can be unavailable in private browsing; filters still apply.
+  }
+}
+
+/** True when the saved filters equal the default set (status not done only). */
+function isDefaultSOFilters(filters) {
+  return JSON.stringify(filters) === JSON.stringify(initialSOFilters());
+}
+
+/** Chips for the active filters ("removable", SPEC-v3.md section 3 item 2). */
+function soFilterChips(filters, machines = []) {
+  const chips = [];
+  const push = (key, value, label) => chips.push({ key, value, label });
+  for (const value of filters.status) push('status', value, SO_STATUS_LABELS[value] || value);
+  for (const value of filters.priority) push('priority', value, LABELS.priority[value] || value);
+  for (const value of filters.kind) push('kind', value, SO_KIND_LABELS[value] || value);
+  for (const value of filters.due) push('due', value, SO_DUE_LABELS[value] || value);
+  if (filters.category) push('category', filters.category, LABELS.category[filters.category] || filters.category);
+  if (filters.machineType) {
+    const machine = machines.find((item) => {
+      const label = item.type === 'other' ? item.typeLabel : item.type;
+      return label === filters.machineType || item.type === filters.machineType;
+    });
+    push(
+      'machineType',
+      filters.machineType,
+      (machine && machineTypeLabel(machine)) || filters.machineType,
+    );
+  }
+  if (filters.machineId) {
+    const machine = machines.find((item) => item.id === filters.machineId);
+    push('machine', filters.machineId, machine ? machine.name : 'Unknown machine');
+  }
+  if (filters.assignee) {
+    const name = personName(filters.assignee) || 'Unknown';
+    const kind =
+      filters.assignee.kind === 'coworker'
+        ? 'Coworker'
+        : filters.assignee.kind === 'contractor'
+          ? 'Contractor'
+          : 'User';
+    push('assignee', filters.assignee, `${name} · ${kind}`);
+  }
+  if (filters.createdFrom || filters.createdTo) {
+    const from = filters.createdFrom || '…';
+    const to = filters.createdTo || '…';
+    push('created', `${from}…${to}`, `Created ${from} → ${to}`);
+  }
+  return chips;
+}
+
+/** Machine type options for the filter select: built-ins in use + customs. */
+function soMachineTypeOptions(machines = []) {
+  const options = [];
+  const seen = new Set();
+  for (const machine of machines) {
+    const label = machine.type === 'other' ? machine.typeLabel : machine.type;
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    options.push(label);
+  }
+  return options.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+/* The current view keeps its own refresh hook so applying filters or moving
+   a card does not wipe other page state (search text, board scroll). */
+let soRefresh = null;
+
+function removeSOFilterValue(filters, key, value) {
+  const next = { ...filters };
+  if (Array.isArray(next[key])) {
+    next[key] = next[key].filter((item) => item !== value);
+  } else if (key === 'assignee') {
+    next.assignee = null;
+  } else if (key === 'created') {
+    next.createdFrom = '';
+    next.createdTo = '';
+  } else {
+    next[key] = '';
+  }
+  saveSOFilters(next);
+  return next;
+}
+
+/* ----- Desktop filter popover + phone filter bottom sheet ----- */
+
+let soFilterHost = null;
+let soFilterRouteCleanup = null;
+
+function closeSOFiltersPanel() {
+  if (!soFilterHost) return;
+  const host = soFilterHost;
+  soFilterHost = null;
+  document.removeEventListener('keydown', onSOFilterKey);
+  if (soFilterRouteCleanup) {
+    window.removeEventListener('hashchange', soFilterRouteCleanup);
+    soFilterRouteCleanup = null;
+  }
+  host.remove();
+  if (soFiltersPreviousFocus && document.contains(soFiltersPreviousFocus)) {
+    soFiltersPreviousFocus.focus();
+  }
+}
+
+let soFiltersPreviousFocus = null;
+
+function onSOFilterKey(event) {
+  if (!soFilterHost) return;
+  if (event.key === 'Escape') {
+    if (dialogRoot.childElementCount > 0) return;
+    event.preventDefault();
+    closeSOFiltersPanel();
+  } else if (event.key === 'Tab') {
+    const sheet = soFilterHost.querySelector('.filter-sheet');
+    if (sheet) trapTabKey(sheet, event);
+  }
+}
+
+/** Toggle-chip group for multi-select filters (status, priority, kind, due). */
+function soToggleGroup({ legend, values, active, onToggle }) {
+  return h(
+    'fieldset',
+    { class: 'filter-group' },
+    h('legend', {}, legend),
+    h(
+      'div',
+      { class: 'chips filter-chips', role: 'group', 'aria-label': legend },
+      ...values.map((value) => {
+        const pressed = active.includes(value);
+        return h(
+          'button',
+          {
+            type: 'button',
+            class: `chip chip-toggle${pressed ? ' is-active' : ''}`,
+            'aria-pressed': pressed ? 'true' : 'false',
+            onclick: () => onToggle(value),
+          },
+          pressed ? h('span', { class: 'tick', 'aria-hidden': 'true' }, '✓ ') : null,
+          value === 'not-done' ? 'Not done' : SO_STATUS_LABELS[value] || LABELS.priority[value] || SO_KIND_LABELS[value] || SO_DUE_LABELS[value] || value,
+        );
+      }),
+    ),
+  );
+}
+
+/** The filter controls shared by the popover and the bottom sheet. */
+function buildSOFilterControls(working, { machines = [] } = {}) {
+  const toggle = (key) => (value) => {
+    const values = working[key].includes(value)
+      ? working[key].filter((item) => item !== value)
+      : [...working[key], value];
+    working[key] = values;
+    rebuild();
+  };
+
+  let controlsHost = null;
+  const rebuild = () => {
+    if (!controlsHost) return;
+    controlsHost.replaceChildren(...buildControls());
+  };
+
+  const categorySelect = h('select', {}, (() => {
+    const nodes = [h('option', { value: '' }, 'Any category')];
+    for (const value of WORK_ORDER_CATEGORIES) {
+      const option = h('option', { value }, LABELS.category[value]);
+      if (value === working.category) option.selected = true;
+      nodes.push(option);
+    }
+    return nodes;
+  })());
+  const machineTypeSelect = h(
+    'select',
+    {},
+    ...(() => {
+      const nodes = [];
+      const typeOptions = soMachineTypeOptions(machines);
+      if (working.machineType && !typeOptions.includes(working.machineType)) {
+        typeOptions.push(working.machineType);
+      }
+      nodes.push(h('option', { value: '' }, 'Any type'));
+      for (const label of typeOptions) {
+        const option = h('option', { value: label }, label);
+        if (label === working.machineType) option.selected = true;
+        nodes.push(option);
+      }
+      return nodes;
+    })(),
+  );
+  const machineSelect = h('select', {}, (() => {
+    const nodes = [h('option', { value: '' }, 'Any machine')];
+    for (const machine of machines) {
+      const option = h('option', { value: machine.id }, machine.name);
+      if (machine.id === working.machineId) option.selected = true;
+      nodes.push(option);
+    }
+    return nodes;
+  })());
+  const assigneeSelect = h('select', {}, (() => {
+    const nodes = [h('option', { value: '' }, 'Anyone')];
+    const people = assignablePeople();
+    for (const person of people) {
+      const value = `${person.kind}:${person.id}`;
+      const option = h('option', { value }, `${person.name} · ${person.sub}`);
+      const current = working.assignee ? `${working.assignee.kind}:${working.assignee.id}` : '';
+      if (value === current) option.selected = true;
+      nodes.push(option);
+    }
+    return nodes;
+  })());
+  const createdFromInput = h('input', { type: 'date', value: working.createdFrom, max: SO_CREATED_MAX });
+  const createdToInput = h('input', { type: 'date', value: working.createdTo, max: SO_CREATED_MAX });
+
+  categorySelect.addEventListener('change', () => {
+    working.category = categorySelect.value;
+  });
+  machineTypeSelect.addEventListener('change', () => {
+    working.machineType = machineTypeSelect.value;
+  });
+  machineSelect.addEventListener('change', () => {
+    working.machineId = machineSelect.value;
+  });
+  assigneeSelect.addEventListener('change', () => {
+    const raw = assigneeSelect.value;
+    working.assignee = raw ? { kind: raw.split(':')[0], id: raw.split(':')[1] } : null;
+  });
+  createdFromInput.addEventListener('change', () => {
+    working.createdFrom = createdFromInput.value || '';
+  });
+  createdToInput.addEventListener('change', () => {
+    working.createdTo = createdToInput.value || '';
+  });
+
+  const applyButton = h('button', { class: 'btn btn-primary btn-small', type: 'button' }, 'Apply');
+  const resetButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Reset');
+  const peopleEmpty = assignablePeople().length === 0;
+
+  function buildControls() {
+    return [
+      soToggleGroup({ legend: 'Status', values: SO_STATUS_OPTIONS, active: working.status, onToggle: toggle('status') }),
+      soToggleGroup({ legend: 'Priority', values: PRIORITIES, active: working.priority, onToggle: toggle('priority') }),
+      soToggleGroup({ legend: 'Kind', values: WORK_ORDER_KINDS, active: working.kind, onToggle: toggle('kind') }),
+      soToggleGroup({ legend: 'Due', values: SO_DUE_FILTERS, active: working.due, onToggle: toggle('due') }),
+      h(
+        'div',
+        { class: 'grid-2 filter-selects' },
+        field('Category', categorySelect),
+        field('Machine type', machineTypeSelect),
+        field('Machine', machineSelect),
+        field('Assignee', assigneeSelect),
+      ),
+      h(
+        'div',
+        { class: 'grid-2 filter-selects' },
+        field('Created from', createdFromInput),
+        field('Created to', createdToInput),
+      ),
+      h(
+        'div',
+        { class: 'form-actions filter-actions' },
+        resetButton,
+        applyButton,
+      ),
+      peopleEmpty
+        ? h('p', { class: 'field-hint' }, 'No coworkers yet - add them in People.')
+        : null,
+    ];
+  }
+
+  applyButton.addEventListener('click', () => {
+    saveSOFilters(normalizeSOFilters(working));
+    closeSOFiltersPanel();
+    if (typeof soRefresh === 'function') soRefresh();
+  });
+  resetButton.addEventListener('click', () => {
+    Object.assign(working, initialSOFilters());
+    categorySelect.value = '';
+    machineTypeSelect.value = '';
+    machineSelect.value = '';
+    assigneeSelect.value = '';
+    createdFromInput.value = '';
+    createdToInput.value = '';
+    rebuild();
+  });
+
+  const fragment = document.createDocumentFragment();
+  controlsHost = h('div', { class: 'filter-controls' }, ...buildControls());
+  fragment.append(controlsHost);
+  return fragment;
+}
+
+/* Open the filter controls: a popover on desktop, a bottom sheet on phone. */
+function openSOFiltersPanel() {
+  if (soFilterHost) {
+    closeSOFiltersPanel();
+    return;
+  }
+  closeUserMenu();
+  soFiltersPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const working = loadSOFilters();
+  const machines = state.machines;
+  let host;
+  if (phoneMedia.matches) {
+    // Phone: a bottom sheet with the same filters (SPEC-v3.md 3.7).
+    const backdrop = h('div', { class: 'sheet-backdrop' });
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) closeSOFiltersPanel();
+    });
+    const sheetHost = h(
+      'section',
+      { class: 'sheet filter-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Filter service orders' },
+      h('div', { class: 'filter-sheet-grip', 'aria-hidden': 'true' }),
+      h('h2', { class: 'sheet-title' }, 'Filters'),
+      buildSOFilterControls(working, { machines }),
+    );
+    soFilterHost = h('div', { class: 'filter-host-wrap' }, backdrop, sheetHost);
+    document.body.append(soFilterHost);
+    host = sheetHost;
+  } else {
+    // Desktop: a popover panel anchored under the Filters button.
+    const anchor = document.getElementById('so-filters-button');
+    host = h(
+      'div',
+      { class: 'filter-popover', role: 'dialog', 'aria-label': 'Filter service orders' },
+      h('h2', { class: 'filter-popover-title' }, 'Filters'),
+      buildSOFilterControls(working, { machines }),
+    );
+    soFilterHost = host;
+    document.body.append(host);
+    const rect = anchor ? anchor.getBoundingClientRect() : { right: 16, bottom: 80 };
+    const viewportWidth = document.documentElement.clientWidth;
+    host.style.top = `${Math.round(rect.bottom + 8)}px`;
+    host.style.right = `${Math.max(8, Math.round(viewportWidth - rect.right))}px`;
+  }
+  document.addEventListener('keydown', onSOFilterKey);
+  // Leaving the page closes the panel (the chosen route renders fresh).
+  soFilterRouteCleanup = () => closeSOFiltersPanel();
+  window.addEventListener('hashchange', soFilterRouteCleanup, { once: true });
+  const focusables = focusableElements(host);
+  if (focusables.length > 0) focusables[0].focus();
+}
+/* ---------- Service orders: list, board and calendar (SPEC-v3.md §3) ---------- */
+
+const SO_VIEWS = ['list', 'board', 'calendar'];
+const SO_VIEW_LABELS = { list: 'List', board: 'Board', calendar: 'Calendar' };
+const SO_PAGE_SIZES = [25, 50, 100];
+
+/** Change a service order's status through the normal save path
+    (persistWorkOrderSave). Shared by the detail buttons, the board's drag
+    and drop and each card's "Move to…" menu (SPEC-v3.md 3.4). */
+async function changeOrderStatus(order, status) {
+  if (!order || status === order.status) return null;
+  const wasDone = order.status === 'done';
+  const result = await persistWorkOrderSave(order, { ...order, status }, {});
+  if (shouldOfferMachineDown(result.order)) {
+    const machine = machineById(result.order.machineId);
+    if (machine && machine.status === 'running') {
+      const yes = await showConfirm({
+        title: 'Set machine to Down?',
+        message: `${machine.name} is still on an open breakdown.`,
+        confirmText: 'Set Down',
+        cancelText: 'Leave Running',
+      });
+      if (yes) {
+        await sync.saveRecord(
+          'machines',
+          { ...machine, status: 'down', updatedAt: nowISO() },
+          machine.version,
+        );
+        await refreshState();
+      }
+    }
+  }
+  await maybeOfferRunning(result.order, wasDone);
+  toast(`Status changed to ${LABELS.status[status]}.`);
+  return result.order;
+}
+
+function currentSOView() {
+  const stored = storageGet(SO_VIEW_KEY);
+  return SO_VIEWS.includes(stored) ? stored : 'list';
+}
+
+function loadSOPageSize() {
+  const stored = Number(storageGet(SO_PAGE_SIZE_KEY));
+  return SO_PAGE_SIZES.includes(stored) ? stored : 25;
+}
+
+/**
+ * Deep links from Home keep their meaning: `waiting`, a concrete status or
+ * `all` become a one-off filter set for this render (not saved per device).
+ */
+function soRouteFilters(value) {
+  if (value === 'waiting') {
+    return normalizeSOFilters({ status: ['waiting-parts', 'waiting-tech'] });
+  }
+  if (WORK_ORDER_STATUSES.includes(value)) {
+    return normalizeSOFilters({ status: [value] });
+  }
+  if (value === 'all') {
+    return normalizeSOFilters({});
+  }
+  return null;
+}
+
+/** Due date label, red ("overdue") styling via the caller (SPEC-v3.md 3.3). */
+function orderDueParts(order, today = todayISO()) {
+  if (!order || !order.dueDate) {
+    return { text: 'No due date', overdue: false, sort: '' };
+  }
+  return {
+    text: `Due ${formatDate(order.dueDate)}`,
+    overdue: serviceOrderDueState(order, today) === 'overdue',
+    sort: String(order.dueDate),
+  };
+}
+
+function soPhoneCard(order) {
+  const today = todayISO();
+  const due = orderDueParts(order, today);
+  return h(
+    'a',
+    { class: 'row so-card', href: `#/jobs/${encodeURIComponent(order.id)}` },
+    h(
+      'div',
+      { class: 'row-main' },
+      h('div', { class: 'row-title' }, order.title),
+      h(
+        'div',
+        { class: 'row-sub' },
+        h('span', { class: 'so-number' }, formatOrderNumber(order.number)),
+        ` · ${machineName(order.machineId)}`,
+        due.text
+          ? h(
+              'span',
+              { class: due.overdue ? 'due-overdue' : 'due-soon-none' },
+              ` · ${due.text}`,
+            )
+          : null,
+      ),
+      editedTag(order),
+    ),
+    h(
+      'div',
+      { class: 'row-side' },
+      statusPill(order.status, LABELS.status),
+      priorityBadge(order.priority),
+    ),
+    h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+  );
+}
 
 function renderJobs(route) {
   setTitle('Service Orders');
-  const requested = route.params.get('filter') || route.params.get('status') || 'active';
-  const filter = ['active', 'all', ...WORK_ORDER_STATUSES, 'waiting'].includes(requested)
-    ? requested
-    : 'active';
-  const listHost = h('div', { class: 'list' });
-  const tableHost = h('div', { class: 'table-wrap' });
+  const desktop = desktopMedia.matches;
+  let currentView = desktop ? currentSOView() : 'list';
+  let pageSize = loadSOPageSize();
+  let pageIndex = 0;
   let searchQuery = '';
+  /* Deep links from Home become the saved filter state for this device;
+     chips/panel/Clear all then operate on that saved state. */
+  const routeFilters = soRouteFilters(route.params.get('filter') || route.params.get('status'));
+  if (routeFilters) saveSOFilters(routeFilters);
+  let filters = loadSOFilters();
 
-  function update(nextQuery) {
-    if (typeof nextQuery === 'string') searchQuery = nextQuery;
-    let orders = filterWorkOrders(state.workOrders, filter);
+  const tableHost = h('div', { class: 'table-wrap' });
+  const chipsHost = h('div', { class: 'so-chips-host' });
+  const bodyHost = h('div', { class: `so-body so-body-${currentView}` });
+
+  function applyFilters(next) {
+    saveSOFilters(normalizeSOFilters(next));
+    pageIndex = 0;
+    build();
+  }
+
+  /* The board assigns columns by status, so the status filter does not hide
+     cards there (the Done column itself means "finished last 7 days"). */
+  function filteredOrders({ ignoreStatus = false } = {}) {
+    const effective = ignoreStatus ? { ...filters, status: [] } : filters;
+    let orders = filterServiceOrders(state.workOrders, effective, {
+      machines: state.machines,
+      today: todayISO(),
+    });
     if (searchQuery.trim()) orders = searchWorkOrders(orders, searchQuery, state.machines);
-    orders = sortWorkOrdersNewest(orders);
-    if (orders.length === 0) {
-      listHost.replaceChildren(
-        emptyState(
-          searchQuery.trim() ? 'No matching service orders' : 'No service orders here',
-          searchQuery.trim()
-            ? 'Try a different search.'
-            : 'Log a repair to keep track of what is open.',
-          filter === 'active' ? [h('a', { class: 'btn btn-primary', href: '#/jobs/new' }, '+ Service order')] : [],
+    return sortWorkOrdersNewest(orders);
+  }
+
+  /* Removable chips above the table + "Clear all" back to the default
+     (status not Done, SPEC-v3.md section 3 item 2). */
+  function soChipsRow() {
+    const chips = soFilterChips(filters, state.machines);
+    if (chips.length === 0) return [];
+    const renderChip = (chip) =>
+      h(
+        'span',
+        { class: 'filter-chip' },
+        h('span', { class: 'filter-chip-label' }, chip.label),
+        h(
+          'button',
+          {
+            class: 'filter-chip-x',
+            type: 'button',
+            'aria-label': `Remove filter: ${chip.label}`,
+            onclick: () => {
+              // removeSOFilterValue persists the change; build reloads it.
+              removeSOFilterValue(filters, chip.key, chip.value);
+              pageIndex = 0;
+              build();
+            },
+          },
+          '×',
         ),
       );
-      listHost.classList.remove('cards-only');
-      tableHost.replaceChildren();
-    } else {
-      listHost.replaceChildren(...orders.map(jobRow));
-      listHost.classList.add('cards-only');
+    const clearAll = h(
+      'button',
+      {
+        class: 'clear-all',
+        type: 'button',
+        onclick: () => applyFilters(initialSOFilters()),
+      },
+      'Clear all',
+    );
+    return [
+      h(
+        'div',
+        { class: 'so-chips', role: 'group', 'aria-label': 'Active service order filters' },
+        ...chips.map(renderChip),
+        clearAll,
+      ),
+    ];
+  }
+
+  /* View switch — desktop only (SPEC-v3.md section 3 item 1). */
+  const viewSwitch = h(
+    'div',
+    { class: 'view-switch', role: 'group', 'aria-label': 'Service orders view' },
+    ...SO_VIEWS.map((value) =>
+      h(
+        'button',
+        {
+          class: `view-switch-btn${value === currentView ? ' is-active' : ''}`,
+          type: 'button',
+          'aria-pressed': value === currentView ? 'true' : 'false',
+          onclick: () => {
+            currentView = value;
+            saveSOView(value);
+            pageIndex = 0;
+            build();
+          },
+        },
+        SO_VIEW_LABELS[value],
+      ),
+    ),
+  );
+
+  const filtersButton = h(
+    'button',
+    { class: 'btn btn-small', type: 'button', id: 'so-filters-button', onclick: () => openSOFiltersPanel() },
+    'Filters',
+  );
+
+  function pagerBar(totalRows) {
+    if (!desktop || totalRows === 0) return null;
+    const from = pageIndex * pageSize + 1;
+    const to = Math.min(totalRows, (pageIndex + 1) * pageSize);
+    const prev = h(
+      'button',
+      { class: 'btn btn-small', type: 'button', disabled: pageIndex === 0 },
+      '← Prev',
+    );
+    const next = h(
+      'button',
+      { class: 'btn btn-small', type: 'button', disabled: to >= totalRows },
+      'Next →',
+    );
+    prev.addEventListener('click', () => {
+      pageIndex = Math.max(0, pageIndex - 1);
+      build();
+    });
+    next.addEventListener('click', () => {
+      pageIndex = Math.min(Math.ceil(totalRows / pageSize) - 1, pageIndex + 1);
+      build();
+    });
+    const sizeSelect = h(
+      'select',
+      { 'aria-label': 'Rows per page' },
+      ...SO_PAGE_SIZES.map((size) => {
+        const option = h('option', { value: String(size) }, `${size} rows`);
+        if (size === pageSize) option.selected = true;
+        return option;
+      }),
+    );
+    sizeSelect.addEventListener('change', () => {
+      pageSize = Number(sizeSelect.value) || 25;
+      storageSet(SO_PAGE_SIZE_KEY, String(pageSize));
+      pageIndex = 0;
+      build();
+    });
+    return h(
+      'div',
+      { class: 'pager' },
+      h(
+        'span',
+        { class: 'pager-status' },
+        `${from}–${to} of ${totalRows}`,
+      ),
+      prev,
+      next,
+      sizeSelect,
+    );
+  }
+
+  function soListBody(orders) {
+    if (desktop) {
+      // Sort the full filtered set, then show the current page
+      // (buildDataTable re-sorts its page deterministically).
+      const columns = jobsTableColumns();
+      const sortState = tableSort.jobs;
+      const activeColumn = sortState.key ? columns.find((column) => column.key === sortState.key) : null;
+      const sortedRows = activeColumn
+        ? sortRows(orders, activeColumn.sortValue || activeColumn.value, sortState.dir)
+        : orders;
+      const slice = sortedRows.slice(pageIndex * pageSize, pageIndex * pageSize + pageSize);
       tableHost.replaceChildren(
         buildDataTable(
           'jobs',
-          jobsTableColumns(),
-          orders,
+          columns,
+          slice,
           (order) => `#/jobs/${encodeURIComponent(order.id)}`,
-          update,
+          () => {
+            pageIndex = 0;
+            build();
+          },
         ),
       );
+      return [tableHost, pagerBar(orders.length)];
+    }
+    if (orders.length === 0) {
+      return [
+        emptyState(
+          searchQuery.trim() ? 'No matching service orders' : 'No service orders here',
+          searchQuery.trim()
+            ? 'Try a different search or clear filters.'
+            : 'Log a repair to keep track of what is open.',
+          filters.status.length === 0 || filters.status.includes('not-done')
+            ? [h('a', { class: 'btn btn-primary', href: '#/jobs/new' }, '+ Service order')]
+            : [],
+        ),
+      ];
+    }
+    return [h('div', { class: 'list cards-only' }, ...orders.map(soPhoneCard))];
+  }
+
+  function build() {
+    soRefresh = build;
+    filters = loadSOFilters();
+    const orders = filteredOrders({ ignoreStatus: currentView === 'board' });
+    chipsHost.replaceChildren(...soChipsRow());
+    viewSwitch.querySelectorAll('.view-switch-btn').forEach((button) => {
+      const active = button.textContent === SO_VIEW_LABELS[currentView];
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    bodyHost.className = `so-body so-body-${currentView}`;
+    if (currentView === 'board' && desktop) {
+      bodyHost.replaceChildren(soBoardBody(orders));
+    } else if (currentView === 'calendar' && desktop) {
+      bodyHost.replaceChildren(soCalendarBody(filteredOrders()));
+    } else {
+      bodyHost.replaceChildren(...soListBody(orders).flat());
     }
   }
 
-  const chips = h(
+  const searchInput = searchBox('Search service orders', (value) => {
+    searchQuery = value;
+    pageIndex = 0;
+    build();
+  });
+
+  const toolbar = h(
     'div',
-    { class: 'chips', role: 'group', 'aria-label': 'Filter service orders by status' },
-    ['active', 'open', 'in-progress', 'waiting', 'done', 'all'].map((value) => {
-      const label =
-        value === 'active'
-          ? 'All open'
-          : value === 'waiting'
-            ? 'Waiting'
-            : value === 'all'
-              ? 'All'
-              : LABELS.status[value];
-      let href = `#/jobs?filter=${value}`;
-      return h(
-        'a',
-        {
-          class: `chip${value === filter ? ' is-active' : ''}`,
-          href,
-          'aria-pressed': value === filter ? 'true' : 'false',
-        },
-        label,
-      );
-    }),
+    { class: 'so-toolbar' },
+    h('div', { class: 'so-toolbar-search' }, searchInput),
+    viewSwitch,
+    filtersButton,
   );
 
-  update();
-  const search = searchBox('Search service orders', (value) => update(value));
-
+  build();
   return page(
-    pageHead('Service Orders', h('a', { class: 'btn btn-primary btn-small', href: '#/jobs/new' }, '+ Service order')),
-    search,
-    chips,
-    listHost,
-    tableHost,
+    pageHead(
+      'Service Orders',
+      h('a', { class: 'btn btn-primary btn-small', href: '#/jobs/new' }, '+ Service order'),
+    ),
+    toolbar,
+    chipsHost,
+    bodyHost,
   );
+}
+
+function saveSOView(view) {
+  storageSet(SO_VIEW_KEY, view);
+}
+
+/* ----- Board view (SPEC-v3.md 3.4): one column per status; cards move by
+   drag and drop or the "Move to…" menu (keyboard/touch alternative). ----- */
+
+const SO_DONE_DAYS = 7;
+
+let soMoveMenu = null;
+let soMoveRouteCleanup = null;
+
+function onSOMoveMenuKey(event) {
+  if (!soMoveMenu) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeSOMoveMenu();
+  }
+}
+
+function closeSOMoveMenu() {
+  if (!soMoveMenu) return;
+  const menu = soMoveMenu;
+  soMoveMenu = null;
+  document.removeEventListener('keydown', onSOMoveMenuKey);
+  if (soMoveRouteCleanup) {
+    window.removeEventListener('hashchange', soMoveRouteCleanup);
+    soMoveRouteCleanup = null;
+  }
+  menu.remove();
+}
+
+function openSOMoveMenu(button, order) {
+  if (soMoveMenu) {
+    closeSOMoveMenu();
+    return;
+  }
+  const menu = h(
+    'div',
+    { class: 'move-menu', role: 'menu', 'aria-label': `Move ${formatOrderNumber(order.number)} to another status` },
+    ...WORK_ORDER_STATUSES.map((status) =>
+      h(
+        'button',
+        {
+          class: `move-menu-item${status === order.status ? ' is-current' : ''}`,
+          type: 'button',
+          role: 'menuitem',
+          disabled: status === order.status,
+          onclick: () => {
+            closeSOMoveMenu();
+            moveBoardOrder(order, status);
+          },
+        },
+        LABELS.status[status],
+      ),
+    ),
+  );
+  soMoveMenu = menu;
+  document.body.append(menu);
+  const rect = button.getBoundingClientRect();
+  const viewportWidth = document.documentElement.clientWidth;
+  menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+  menu.style.right = `${Math.max(8, Math.round(viewportWidth - rect.right))}px`;
+  document.addEventListener('keydown', onSOMoveMenuKey);
+  // Leaving the page closes the menu (like the drawer and filter panel).
+  soMoveRouteCleanup = () => closeSOMoveMenu();
+  window.addEventListener('hashchange', soMoveRouteCleanup, { once: true });
+  const onDocClick = (event) => {
+    if (soMoveMenu !== menu) {
+      document.removeEventListener('click', onDocClick);
+      return;
+    }
+    if (menu.contains(event.target) || button.contains(event.target)) return;
+    document.removeEventListener('click', onDocClick);
+    closeSOMoveMenu();
+  };
+  document.addEventListener('click', onDocClick);
+  const focusables = focusableElements(menu);
+  if (focusables.length > 0) focusables[0].focus();
+  else menu.focus();
+}
+
+/** Status change from the board: normal save path, then rebuild the view. */
+async function moveBoardOrder(order, status) {
+  try {
+    await changeOrderStatus(order, status);
+  } catch (error) {
+    console.error('Could not move the service order:', error);
+    toast('Could not save the status change. Please try again.', 'warn');
+    return;
+  }
+  if (typeof soRefresh === 'function') soRefresh();
+}
+
+function soBoardCard(order) {
+  const due = orderDueParts(order);
+  const detailHref = `#/jobs/${encodeURIComponent(order.id)}`;
+  const moveButton = h(
+    'button',
+    {
+      class: 'btn btn-ghost btn-small board-move',
+      type: 'button',
+      'aria-haspopup': 'menu',
+      'aria-label': `Move ${formatOrderNumber(order.number)} to another status`,
+    },
+    'Move to…',
+  );
+  moveButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    openSOMoveMenu(moveButton, order);
+  });
+  const card = h(
+    'article',
+    {
+      class: `board-card status-${order.status}`,
+      draggable: true,
+      tabindex: 0,
+      'aria-label': `${formatOrderNumber(order.number)} ${order.title}`,
+    },
+    h(
+      'div',
+      { class: 'board-card-top' },
+      h('a', { class: 'board-card-number', href: detailHref }, formatOrderNumber(order.number)),
+      priorityBadge(order.priority),
+    ),
+    h('a', { class: 'board-card-title', href: detailHref }, order.title),
+    h('div', { class: 'board-card-meta' }, machineName(order.machineId)),
+    due.text
+      ? h(
+          'div',
+          { class: `board-card-due${due.overdue ? ' is-overdue' : ''}` },
+          due.text,
+        )
+      : null,
+    h(
+      'div',
+      { class: 'board-card-foot' },
+      assigneeAvatars(order.assignees || []),
+      moveButton,
+    ),
+  );
+  card.addEventListener('dragstart', (event) => {
+    event.dataTransfer.setData('text/plain', order.id);
+    event.dataTransfer.effectAllowed = 'move';
+    card.classList.add('is-dragging');
+  });
+  card.addEventListener('dragend', () => {
+    card.classList.remove('is-dragging');
+    document.querySelectorAll('.board-list.is-drop-target').forEach((node) => {
+      node.classList.remove('is-drop-target');
+    });
+  });
+  card.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      navigate(detailHref);
+    }
+  });
+  return card;
+}
+
+function soBoardColumn(status, orders) {
+  const list = h(
+    'div',
+    { class: 'board-list', 'data-status': status },
+    ...orders.map((order) => soBoardCard(order)),
+  );
+  list.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    list.classList.add('is-drop-target');
+  });
+  list.addEventListener('dragleave', (event) => {
+    if (event.target === list) list.classList.remove('is-drop-target');
+  });
+  list.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    list.classList.remove('is-drop-target');
+    const id = event.dataTransfer ? event.dataTransfer.getData('text/plain') : '';
+    if (!id) return;
+    const order = state.workOrders.find((entry) => entry.id === id);
+    if (!order || order.status === status) return;
+    await moveBoardOrder(order, status);
+  });
+  return h(
+    'section',
+    { class: `board-column status-${status}`, 'aria-label': `${LABELS.status[status]} column` },
+    h(
+      'header',
+      { class: 'board-col-head' },
+      h(
+        'span',
+        { class: 'board-col-title' },
+        status === 'done' ? `Done · last ${SO_DONE_DAYS} days` : LABELS.status[status],
+      ),
+      h('span', { class: 'board-col-count' }, String(orders.length)),
+    ),
+    list,
+  );
+}
+
+function soBoardBody(filtered) {
+  const today = todayISO();
+  const byStatus = (status) =>
+    filtered.filter(
+      (order) =>
+        order.status === status && (status !== 'done' || isRecentDone(order, SO_DONE_DAYS, today)),
+    );
+  return h(
+    'div',
+    { class: 'board' },
+    ...WORK_ORDER_STATUSES.map((status) => soBoardColumn(status, byStatus(status))),
+  );
+}
+
+/* ----- Calendar view (SPEC-v3.md 3.5): month grid by due date, at most 3
+   items per day then "+N more", prev/next month, click opens the order. ----- */
+
+const CAL_WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const CAL_MAX_PER_DAY = 3;
+
+/** First grid day (Monday on or before the month's 1st) as an ISO date. */
+function calendarStartDay(year, month) {
+  const first = new Date(Date.UTC(year, month, 1));
+  const shift = (first.getUTCDay() + 6) % 7;
+  return new Date(Date.UTC(year, month, 1 - shift));
+}
+
+function soCalendarBody(filtered) {
+  const now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth();
+  let expandedDay = null;
+  const host = h('div', { class: 'cal-wrap' });
+
+  function ordersFor(dayISO) {
+    return filtered.filter((order) => order.dueDate === dayISO);
+  }
+
+  function buildCal() {
+    const start = calendarStartDay(year, month);
+    const monthTitle = new Date(Date.UTC(year, month, 1)).toLocaleDateString(undefined, {
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+    const today = todayISO();
+    const cells = [];
+    for (let index = 0; index < 42; index += 1) {
+      const dayISO = new Date(start.getTime() + index * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+      const inMonth = Number(dayISO.slice(0, 4)) === year && Number(dayISO.slice(5, 7)) === month + 1;
+      const dayOrders = ordersFor(dayISO);
+      const shown = expandedDay === dayISO ? dayOrders : dayOrders.slice(0, CAL_MAX_PER_DAY);
+      const overflow = dayOrders.length - shown.length;
+      const isTodayCell = dayISO === today;
+      cells.push(
+        h(
+          'div',
+          {
+            class: `cal-cell${inMonth ? '' : ' is-out'}${isTodayCell ? ' is-today' : ''}`,
+            'data-day': dayISO,
+          },
+          h('span', { class: 'cal-day' }, String(Number(dayISO.slice(8, 10)))),
+          ...shown.map((order) =>
+            h(
+              'a',
+              {
+                class: `cal-item status-${order.status}`,
+                href: `#/jobs/${encodeURIComponent(order.id)}`,
+                title: order.title,
+              },
+              formatOrderNumber(order.number),
+              h('span', { class: 'cal-item-text' }, order.title),
+            ),
+          ),
+          overflow > 0
+            ? h(
+                'button',
+                {
+                  class: 'cal-more',
+                  type: 'button',
+                  'aria-label': `Show ${overflow} more service orders due ${dayISO}`,
+                  onclick: () => {
+                    expandedDay = expandedDay === dayISO ? null : dayISO;
+                    buildCal();
+                  },
+                },
+                `+${overflow} more`,
+              )
+            : null,
+        ),
+      );
+    }
+
+    const prevButton = h('button', { class: 'btn btn-small', type: 'button' }, '← Previous');
+    const nextButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Next →');
+    const todayButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Today');
+    prevButton.addEventListener('click', () => {
+      month -= 1;
+      if (month < 0) {
+        month = 11;
+        year -= 1;
+      }
+      expandedDay = null;
+      buildCal();
+    });
+    nextButton.addEventListener('click', () => {
+      month += 1;
+      if (month > 11) {
+        month = 0;
+        year += 1;
+      }
+      expandedDay = null;
+      buildCal();
+    });
+    todayButton.addEventListener('click', () => {
+      const nowDate = new Date();
+      year = nowDate.getFullYear();
+      month = nowDate.getMonth();
+      expandedDay = null;
+      buildCal();
+    });
+
+    host.replaceChildren(
+      h(
+        'div',
+        { class: 'cal-toolbar' },
+        h('h3', { class: 'cal-month' }, monthTitle),
+        h('div', { class: 'cal-nav' }, todayButton, prevButton, nextButton),
+      ),
+      h(
+        'div',
+        { class: 'cal-grid', role: 'grid', 'aria-label': `${monthTitle} by due date` },
+        ...CAL_WEEKDAYS.map((label) => h('div', { class: 'cal-weekday', 'aria-hidden': 'true' }, label)),
+        ...cells,
+      ),
+      filtered.filter((order) => order.dueDate).length === 0
+        ? h(
+            'p',
+            { class: 'muted cal-empty-note' },
+            'No service orders with a due date match the current filters.',
+          )
+        : null,
+    );
+  }
+
+  buildCal();
+  return host;
 }
 
 function renderJobNew(route) {
@@ -1155,14 +2324,91 @@ function renderJobNew(route) {
       ),
     );
   }
+  // Phone/tablet form page; on desktop render() opens the drawer instead.
   const preset = route.params.get('machine');
-  return page(
-    pageHead('New service order'),
-    workOrderForm({
-      existing: null,
-      quick: true,
-      presetMachineId: preset && machineById(preset) ? preset : null,
-    }),
+  const { node } = workOrderFormBody({
+    existing: null,
+    presetMachineId: preset && machineById(preset) ? preset : null,
+  });
+  return page(pageHead('New service order'), node);
+}
+
+/* Attachment thumbnails (SPEC-v3.md section 6): image links open full size
+   in a new tab; PDFs open in a new tab. */
+function attachmentNode(attachment) {
+  if (!attachment || !attachment.fileId) return null;
+  const url = `/api/files/${encodeURIComponent(attachment.fileId)}`;
+  const name = attachment.name || 'File';
+  if (typeof attachment.mime === 'string' && attachment.mime.startsWith('image/')) {
+    return h(
+      'a',
+      { class: 'attach-thumb', href: url, target: '_blank', rel: 'noopener', title: name },
+      h('img', { src: url, alt: name }),
+    );
+  }
+  return h(
+    'a',
+    { class: 'attach-file', href: url, target: '_blank', rel: 'noopener', title: name },
+    h('span', { class: 'attach-icon', 'aria-hidden': 'true' }, 'PDF'),
+    h('span', { class: 'attach-file-name' }, name),
+  );
+}
+
+function attachmentsGrid(attachments = []) {
+  const list = (attachments || []).filter(Boolean);
+  if (list.length === 0) return h('p', { class: 'muted' }, 'No attachments.');
+  return h('div', { class: 'attach-grid' }, ...list.map(attachmentNode));
+}
+
+function checklistNode(order) {
+  const items = (order.checklist || []).filter(Boolean);
+  if (items.length === 0) return h('p', { class: 'muted' }, 'No checklist.');
+  const done = items.filter((item) => item.done).length;
+  return h(
+    'div',
+    { class: 'card checklist-view' },
+    h('p', { class: 'row-sub check-progress' }, `${done} of ${items.length} done`),
+    ...items.map((item) =>
+      h(
+        'div',
+        { class: `check-view-item${item.done ? ' is-done' : ''}` },
+        item.done
+          ? h('span', { class: 'check-box', 'aria-hidden': 'true' }, '✓')
+          : h('span', { class: 'check-box is-empty', 'aria-hidden': 'true' }),
+        h('span', { class: 'check-view-text' }, item.text),
+      ),
+    ),
+  );
+}
+
+function labourNode(order) {
+  const entries = (order.labour || []).filter(Boolean);
+  const legacyMinutes = toInteger(order.minutesSpent);
+  return h(
+    'div',
+    { class: 'card labour-view' },
+    entries.length === 0 && legacyMinutes === 0
+      ? h('p', { class: 'muted' }, 'No labour recorded.')
+      : null,
+    ...entries.map((entry) =>
+      h(
+        'div',
+        { class: 'labour-row' },
+        h('span', { class: 'labour-person' }, personName(entry) || 'Unknown'),
+        h('span', { class: 'labour-date' }, formatDate(entry.date)),
+        h('span', { class: 'labour-hours' }, `${Number(entry.hours) || 0} h`),
+        entry.note ? h('span', { class: 'labour-note muted' }, entry.note) : null,
+      ),
+    ),
+    legacyMinutes > 0
+      ? h(
+          'div',
+          { class: 'labour-row is-legacy' },
+          h('span', { class: 'labour-person' }, 'Legacy entry by the creator'),
+          h('span', { class: 'labour-hours' }, `${Math.round((legacyMinutes / 60) * 100) / 100} h`),
+        )
+      : null,
+    h('p', { class: 'labour-total' }, `Total labour: ${formatHours(labourTotal(order))}`),
   );
 }
 
@@ -1180,32 +2426,19 @@ function renderJobDetail(route) {
 
   const machine = machineById(order.machineId);
   const partsUsed = order.partsUsed || [];
+  const today = todayISO();
+  const due = orderDueParts(order, today);
+  const assignees = (order.assignees || []).filter(Boolean);
 
   async function changeStatus(status) {
     if (status === order.status) return;
-    const wasDone = order.status === 'done';
-    const result = await persistWorkOrderSave(order, { ...order, status }, {});
-    if (shouldOfferMachineDown(result.order)) {
-      const currentMachine = machineById(result.order.machineId);
-      if (currentMachine && currentMachine.status === 'running') {
-        const yes = await showConfirm({
-          title: 'Set machine to Down?',
-          message: `${currentMachine.name} is still on an open breakdown.`,
-          confirmText: 'Set Down',
-          cancelText: 'Leave Running',
-        });
-        if (yes) {
-          await sync.saveRecord(
-            'machines',
-            { ...currentMachine, status: 'down', updatedAt: nowISO() },
-            currentMachine.version,
-          );
-          await refreshState();
-        }
-      }
+    try {
+      await changeOrderStatus(order, status);
+    } catch (error) {
+      console.error(error);
+      toast('Could not save the status change. Please try again.', 'warn');
+      return;
     }
-    await maybeOfferRunning(result.order, wasDone);
-    toast(`Status changed to ${LABELS.status[status]}.`);
     render();
   }
 
@@ -1222,6 +2455,25 @@ function renderJobDetail(route) {
     await refreshState();
     toast('Service order deleted.');
     navigate('#/jobs');
+  }
+
+  /* Edit: right drawer on desktop, a collapsed section on phone/tablet
+     (SPEC-v3.md section 3 item 6). */
+  function editFormBody() {
+    return workOrderFormBody({ existing: order }).node;
+  }
+
+  function openEditDrawer() {
+    if (drawerHandle) drawerHandle.close();
+    const { node, isDirty } = workOrderFormBody({
+      existing: order,
+      cancelTo: null,
+      onSaved: () => {
+        if (drawerHandle) drawerHandle.close();
+        render();
+      },
+    });
+    openDrawer({ title: 'Edit service order', content: node, isDirty });
   }
 
   const statusButtons = h(
@@ -1244,6 +2496,8 @@ function renderJobDetail(route) {
   const details = h(
     'dl',
     { class: 'detail-grid' },
+    h('dt', {}, 'Number'),
+    h('dd', {}, formatOrderNumber(order.number)),
     h('dt', {}, 'Machine'),
     h(
       'dd',
@@ -1254,16 +2508,22 @@ function renderJobDetail(route) {
     ),
     h('dt', {}, 'Kind'),
     h('dd', {}, LABELS.kind[order.kind] || order.kind),
+    h('dt', {}, 'Category'),
+    h('dd', {}, order.category ? LABELS.category[order.category] || order.category : '—'),
     h('dt', {}, 'Priority'),
-    h('dd', {}, LABELS.priority[order.priority] || order.priority),
+    h('dd', {}, priorityBadge(order.priority)),
+    h('dt', {}, 'Due'),
+    h('dd', {}, due.text ? h('span', { class: due.overdue ? 'text-overdue' : '' }, due.text) : '—'),
     h('dt', {}, 'Reported'),
     h('dd', {}, formatDate(order.reportedAt)),
     h('dt', {}, 'Completed'),
     h('dd', {}, order.completedAt ? formatDate(order.completedAt) : '—'),
+    h('dt', {}, 'Requested by'),
+    h('dd', {}, order.requestedBy || '—'),
     h('dt', {}, 'Age'),
     h('dd', {}, formatAge(workOrderAgeDays(order))),
     h('dt', {}, 'Labour'),
-    h('dd', {}, `${toInteger(order.minutesSpent)} min`),
+    h('dd', {}, formatHours(labourTotal(order))),
     h('dt', {}, 'Downtime'),
     h('dd', {}, `${toInteger(order.downtimeMinutes)} min`),
     order.pmTaskId
@@ -1282,28 +2542,50 @@ function renderJobDetail(route) {
       : null,
   );
 
-  const editForm = h(
-    'details',
-    { class: 'more' },
-    h('summary', {}, 'Edit service order'),
-    workOrderForm({ existing: order, quick: false }),
-  );
+  const editSection = desktopMedia.matches
+    ? null
+    : h(
+        'details',
+        { class: 'more' },
+        h('summary', {}, 'Edit service order'),
+        editFormBody(),
+      );
 
   return page(
     h(
       'div',
       { class: 'detail-head' },
-      h('div', {}, h('h2', {}, order.title), h('div', { class: 'row-sub' }, machineName(order.machineId))),
-      statusPill(order.status, LABELS.status),
+      h(
+        'div',
+        {},
+        h('h2', {}, order.title),
+        h('div', { class: 'row-sub' }, `${formatOrderNumber(order.number)} · ${machineName(order.machineId)}`),
+      ),
+      desktopMedia.matches
+        ? h(
+            'div',
+            { class: 'button-row' },
+            h('button', { class: 'btn btn-small', type: 'button', onclick: openEditDrawer }, 'Edit'),
+            statusPill(order.status, LABELS.status),
+          )
+        : statusPill(order.status, LABELS.status),
     ),
     detailMeta(order),
     conflictBanner('workOrders', order.id),
     statusButtons,
     h('div', { class: 'card' }, details),
-    order.problem ? [sectionTitle('Problem'), h('div', { class: 'card pre' }, order.problem)] : null,
-    order.actionTaken
-      ? [sectionTitle('Action taken'), h('div', { class: 'card pre' }, order.actionTaken)]
-      : null,
+    sectionTitle('Assigned to'),
+    assignees.length
+      ? h('div', { class: 'card assignees-view' }, assigneeAvatars(assignees, { showNames: true }))
+      : h('p', { class: 'muted' }, 'Unassigned.'),
+    sectionTitle('Problem'),
+    order.problem
+      ? h('div', { class: 'card pre' }, order.problem)
+      : h('p', { class: 'muted' }, 'No problem description.'),
+    sectionTitle('Checklist'),
+    checklistNode(order),
+    sectionTitle('Labour'),
+    labourNode(order),
     sectionTitle('Parts used'),
     partsUsed.length
       ? h(
@@ -1326,34 +2608,611 @@ function renderJobDetail(route) {
           }),
         )
       : h('p', { class: 'muted' }, 'No parts recorded.'),
-    editForm,
+    sectionTitle('Attachments'),
+    attachmentsGrid(order.attachments),
+    sectionTitle('Action taken'),
+    order.actionTaken
+      ? h('div', { class: 'card pre' }, order.actionTaken)
+      : h('p', { class: 'muted' }, 'Nothing recorded yet.'),
+    editSection,
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.25rem' } },
       h('button', { class: 'btn btn-danger', type: 'button', onclick: deleteOrder }, 'Delete service order'),
+      desktopMedia.matches
+        ? h('button', { class: 'btn', type: 'button', onclick: openEditDrawer }, 'Edit')
+        : null,
     ),
     historySection('workOrders', order.id),
   );
 }
 
-function workOrderForm({ existing = null, quick = false, presetMachineId = null }) {
+/* ----- Attachment upload (SPEC-v3.md sections 3 and 6) -----
+   Images are downscaled in a canvas (longest side 1600 px, JPEG 0.82) before
+   a POST /api/files upload; PDFs upload as-is. Uploading needs a connection
+   to the server — the record itself still saves offline. */
+
+const FILE_UPLOAD_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+const FILE_UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+const FILE_UPLOAD_MAX_ATTACHMENTS = 20;
+const FILE_UPLOAD_OFFLINE = 'Uploading needs a connection to the server.';
+const IMAGE_UPLOAD_MAX_DIM = 1600;
+const IMAGE_UPLOAD_JPEG_QUALITY = 0.82;
+
+const FILE_EXT_TYPES = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  pdf: 'application/pdf',
+};
+
+/** Downscale to JPEG (1600 px / 0.82); null = upload the file unchanged. */
+async function downscaleImageForUpload(file, mime) {
+  if (!mime.startsWith('image/') || mime === 'application/pdf') return null;
+  if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, IMAGE_UPLOAD_MAX_DIM / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && mime === 'image/jpeg') {
+      if (typeof bitmap.close === 'function') bitmap.close();
+      return null;
+    }
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      if (typeof bitmap.close === 'function') bitmap.close();
+      return null;
+    }
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    if (typeof bitmap.close === 'function') bitmap.close();
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error('Could not process the image.'))),
+        'image/jpeg',
+        IMAGE_UPLOAD_JPEG_QUALITY,
+      );
+    });
+  } catch (error) {
+    console.warn('Image downscale failed; uploading as-is:', error);
+    return null;
+  }
+}
+
+/** Upload one file; resolves {fileId, name, mime, size} (SPEC-v3.md 6). */
+async function uploadAttachmentFile(file) {
+  if (!sync.currentUser()) throw new Error(FILE_UPLOAD_OFFLINE);
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error(FILE_UPLOAD_OFFLINE);
+  }
+  let mime = String(file.type || '');
+  if (!mime) {
+    const match = /\.([a-z0-9]+)$/i.exec(String(file.name || ''));
+    mime = match ? FILE_EXT_TYPES[match[1].toLowerCase()] || '' : '';
+  }
+  if (!mime || !FILE_UPLOAD_TYPES.includes(mime)) {
+    throw new Error('Unsupported file type. Photos (JPEG, PNG, WebP) and PDFs are allowed.');
+  }
+  if (file.size > FILE_UPLOAD_MAX_BYTES) {
+    throw new Error('That file is too large. The maximum is 15 MB.');
+  }
+  let body = file;
+  let sendMime = mime;
+  if (mime.startsWith('image/')) {
+    const downscaled = await downscaleImageForUpload(file, mime);
+    if (downscaled) {
+      body = downscaled;
+      sendMime = 'image/jpeg';
+    }
+  }
+  const response = await fetch('/api/files', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'X-Requested-With': 'maint-log',
+      'Content-Type': sendMime,
+      'X-File-Name': encodeURIComponent(file.name || 'upload'),
+    },
+    body,
+  });
+  if (!response.ok) {
+    let message = `Upload failed (HTTP ${response.status}).`;
+    try {
+      const data = await response.json();
+      if (data && data.message) message = data.message;
+    } catch {
+      // keep the generic message
+    }
+    throw new Error(message);
+  }
+  const data = await response.json();
+  if (!data || !data.fileId) throw new Error('The server did not return a file id.');
+  return { fileId: data.fileId, name: data.name || file.name, mime: data.mime || sendMime, size: Number(data.size) || 0 };
+}
+
+/* ----- Assignee picker (SPEC-v3.md section 3 item 6: coworkers,
+   contractors, users from the synced stores and the users cache) ----- */
+
+function createAssigneeEditor(initialAssignees = []) {
+  const selected = [];
+  for (const entry of initialAssignees || []) {
+    if (entry && entry.kind && entry.id) selected.push({ kind: entry.kind, id: entry.id });
+  }
+  const people = assignablePeople();
+  const listHost = h('div', { class: 'assignee-list' });
+  const hint = h('p', { class: 'field-hint' });
+  const addSelect = h(
+    'select',
+    { 'aria-label': 'Add an assignee' },
+    h('option', { value: '' }, 'Pick a person…'),
+    ...people.map((person) =>
+      h('option', { value: `${person.kind}:${person.id}` }, `${person.name} · ${person.sub}`),
+    ),
+  );
+  const addButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Add');
+
+  function atLimit() {
+    return selected.length >= 10;
+  }
+
+  function syncHint() {
+    hint.textContent =
+      people.length === 0
+        ? 'No coworkers yet - add them in People.'
+        : atLimit()
+          ? 'At most 10 assignees.'
+          : '';
+    addButton.disabled = people.length === 0 || atLimit();
+    addSelect.disabled = people.length === 0 || atLimit();
+  }
+
+  function renderList() {
+    listHost.replaceChildren(
+      ...selected.map((entry, index) => {
+        const name = personName(entry) || 'Unknown';
+        return h(
+          'div',
+          { class: 'assignee-chip' },
+          personAvatar(name, entry.kind),
+          h('span', { class: 'assignee-chip-name' }, name),
+          h(
+            'button',
+            {
+              class: 'filter-chip-x',
+              type: 'button',
+              'aria-label': `Remove ${name}`,
+              onclick: () => {
+                selected.splice(index, 1);
+                renderList();
+                syncHint();
+              },
+            },
+            '×',
+          ),
+        );
+      }),
+    );
+  }
+
+  function addChosen() {
+    if (!addSelect.value) return;
+    const separator = addSelect.value.indexOf(':');
+    const kind = addSelect.value.slice(0, separator);
+    const id = addSelect.value.slice(separator + 1);
+    if (atLimit()) return;
+    if (!selected.some((entry) => entry.kind === kind && entry.id === id)) {
+      selected.push({ kind, id });
+      renderList();
+      syncHint();
+    }
+    addSelect.value = '';
+  }
+
+  addButton.addEventListener('click', addChosen);
+  addSelect.addEventListener('change', addChosen);
+  renderList();
+  syncHint();
+
+  const element = h(
+    'div',
+    { class: 'field' },
+    h('span', { class: 'field-label' }, 'Assigned to'),
+    hint,
+    listHost,
+    h('div', { class: 'assignee-add' }, addSelect, addButton),
+  );
+  return { element, getAssignees: () => selected.slice(0, 10) };
+}
+
+/* ----- Checklist editor: add, move up/down, tick, remove (SPEC-v3.md 3.6) ----- */
+
+function createChecklistEditor(initialItems = []) {
+  const items = (initialItems || [])
+    .filter(Boolean)
+    .map((item) => ({ id: item.id || uid(), text: String(item.text || ''), done: Boolean(item.done) }));
+  const listHost = h('div', { class: 'checklist-edit' });
+  const input = h('input', { type: 'text', maxlength: '200', placeholder: 'New checklist step', autocomplete: 'off' });
+  const addButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Add step');
+  const hint = h('p', { class: 'field-hint' });
+
+  const MAX_CHECKLIST = 50;
+
+  function syncHint() {
+    addButton.disabled = items.length >= MAX_CHECKLIST;
+    hint.textContent = items.length >= MAX_CHECKLIST ? 'At most 50 steps.' : '';
+  }
+
+  function renderRows() {
+    listHost.replaceChildren(
+      ...items.map((item, index) => {
+        const checkInput = h('input', { type: 'checkbox', 'aria-label': `Mark "${item.text}" done` });
+        checkInput.checked = item.done;
+        checkInput.addEventListener('change', () => {
+          item.done = checkInput.checked;
+        });
+        const textInput = h('input', {
+          type: 'text',
+          maxlength: '200',
+          value: item.text,
+          'aria-label': `Checklist step ${index + 1}`,
+        });
+        textInput.addEventListener('input', () => {
+          item.text = textInput.value;
+        });
+        const upButton = h(
+          'button',
+          {
+            class: 'btn btn-ghost btn-small',
+            type: 'button',
+            'aria-label': `Move "${item.text}" up`,
+            disabled: index === 0,
+            onclick: () => {
+              if (index === 0) return;
+              const [moved] = items.splice(index, 1);
+              items.splice(index - 1, 0, moved);
+              renderRows();
+            },
+          },
+          '↑',
+        );
+        const downButton = h(
+          'button',
+          {
+            class: 'btn btn-ghost btn-small',
+            type: 'button',
+            'aria-label': `Move "${item.text}" down`,
+            disabled: index === items.length - 1,
+            onclick: () => {
+              if (index === items.length - 1) return;
+              const [moved] = items.splice(index, 1);
+              items.splice(index + 1, 0, moved);
+              renderRows();
+            },
+          },
+          '↓',
+        );
+        const removeButton = h(
+          'button',
+          {
+            class: 'btn btn-ghost btn-small',
+            type: 'button',
+            'aria-label': `Remove "${item.text}"`,
+            onclick: () => {
+              items.splice(index, 1);
+              renderRows();
+              syncHint();
+            },
+          },
+          '×',
+        );
+        return h(
+          'div',
+          { class: 'check-edit-row' },
+          checkInput,
+          textInput,
+          h('div', { class: 'check-edit-actions' }, upButton, downButton, removeButton),
+        );
+      }),
+    );
+    syncHint();
+  }
+
+  function addStep() {
+    const text = input.value.trim();
+    if (!text || items.length >= MAX_CHECKLIST) return;
+    items.push({ id: uid(), text, done: false });
+    input.value = '';
+    renderRows();
+    input.focus();
+  }
+
+  addButton.addEventListener('click', addStep);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addStep();
+    }
+  });
+
+  renderRows();
+
+  const element = h(
+    'div',
+    { class: 'field' },
+    h('span', { class: 'field-label' }, 'Checklist'),
+    hint,
+    listHost,
+    h('div', { class: 'check-add' }, input, addButton),
+  );
+  return {
+    element,
+    getChecklist: () => items.map((item) => ({ id: item.id, text: item.text, done: item.done })),
+  };
+}
+
+/* ----- Labour editor (SPEC-v3.md 3.6): person + date + hours (0.25 steps)
+   + note; a list with removal and the running total. ----- */
+
+function createLabourEditor(initialEntries = []) {
+  const entries = (initialEntries || [])
+    .filter(Boolean)
+    .filter((entry) => entry.kind && entry.personId)
+    .map((entry) => ({
+      id: entry.id || uid(),
+      kind: entry.kind,
+      personId: entry.personId,
+      date: entry.date || todayISO(),
+      hours: Number(entry.hours) || 0,
+      note: String(entry.note || ''),
+    }));
+  const people = assignablePeople();
+  const listHost = h('div', { class: 'labour-edit' });
+  const hint = h('p', { class: 'field-hint' });
+
+  const defaultKind = teamUser ? 'user' : people.length > 0 ? people[0].kind : null;
+  const defaultId = teamUser ? teamUser.id : people.length > 0 ? people[0].id : '';
+  const personSelect = h(
+    'select',
+    { 'aria-label': 'Labour: person' },
+    h('option', { value: '' }, people.length === 0 ? 'No people yet' : 'Pick a person…'),
+    ...people.map((person) => {
+      const value = `${person.kind}:${person.id}`;
+      const option = h('option', { value }, person.name);
+      if (person.kind === defaultKind && person.id === defaultId) option.selected = true;
+      return option;
+    }),
+  );
+  const dateInput = h('input', { type: 'date', value: todayISO(), 'aria-label': 'Labour: date' });
+  const hoursInput = h('input', {
+    type: 'number',
+    min: '0.25',
+    max: '24',
+    step: '0.25',
+    inputmode: 'decimal',
+    value: '1',
+    'aria-label': 'Labour: hours',
+  });
+  const noteInput = h('input', {
+    type: 'text',
+    maxlength: '200',
+    placeholder: 'What was done (optional)',
+    'aria-label': 'Labour: note',
+  });
+  const addButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Add hours');
+  const totalLine = h('p', { class: 'labour-total' });
+
+  const MAX_LABOUR = 200;
+
+  function syncControls() {
+    addButton.disabled = people.length === 0 || entries.length >= MAX_LABOUR;
+    hint.textContent =
+      people.length === 0
+        ? 'No coworkers yet - add them in People.'
+        : entries.length >= MAX_LABOUR
+          ? 'At most 200 labour entries.'
+          : '';
+    totalLine.textContent = `Total: ${formatHours(labourTotal({ labour: entries }))}`;
+  }
+
+  function renderRows() {
+    listHost.replaceChildren(
+      ...entries.map((entry, index) =>
+        h(
+          'div',
+          { class: 'labour-row' },
+          h('span', { class: 'labour-person' }, personName(entry) || 'Unknown'),
+          h('span', { class: 'labour-date' }, formatDate(entry.date)),
+          h('span', { class: 'labour-hours' }, `${entry.hours} h`),
+          entry.note ? h('span', { class: 'labour-note muted' }, entry.note) : null,
+          h(
+            'button',
+            {
+              class: 'btn btn-ghost btn-small',
+              type: 'button',
+              'aria-label': 'Remove labour entry',
+              onclick: () => {
+                entries.splice(index, 1);
+                renderRows();
+              },
+            },
+            '×',
+          ),
+        ),
+      ),
+    );
+    syncControls();
+  }
+
+  function addEntry() {
+    const raw = personSelect.value;
+    if (!raw) return;
+    const separator = raw.indexOf(':');
+    const kind = raw.slice(0, separator);
+    const personId = raw.slice(separator + 1);
+    const hours = Number(hoursInput.value);
+    if (!Number.isFinite(hours) || hours < 0.25 || hours > 24) {
+      hint.textContent = 'Hours must be between 0.25 and 24.';
+      hoursInput.focus();
+      return;
+    }
+    const quarter = Math.round(hours * 4) / 4;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput.value || '')) {
+      hint.textContent = 'Choose the date the work happened.';
+      dateInput.focus();
+      return;
+    }
+    if (entries.length >= MAX_LABOUR) return;
+    entries.push({
+      id: uid(),
+      kind,
+      personId,
+      date: dateInput.value,
+      hours: quarter,
+      note: noteInput.value.trim().slice(0, 200),
+    });
+    noteInput.value = '';
+    renderRows();
+  }
+
+  addButton.addEventListener('click', addEntry);
+  renderRows();
+
+  const element = h(
+    'div',
+    { class: 'field' },
+    h('span', { class: 'field-label' }, 'Labour'),
+    hint,
+    listHost,
+    h('div', { class: 'labour-add' }, personSelect, dateInput, hoursInput),
+    h('div', { class: 'labour-add-note' }, noteInput, addButton),
+    totalLine,
+  );
+  return { element, getLabour: () => entries.map((entry) => ({ ...entry })) };
+}
+
+/* ----- Attachments editor (SPEC-v3.md section 3 item 6 + section 6) ----- */
+
+function createAttachmentsEditor(initialAttachments = []) {
+  const attachments = (initialAttachments || []).filter(Boolean);
+  const gridHost = h('div', { class: 'attach-grid attach-grid-edit' });
+  const statusBox = h('p', { class: 'field-hint', role: 'status' });
+  const input = h('input', {
+    type: 'file',
+    multiple: true,
+    accept: FILE_UPLOAD_TYPES.join(','),
+    'aria-label': 'Add photos or PDFs',
+  });
+  const addButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Add photo or PDF');
+
+  function renderGrid() {
+    if (attachments.length === 0) {
+      gridHost.replaceChildren();
+      return;
+    }
+    gridHost.replaceChildren(
+      ...attachments.map((attachment) =>
+        h(
+          'div',
+          { class: 'attach-cell' },
+          attachmentNode(attachment),
+          h(
+            'button',
+            {
+              class: 'filter-chip-x attach-remove',
+              type: 'button',
+              'aria-label': `Remove ${attachment.name}`,
+              onclick: () => {
+                const index = attachments.indexOf(attachment);
+                if (index !== -1) attachments.splice(index, 1);
+                renderGrid();
+              },
+            },
+            '×',
+          ),
+        ),
+      ),
+    );
+  }
+
+  async function handleFiles() {
+    const files = Array.from(input.files || []);
+    input.value = '';
+    if (files.length === 0) return;
+    if (!sync.currentUser() || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+      statusBox.textContent = FILE_UPLOAD_OFFLINE;
+      return;
+    }
+    for (const file of files) {
+      if (attachments.length >= FILE_UPLOAD_MAX_ATTACHMENTS) {
+        statusBox.textContent = 'At most 20 attachments.';
+        return;
+      }
+      statusBox.textContent = `Uploading ${file.name}…`;
+      try {
+        const uploaded = await uploadAttachmentFile(file);
+        attachments.push(uploaded);
+        renderGrid();
+      } catch (error) {
+        statusBox.textContent = error && error.message ? error.message : 'Upload failed.';
+        return;
+      }
+    }
+    statusBox.textContent = '';
+  }
+
+  input.addEventListener('change', () => {
+    handleFiles();
+  });
+  addButton.addEventListener('click', () => input.click());
+
+  renderGrid();
+
+  input.hidden = true;
+  const element = h(
+    'div',
+    { class: 'field' },
+    h('span', { class: 'field-label' }, 'Attachments'),
+    statusBox,
+    gridHost,
+    input,
+    h('div', { class: 'form-actions' }, addButton),
+    h('span', { class: 'field-hint' }, 'Images are downscaled before upload; PDFs upload as-is.'),
+  );
+  return { element, getAttachments: () => attachments.slice(0, FILE_UPLOAD_MAX_ATTACHMENTS) };
+}
+
+/* ----- Service order form body: sectioned form used by the full page
+   (phone/tablet) and the desktop drawer (SPEC-v3.md section 3 item 6) ----- */
+
+function workOrderFormBody({ existing = null, presetMachineId = null, cancelTo = undefined, onSaved = null } = {}) {
   const isNew = !existing;
   const today = todayISO();
   const base = existing || {
     title: '',
     machineId: presetMachineId || '',
     kind: 'breakdown',
-    priority: 'normal',
+    priority: 'medium',
+    category: '',
     status: 'open',
     reportedAt: today,
+    dueDate: null,
+    requestedBy: '',
     problem: '',
     actionTaken: '',
     partsUsed: [],
     minutesSpent: 0,
     downtimeMinutes: 0,
+    assignees: [],
+    labour: [],
+    checklist: [],
+    attachments: [],
   };
 
-  const form = h('form', { class: 'form', novalidate: true });
+  const form = h('form', { class: 'form so-form', novalidate: true });
   const errorBox = h('div', { class: 'form-error', role: 'alert' });
 
   const titleInput = h('input', {
@@ -1377,9 +3236,27 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
     h('span', { class: 'field-hint' }, 'Start typing to search. Recent machines are listed first.'),
   );
   const kindSelect = selectFrom(WORK_ORDER_KINDS, base.kind || 'breakdown', (value) => LABELS.kind[value]);
-  const prioritySelect = selectFrom(PRIORITIES, base.priority || 'normal', (value) => LABELS.priority[value]);
+  const categorySelect = h(
+    'select',
+    {},
+    h('option', { value: '' }, 'No category'),
+    ...WORK_ORDER_CATEGORIES.map((value) => {
+      const option = h('option', { value }, LABELS.category[value]);
+      if (value === (base.category || '')) option.selected = true;
+      return option;
+    }),
+  );
+  const prioritySelect = selectFrom(PRIORITIES, priorityValue(base.priority) || 'medium', (value) => LABELS.priority[value]);
   const statusSelect = selectFrom(WORK_ORDER_STATUSES, base.status || 'open', (value) => LABELS.status[value]);
   const reportedInput = h('input', { type: 'date', value: base.reportedAt || today });
+  const dueInput = h('input', { type: 'date', value: base.dueDate || '' });
+  const requestedByInput = h('input', {
+    type: 'text',
+    maxlength: '80',
+    autocomplete: 'off',
+    placeholder: 'e.g. Line supervisor',
+    value: base.requestedBy || '',
+  });
   const problemInput = h('textarea', {
     rows: 3,
     placeholder: 'Symptoms, error codes, what the operator saw',
@@ -1406,6 +3283,10 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
   });
 
   const partsEditor = createPartsEditor(base.partsUsed || []);
+  const assigneeEditor = createAssigneeEditor(base.assignees || []);
+  const checklistEditor = createChecklistEditor(base.checklist || []);
+  const labourEditor = createLabourEditor(base.labour || []);
+  const attachmentsEditor = createAttachmentsEditor(base.attachments || []);
 
   const downCheckbox = h('input', { type: 'checkbox', checked: true });
   const downLabel = h('label', { for: 'set-machine-down' }, 'Set machine to Down while this service order is open');
@@ -1427,61 +3308,72 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
   picker.input.addEventListener('input', updateDownRow);
   updateDownRow();
 
-  const extraFields = h(
-    'div',
-    { class: 'stack' },
-    field('Action taken', actionInput),
-    partsEditor.element,
-    h(
-      'div',
-      { class: 'grid-2' },
-      field('Labour minutes', minutesInput),
-      field('Machine downtime (minutes)', downtimeInput),
-    ),
-  );
-
   form.append(
     errorBox,
-    machineField,
+    sectionTitle('Basics'),
     field('Title', titleInput),
+    machineField,
+    h('div', { class: 'grid-2' }, field('Kind', kindSelect), field('Category', categorySelect)),
+    h('div', { class: 'grid-2' }, field('Priority', prioritySelect), field('Status', statusSelect)),
     h(
       'div',
       { class: 'grid-2' },
-      field('Kind', kindSelect),
-      field('Priority', prioritySelect),
-    ),
-    h(
-      'div',
-      { class: 'grid-2' },
-      field('Status', statusSelect),
+      field('Due date', dueInput),
       field('Reported date', reportedInput),
     ),
-    field('Problem', problemInput),
+    field('Requested by', requestedByInput, 'Operator or supervisor who asked for the work'),
     downRow,
+    sectionTitle('Problem'),
+    problemInput,
+    sectionTitle('Assign'),
+    assigneeEditor.element,
+    sectionTitle('Checklist'),
+    checklistEditor.element,
+    sectionTitle('Labour'),
+    labourEditor.element,
+    h(
+      'div',
+      { class: 'grid-2' },
+      field('Labour minutes (before v3)', minutesInput, 'Also counts towards the total labour hours.'),
+      field('Machine downtime (minutes)', downtimeInput),
+    ),
+    sectionTitle('Parts used'),
+    partsEditor.element,
+    sectionTitle('Attachments'),
+    attachmentsEditor.element,
+    sectionTitle('Action taken'),
+    actionInput,
   );
-
-  if (quick) {
-    form.append(
-      h('details', { class: 'more' }, h('summary', {}, 'More details'), extraFields),
-    );
-  } else {
-    form.append(extraFields);
-  }
 
   const saveButton = h(
     'button',
     { class: 'btn btn-primary', type: 'submit' },
     isNew ? 'Save service order' : 'Save changes',
   );
-  const cancelHref = existing ? `#/jobs/${encodeURIComponent(existing.id)}` : '#/jobs';
-  form.append(
-    h(
-      'div',
-      { class: 'form-actions' },
-      saveButton,
-      h('a', { class: 'btn', href: cancelHref }, 'Cancel'),
-    ),
-  );
+  /* Cancel: in the drawer a button that just closes the panel; on a full
+     page a link back to where the user came from. */
+  const cancelButton =
+    cancelTo === null
+      ? h(
+          'button',
+          {
+            class: 'btn',
+            type: 'button',
+            onclick: () => {
+              if (drawerHandle) drawerHandle.close();
+            },
+          },
+          'Cancel',
+        )
+      : h(
+          'a',
+          {
+            class: 'btn',
+            href: cancelTo || (existing ? `#/jobs/${encodeURIComponent(existing.id)}` : '#/jobs'),
+          },
+          'Cancel',
+        );
+  form.append(h('div', { class: 'form-actions' }, saveButton, cancelButton));
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1506,6 +3398,11 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
       reportedInput.focus();
       return;
     }
+    if (dueInput.value && !isISODate(dueInput.value)) {
+      errorBox.textContent = 'Choose a valid due date, or clear it.';
+      dueInput.focus();
+      return;
+    }
 
     const now = nowISO();
     const incoming = {
@@ -1517,9 +3414,15 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
       priority: prioritySelect.value,
       status: statusSelect.value,
       reportedAt: reportedInput.value,
+      dueDate: dueInput.value || null,
+      requestedBy: requestedByInput.value.trim().slice(0, 80),
       completedAt: existing ? existing.completedAt : null,
       problem: problemInput.value.trim(),
       actionTaken: actionInput.value.trim(),
+      assignees: assigneeEditor.getAssignees(),
+      labour: labourEditor.getLabour(),
+      checklist: checklistEditor.getChecklist(),
+      attachments: attachmentsEditor.getAttachments(),
       partsUsed: partsEditor.getPartsUsed(),
       minutesSpent: toInteger(minutesInput.value),
       downtimeMinutes: toInteger(downtimeInput.value),
@@ -1529,6 +3432,10 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now,
     };
+    // An empty category is omitted (absent) rather than sent as "" — the
+    // server validates enum fields and would reject an empty string.
+    if (categorySelect.value) incoming.category = categorySelect.value;
+    else delete incoming.category;
     saveButton.disabled = true;
     try {
       const wasDone = existing ? existing.status === 'done' : false;
@@ -1537,7 +3444,8 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
       const result = await persistWorkOrderSave(existing, incoming, { setMachineDown });
       await maybeOfferRunning(result.order, wasDone);
       toast(isNew ? 'Service order logged.' : 'Service order saved.');
-      navigate(`#/jobs/${encodeURIComponent(result.order.id)}`);
+      if (typeof onSaved === 'function') onSaved(result.order);
+      else navigate(`#/jobs/${encodeURIComponent(result.order.id)}`);
     } catch (error) {
       errorBox.textContent = 'Could not save. Please try again.';
       console.error(error);
@@ -1546,7 +3454,14 @@ function workOrderForm({ existing = null, quick = false, presetMachineId = null 
     }
   });
 
-  return form;
+  let dirty = false;
+  const markDirty = () => {
+    dirty = true;
+  };
+  form.addEventListener('input', markDirty);
+  form.addEventListener('change', markDirty);
+
+  return { node: form, isDirty: () => dirty };
 }
 
 /* ---------- Machines ---------- */
@@ -3600,9 +5515,19 @@ async function render() {
   if (!root || root === 'home') {
     content = renderHome();
   } else if (root === 'jobs') {
-    if (!second) content = renderJobs(route);
-    else if (second === 'new') content = renderJobNew(route);
-    else {
+    let jobDrawer = false;
+    if (!second) {
+      content = renderJobs(route);
+    } else if (second === 'new') {
+      // Desktop opens the form in the drawer (SPEC-v3.md section 3 item 6);
+      // below 1024 px the full-page form stays.
+      jobDrawer = maybeOpenJobDrawer(route);
+      if (jobDrawer) {
+        content = renderJobs({ segments: ['jobs'], params: route.params });
+      } else {
+        content = renderJobNew(route);
+      }
+    } else {
       content = renderJobDetail(route);
       isDetail = true;
       splitListRoot = 'jobs';
@@ -3877,6 +5802,23 @@ function maybeOpenMachineDrawer(route) {
   return true;
 }
 
+/* The M3 drawer usage: the service order form opens in the drawer on
+   desktop; phones and tablets keep the full-page form (SPEC-v3.md 3.6). */
+function maybeOpenJobDrawer(route) {
+  if (!desktopMedia.matches) return false;
+  const second = route.segments[1];
+  if (second !== 'new') return false;
+  if (state.machines.length === 0) {
+    // Keep the full-page "add a machine first" empty state.
+    return false;
+  }
+  const presetId = route.params.get('machine');
+  const presetMachineId = presetId && machineById(presetId) ? presetId : null;
+  const { node, isDirty } = workOrderFormBody({ existing: null, presetMachineId, cancelTo: null });
+  openDrawer({ title: 'New service order', content: node, isDirty });
+  return true;
+}
+
 /* ----- Placeholder pages for the routes that arrive with M3-M6 ----- */
 
 const COMING_SOON_PAGES = {
@@ -4014,9 +5956,9 @@ function openMoreSheet() {
    ArrowUp/Down move through it. Desktop only (CSS hides the box). */
 
 function serviceOrderLabel(order) {
-  const number = Number(order && order.number);
-  if (!Number.isFinite(number) || number < 0) return null;
-  return `SO-${String(Math.floor(number)).padStart(4, '0')}`;
+  const number = order && order.number;
+  if (number === null || number === undefined || number === '') return null;
+  return formatOrderNumber(number);
 }
 
 function globalSearchMatches(query) {
@@ -4491,8 +6433,10 @@ async function handleSyncApplied(event) {
   const detail = event.detail || {};
   if (!(detail.applied > 0)) return;
   await refreshState();
-  // Keep any form the user is filling in; the next navigation re-renders.
-  if (appMain.querySelector('form')) return;
+  // Keep any form the user is filling in; closed <details> forms (phone
+  // edit sections) have no client rects, so the page may still refresh.
+  const form = appMain.querySelector('form');
+  if (form && form.getClientRects().length > 0) return;
   render();
 }
 

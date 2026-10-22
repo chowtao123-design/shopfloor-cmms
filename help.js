@@ -149,7 +149,18 @@ function helpGlossarySection(h) {
     'Glossary',
     helpGlossary(h, [
       ['Work order / job', 'One repair or task, from the moment it is logged until it is marked Done. The app now calls these service orders; “job” and “work order” mean the same thing here.'],
-      ['Breakdown', 'A repair logged because a machine stopped working. The app offers to mark that machine Down while the job is open, and Running again after.'],
+      ['Service order number', 'Each service order gets a sequential number from the server, shown as SO-0001, SO-0002 and so on. A new order written offline says SO-pending until the next sync gives it its number.'],
+      ['Breakdown', 'A repair logged because a machine stopped working. The app offers to mark that machine Down while the service order is open, and Running again after.'],
+      ['Priority', 'How urgent a service order is: None, Low, Medium (the default), High or Urgent. Urgent service orders also appear in “Needs attention” on Home. Old records with the previous “Normal” value are shown as Medium.'],
+      ['Category', 'What kind of work it is: Mechanical, Electrical, Pneumatic, Facility, Safety, Cleaning or Other.'],
+      ['Due date', 'When a service order should be finished. Overdue ones show the due date in red, and “Overdue” is also one of the filters.'],
+      ['Requested by', 'Free text for who asked for the work — an operator or supervisor name.'],
+      ['Assignee', 'A coworker, an outside contractor or a user account assigned to a service order. Assigned people show as initials avatars with their names in a tooltip.'],
+      ['Checklist', 'A list of steps on a service order you can tick off one by one — add steps, reorder them, tick and remove them.'],
+      ['Labour hours', 'Who worked on a service order and for how long: each entry is a person, a date and hours in quarter-hour steps (plus an optional note). The total adds these plus any legacy minutes recorded before v3.'],
+      ['Attachment', 'A photo or PDF attached to a service order. Photos are shrunk to at most 1600 px on the long side before upload; PDFs upload as they are. Attaching needs a connection — the order itself still saves offline.'],
+      ['Board view', 'The Service Orders page as columns per status (Open, In progress, Waiting parts, Waiting tech, Done — last 7 days). Move a card by dragging it between columns, or with the “Move to…” button on each card.'],
+      ['Calendar view', 'The Service Orders page as a month grid by due date: at most three orders per day are listed, then “+N more”.'],
       ['Machine type', 'What kind of machine it is — single-needle lockstitch, bartack, 5-thread overlock and other garment-shop types. If none of them fit, pick Other (type your own) and give it your own name; the types you use are remembered for next time.'],
       ['PM (preventive maintenance)', 'A small, scheduled check that keeps a machine working — cleaning, oiling, checking tension. Example: clean and oil the single-needle machine every 30 days.'],
       ['PM interval', 'How often a PM task repeats, in days from the last time it was done. A 30-day task is due again 30 days after you mark it done.'],
@@ -162,7 +173,7 @@ function helpGlossarySection(h) {
       ['Waiting tech', 'Paused until you (or an outside repair shop) can get to it.'],
       ['Done', 'Finished and closed.'],
       ['Downtime', 'How many minutes the machine was out of service because of this service order. Entered on the order as “Machine downtime (minutes)”.'],
-      ['Labour minutes', 'How many minutes you spent working on the service order — your time, tracked separately from downtime.'],
+      ['Labour minutes', 'How many minutes you spent working on the service order — your time, tracked separately from downtime. New entries use quarter-hour labour entries instead.'],
       ['Low stock / minimum quantity', 'Every part has a minimum quantity. When the quantity on hand falls to it or below, the part is flagged Low so you can reorder in time.'],
       ['In storage', 'A machine that is put away instead of working on the floor. Service orders and PM tasks can still be logged for it, but the app leaves its status alone and pauses its PM while it is stored.'],
       ['Building item', 'Something that is part of the building — a drain, a gutter run, a light — logged like a machine so it can have service orders and PM tasks too.'],
@@ -178,7 +189,31 @@ function helpHowTo(h) {
     helpHowTos(h, [
       [
         'Log a repair in under a minute',
-        ' — Service Orders → + Service order, pick the machine, type what happened, then Save service order. Parts, timings and status can all be added later.',
+        ' — Service Orders → + Service order, pick the machine, type what happened, then Save service order. Assignees, checklist, labour, parts, timings and attachments can all be added on the same form, before or after saving.',
+      ],
+      [
+        'Filter and find service orders',
+        ' — open Service Orders and press Filters: status (Not done is the default), priority, kind, due date (Overdue · Due this week · No due date), category, machine type, machine, assignee and a created-date range. Active filters sit as removable chips above the list, with Clear all next to them. Your filter choices are remembered on this device.',
+      ],
+      [
+        'Use the board',
+        ' — on a desktop, switch the Service Orders view to Board: one column per status. Drag a card to another column to change its status, or open its “Move to…” menu — that one works from the keyboard too.',
+      ],
+      [
+        'See what is due when',
+        ' — switch the view to Calendar: service orders sit in a month grid by due date. Step through months with Previous / Next; tap an order to open it.',
+      ],
+      [
+        'Assign people to a service order',
+        " — open the order's form and go to Assign: pick coworkers, outside contractors and users, then Add. Assigned people show as initials avatars everywhere the order appears.",
+      ],
+      [
+        'Track labour hours',
+        ' — in the order form under Labour, add an entry per person and day: hours go in quarter-hour steps (0.25, 0.5, …) with an optional note. The running total shows next to the list; hours recorded as minutes before v3 keep counting.',
+      ],
+      [
+        'Attach photos and PDFs',
+        ' — in the order form under Attachments, press Add photo or PDF. Photos are shrunk before uploading; PDFs upload as they are. Tap an attachment to view it full size. Uploading needs a connection to the server, but the order itself still saves offline.',
       ],
       [
         'Close a service order and deduct parts',
@@ -251,7 +286,7 @@ function helpDesktop(h) {
     h(
       'p',
       {},
-      'On a wide screen (1024 px or more), the app shows a dark sidebar on the left in place of the bottom tab bar, lists turn into tables you can sort by clicking a column header, and opening a row shows its details in a pane beside the list. The top bar has a global search box that finds service orders, machines and parts; pick a result with the arrow keys and press Enter. The sidebar can be collapsed to an icon rail with the button at its top. On phones the bottom bar has Home, Orders, Prev. Maint., Machines and More.',
+      'On a wide screen (1024 px or more), the app shows a dark sidebar on the left in place of the bottom tab bar, lists turn into tables you can sort by clicking a column header, and opening a row shows its details in a pane beside the list. On Service Orders you can also switch between List, Board and Calendar views; filters and pagination sit above the table, and forms (new or edit) open in a panel that slides in from the right — Esc closes it after a “Discard changes?” check when anything is unsaved. The top bar has a global search box that finds service orders, machines and parts; pick a result with the arrow keys and press Enter. The sidebar can be collapsed to an icon rail with the button at its top. On phones the bottom bar has Home, Orders, Prev. Maint., Machines and More; the Service Orders filters open as a sheet from the bottom.',
     ),
     h('p', {}, 'Keyboard shortcuts (desktop only — they never fire while you are typing in a text field):'),
     helpShortcutsTable(h),
