@@ -129,10 +129,11 @@ after(async () => {
 // ---------------------------------------------------------------------------
 
 test('POST /api/backups creates a readable SQLite copy of the live database', async () => {
-  const { res, json } = await api(ben, '/api/backups', { method: 'POST' });
+  // Backups Write is needed for "Back up now" (SPEC-v3.md 13.1): anna has it.
+  const { res, json } = await api(anna, '/api/backups', { method: 'POST' });
   assert.equal(res.status, 200);
   assert.equal(json.error, undefined);
-  assert.match(json.file, /^maint-\d{8}-\d{6}-ben\.db$/);
+  assert.match(json.file, /^maint-\d{8}-\d{6}-anna\.db$/);
   assert.ok(!Number.isNaN(Date.parse(json.createdAt)), 'createdAt is an ISO timestamp');
   assert.ok(Number.isInteger(json.bytes) && json.bytes > 0);
 
@@ -190,7 +191,7 @@ test('GET /api/backups lists newest first with creator names and Automatic', asy
   const scheduledItem = json.find((item) => item.file === scheduleFile);
   const manualItem = json.find((item) => item.file !== scheduleFile);
   assert.equal(scheduledItem.createdBy, 'Automatic');
-  assert.equal(manualItem.createdBy, 'Ben Bolt');
+  assert.equal(manualItem.createdBy, 'Anna Admin');
   for (const item of json) {
     assert.ok(Number.isInteger(item.bytes) && item.bytes > 0);
     assert.ok(!Number.isNaN(Date.parse(item.createdAt)));
@@ -202,14 +203,15 @@ test('GET /api/backups lists newest first with creator names and Automatic', asy
 // GET /api/backups/:file — admin download (SPEC-v2.md sections 7, 12)
 // ---------------------------------------------------------------------------
 
-test('tech users get 403 on backup download, admins get the bytes', async () => {
+test('users without backups Write get 403 on download; Write gets the bytes', async () => {
   const list = await api(ben, '/api/backups');
-  const file = list.json.find((item) => item.createdBy === 'Ben Bolt').file;
+  const file = list.json.find((item) => item.createdBy === 'Anna Admin').file;
 
   const denied = await api(ben, `/api/backups/${file}`);
   assert.equal(denied.res.status, 403);
   assert.equal(denied.json.error, 'forbidden');
-  assert.equal(denied.json.message, 'Only admins can download backups');
+  assert.equal(denied.json.area, 'backups');
+  assert.equal(denied.json.needed, 'write');
 
   const allowed = await fetch(`${base}/api/backups/${file}`, {
     headers: { cookie: `sid=${anna}` },

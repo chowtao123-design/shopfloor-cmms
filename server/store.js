@@ -5,17 +5,31 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import { BUILTIN_ROLES } from './permissions.js';
+
 /**
  * SQLite store for the Shop Maintenance Log team server.
  * One file (DATA_DIR/maint.db) is the source of truth (SPEC-v2.md section 5).
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- v3 (SPEC-v3.md section 13): roles with per-area permissions. Must be
+-- created before users, which references it.
+CREATE TABLE IF NOT EXISTS roles (
+  id TEXT PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL COLLATE NOCASE,
+  builtin INTEGER NOT NULL DEFAULT 0,
+  permissions TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -24,6 +38,7 @@ CREATE TABLE IF NOT EXISTS users (
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin','tech')),
+  role_id TEXT REFERENCES roles(id),
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -136,10 +151,69 @@ function setMetaValue(db, key, value) {
     .run(key, value);
 }
 
+// v3 (SPEC-v3.md section 13): the legacy users.role values map to roles.
+const LEGACY_ROLE_TO_BUILTIN = new Map([
+  ['admin', 'Administrator'],
+  ['tech', 'Technician'],
+]);
+
+function columnExists(db, table, column) {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+  return rows.some((row) => row.name === column);
+}
+
+function insertRoleHistoryOnCreate(db, roleRow, note) {
+  db.prepare(
+    `INSERT INTO history (store, record_id, action, user_id, at, before, after, conflict, note)
+     VALUES ('roles', ?, 'create', NULL, ?, NULL, ?, 0, ?)`
+  ).run(roleRow.id, roleRow.created_at, JSON.stringify(roleSnapshot(roleRow)), note);
+}
+
+function roleSnapshot(row) {
+  return { name: row.name, builtin: Number(row.builtin) === 1, permissions: JSON.parse(row.permissions) };
+}
+
+/**
+ * Create the three built-in roles idempotently (INSERT OR IGNORE on the
+ * unique name) and record a `roles` history row for each actual creation.
+ * Existing roles (and admin edits to built-in levels) are never overwritten.
+ */
+function seedBuiltinRoles(db) {
+  for (const builtin of BUILTIN_ROLES) {
+    const permissionsJson = JSON.stringify(builtin.permissions);
+    const now = new Date().toISOString();
+    const result = db
+      .prepare(
+        `INSERT OR IGNORE INTO roles (id, name, builtin, permissions, created_at, updated_at, updated_by)
+         VALUES (?, ?, 1, ?, ?, ?, NULL)`
+      )
+      .run(crypto.randomUUID(), builtin.name, permissionsJson, now, now);
+    if (result.changes !== 1) continue;
+    const row = db.prepare('SELECT * FROM roles WHERE name = ?').get(builtin.name);
+    insertRoleHistoryOnCreate(db, row, 'created by the role migration (SPEC-v3.md section 13)');
+  }
+}
+
+/** users.role_id for the whole legacy `admin`/`tech` split (13.2 migration). */
+function mapLegacyUsers(db) {
+  const byName = db.prepare('SELECT id, name FROM roles');
+  const roleIdByName = new Map(byName.all().map((row) => [row.name, row.id]));
+  for (const [legacy, builtinName] of LEGACY_ROLE_TO_BUILTIN) {
+    const roleId = roleIdByName.get(builtinName);
+    if (roleId === undefined) continue;
+    db.prepare('UPDATE users SET role_id = ? WHERE role = ? AND role_id IS NULL').run(roleId, legacy);
+  }
+}
+
 function migrate(db) {
   // CREATE IF NOT EXISTS: safe on a fresh database and on an existing one.
-  // (When later schema versions exist, run stepwise migrations here instead.)
   db.exec(SCHEMA);
+  if (!columnExists(db, 'users', 'role_id')) {
+    // Databases from before v3 roles have no role_id column (stepwise migration).
+    db.exec('ALTER TABLE users ADD COLUMN role_id TEXT REFERENCES roles(id)');
+  }
+  seedBuiltinRoles(db);
+  mapLegacyUsers(db);
   const row = getMetaValue(db, 'schema_version');
   const current = row ? Number(row.value) : null;
   if (Number.isFinite(current) && current > SCHEMA_VERSION) {
@@ -185,6 +259,10 @@ function publicHistory(row) {
     note: row.note,
   };
 }
+
+/** users rows always carry the joined role name and permissions (v3 13.2). */
+const USER_SELECT = `SELECT u.*, r.name AS role_name, r.permissions AS role_permissions
+  FROM users u LEFT JOIN roles r ON r.id = u.role_id`;
 
 /** Public JSON shape of one ai_messages row (SPEC-v3.md section 9). */
 function publicAiMessage(row) {
@@ -348,28 +426,50 @@ export function openStore(dataDir) {
     deleteFileById(id) {
       return db.prepare('DELETE FROM files WHERE id = ?').run(id).changes > 0;
     },
-    createUser({ username, displayName, role, passwordHash }) {
+    /**
+     * Resolve the role a create/update refers to: an explicit roleId, or the
+     * legacy `role` value ('admin' -> Administrator, 'tech' -> Technician).
+     * The legacy column is written once on insert with its mapped value and
+     * left untouched afterwards (13.2: readable, not updated).
+     */
+    resolveRole({ roleId, role }) {
+      if (roleId !== undefined) {
+        const byId = this.getRoleById(roleId);
+        if (byId === null) throw new Error(`unknown roleId "${String(roleId)}"`);
+        return byId;
+      }
+      const builtinName = role === 'admin' ? 'Administrator' : 'Technician';
+      const byName = this.getRoleByName(builtinName);
+      if (byName === null) {
+        throw new Error(`the built-in role "${builtinName}" is missing; cannot map role "${String(role)}"`);
+      }
+      return byName;
+    },
+    createUser({ username, displayName, role, roleId, passwordHash }) {
+      const roleRow = this.resolveRole({ roleId, role });
+      const legacyRole = roleRow.name === 'Administrator' ? 'admin' : 'tech';
       const id = crypto.randomUUID();
       db.prepare(
-        'INSERT INTO users (id, username, display_name, password_hash, role, disabled, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)'
-      ).run(id, username, displayName, passwordHash, role, new Date().toISOString());
+        `INSERT INTO users (id, username, display_name, password_hash, role, role_id, disabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?)`
+      ).run(id, username, displayName, passwordHash, legacyRole, roleRow.id, new Date().toISOString());
       return this.getUserById(id);
     },
     getUserByUsername(username) {
-      const row = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+      const row = db.prepare(USER_SELECT + ' WHERE u.username = ?').get(username);
       return row === undefined ? null : row;
     },
     getUserById(id) {
-      const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+      const row = db.prepare(USER_SELECT + ' WHERE u.id = ?').get(id);
       return row === undefined ? null : row;
     },
     listUsers() {
-      return db.prepare('SELECT * FROM users ORDER BY created_at, username').all();
+      return db.prepare(USER_SELECT + ' ORDER BY u.created_at, u.username').all();
     },
     updateUser(id, fields) {
       const columns = {
         displayName: 'display_name',
-        role: 'role',
+        roleId: 'role_id',
         disabled: 'disabled',
         passwordHash: 'password_hash',
       };
@@ -389,6 +489,103 @@ export function openStore(dataDir) {
     deleteUserSessions(userId) {
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
     },
+
+    // -----------------------------------------------------------------------
+    // Roles (SPEC-v3.md section 13): every change is written to history with
+    // store 'roles' and before/after, like records.
+    // -----------------------------------------------------------------------
+
+    listRoles() {
+      return db.prepare('SELECT * FROM roles ORDER BY builtin DESC, name').all();
+    },
+    getRoleById(id) {
+      const row = db.prepare('SELECT * FROM roles WHERE id = ?').get(id);
+      return row === undefined ? null : row;
+    },
+    getRoleByName(name) {
+      const row = db.prepare('SELECT * FROM roles WHERE name = ?').get(name);
+      return row === undefined ? null : row;
+    },
+    /** Number of users currently assigned to a role. */
+    roleUsersCount(roleId) {
+      const row = db.prepare('SELECT COUNT(*) AS count FROM users WHERE role_id = ?').get(roleId);
+      return Number(row.count);
+    },
+    createRole({ name, permissions, updatedBy }) {
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO roles (id, name, builtin, permissions, created_at, updated_at, updated_by)
+         VALUES (?, ?, 0, ?, ?, ?, ?)`
+      ).run(id, name, JSON.stringify(permissions), now, now, updatedBy === undefined ? null : updatedBy);
+      const row = this.getRoleById(id);
+      this.insertHistory({
+        store: 'roles',
+        recordId: id,
+        version: null,
+        action: 'create',
+        userId: updatedBy,
+        at: now,
+        before: null,
+        after: JSON.stringify(roleSnapshot(row)),
+        conflict: false,
+        note: null,
+      });
+      return row;
+    },
+    updateRole(id, { name, permissions, updatedBy }) {
+      const current = this.getRoleById(id);
+      if (current === null) return null;
+      const now = new Date().toISOString();
+      db.prepare(
+        `UPDATE roles SET name = ?, permissions = ?, updated_at = ?, updated_by = ?
+         WHERE id = ?`
+      ).run(
+        name === undefined ? current.name : name,
+        JSON.stringify(permissions === undefined ? JSON.parse(current.permissions) : permissions),
+        now,
+        updatedBy === undefined ? current.updated_by : updatedBy,
+        id
+      );
+      const row = this.getRoleById(id);
+      this.insertHistory({
+        store: 'roles',
+        recordId: id,
+        version: null,
+        action: 'update',
+        userId: updatedBy,
+        at: now,
+        before: JSON.stringify(roleSnapshot(current)),
+        after: JSON.stringify(roleSnapshot(row)),
+        conflict: false,
+        note: null,
+      });
+      return row;
+    },
+    deleteRole(id, { updatedBy } = {}) {
+      const current = this.getRoleById(id);
+      if (current === null) return null;
+      const now = new Date().toISOString();
+      const before = JSON.stringify(roleSnapshot(current));
+      db.prepare('DELETE FROM roles WHERE id = ?').run(id);
+      this.insertHistory({
+        store: 'roles',
+        recordId: id,
+        version: null,
+        action: 'delete',
+        userId: updatedBy,
+        at: now,
+        before,
+        after: null,
+        conflict: false,
+        note: null,
+      });
+      return current;
+    },
+    /** History entries for one role, newest first (store 'roles'). */
+    roleHistory(roleId) {
+      return this.historyList('roles', roleId);
+    },
     createSession({ tokenHash, userId, createdAt, expiresAt, lastSeenAt }) {
       db.prepare(
         'INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?)'
@@ -398,8 +595,12 @@ export function openStore(dataDir) {
       const row = db
         .prepare(
           `SELECT s.token_hash, s.created_at AS session_created_at, s.expires_at, s.last_seen_at,
-                  u.id AS user_id, u.username, u.display_name, u.role, u.disabled
-           FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`
+                  u.id AS user_id, u.username, u.display_name, u.role AS legacy_role, u.role_id, u.disabled,
+                  r.name AS role_name
+           FROM sessions s
+           JOIN users u ON u.id = s.user_id
+           LEFT JOIN roles r ON r.id = u.role_id
+           WHERE s.token_hash = ?`
         )
         .get(tokenHash);
       return row === undefined ? null : row;

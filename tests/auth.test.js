@@ -80,7 +80,14 @@ test('successful login sets a session cookie with the right flags (no Secure ove
   assert.ok(!sidCookie.includes('Secure'));
   assert.ok(token);
   const root = handle.store.getUserByUsername('root');
-  assert.deepEqual(body, { id: root.id, username: 'root', displayName: 'Root Admin', role: 'admin' });
+  assert.deepEqual(body, {
+    id: root.id,
+    username: 'root',
+    displayName: 'Root Admin',
+    role: 'admin',
+    roleId: root.role_id,
+    roleName: 'Administrator',
+  });
 });
 
 test('cookie strings set and clear with Secure only for HTTPS', () => {
@@ -100,7 +107,18 @@ test('GET /api/me returns the signed-in user without the password hash', async (
   assert.equal(res.status, 200);
   const body = await res.json();
   const tess = handle.store.getUserByUsername('tess');
-  assert.deepEqual(body, { id: tess.id, username: 'tess', displayName: 'Tess Tech', role: 'tech' });
+  const { permissions, ...identity } = body;
+  assert.deepEqual(identity, {
+    id: tess.id,
+    username: 'tess',
+    displayName: 'Tess Tech',
+    role: 'tech',
+    roleId: tess.role_id,
+    roleName: 'Technician',
+  });
+  assert.equal(typeof permissions, 'object');
+  assert.equal(permissions.serviceOrders, 'write');
+  assert.equal(permissions.settings, 'none');
   assert.ok(!JSON.stringify(body).includes('password'));
   assert.ok(!JSON.stringify(body).includes(tess.password_hash));
 });
@@ -222,7 +240,15 @@ test('admin can create users; the list shows everyone without hashes', async () 
   assert.equal(created.status, 201);
   const nina = await created.json();
   const ninaRow = handle.store.getUserByUsername('nina');
-  assert.deepEqual(nina, { id: ninaRow.id, username: 'nina', displayName: 'Nina New', role: 'tech', disabled: false });
+  assert.deepEqual(nina, {
+    id: ninaRow.id,
+    username: 'nina',
+    displayName: 'Nina New',
+    role: 'tech',
+    roleId: ninaRow.role_id,
+    roleName: 'Technician',
+    disabled: false,
+  });
 
   const duplicate = await fetch(`${base}/api/users`, {
     method: 'POST',
@@ -246,7 +272,14 @@ test('admin can create users; the list shows everyone without hashes', async () 
     assert.equal(typeof user.displayName, 'string');
     assert.equal(typeof user.role, 'string');
     assert.equal(typeof user.disabled, 'boolean');
-    assert.deepEqual(Object.keys(user).sort(), ['disabled', 'displayName', 'id', 'role', 'username']);
+    assert.ok(!JSON.stringify(user).includes('password'));
+    assert.ok(!('password_hash' in user));
+    assert.ok(!('role_id' in user));
+    assert.ok(!('role_permissions' in user));
+    assert.deepEqual(
+      Object.keys(user).sort(),
+      ['disabled', 'displayName', 'id', 'role', 'roleId', 'roleName', 'username']
+    );
   }
 });
 
@@ -465,13 +498,14 @@ describe('server/admin.js CLI', () => {
       'bosun-pass-123\n'
     );
     assert.equal(created.code, 0, created.stderr);
-    assert.match(created.stdout, /Created admin "bosun"/);
+    assert.match(created.stdout, /Created Administrator "bosun"/);
 
     const store = openStore(dataDir);
     try {
       const row = store.getUserByUsername('bosun');
       assert.notEqual(row, null);
       assert.equal(row.role, 'admin');
+      assert.equal(row.role_name, 'Administrator');
       assert.equal(row.display_name, 'Bosun Chief');
       assert.notEqual(row.password_hash, 'bosun-pass-123');
       assert.ok(auth.verifyPassword(row.password_hash, 'bosun-pass-123'));
@@ -484,18 +518,20 @@ describe('server/admin.js CLI', () => {
     assert.ok(signedIn.token);
     const me = await fetch(`${server.url}/api/me`, { headers: cookie(signedIn.token) });
     assert.equal(me.status, 200);
-    assert.deepEqual(await me.json(), {
-      id: server.store.getUserByUsername('bosun').id,
-      username: 'bosun',
-      displayName: 'Bosun Chief',
-      role: 'admin',
-    });
+    const meBody = await me.json();
+    const bosun = server.store.getUserByUsername('bosun');
+    assert.equal(meBody.id, bosun.id);
+    assert.equal(meBody.username, 'bosun');
+    assert.equal(meBody.displayName, 'Bosun Chief');
+    assert.equal(meBody.roleName, 'Administrator');
+    assert.equal(meBody.permissions.admin, 'write');
+    assert.ok(!JSON.stringify(meBody).includes(bosun.password_hash));
   });
 
-  it('rejects passwords shorter than 8 characters', async () => {
-    const created = await run(['create-user', 'shrimp', 'Shrimp Short', '--password-stdin'], 'short1\n');
+  it('rejects passwords shorter than 6 characters', async () => {
+    const created = await run(['create-user', 'shrimp', 'Shrimp Short', '--password-stdin'], 'short\n');
     assert.notEqual(created.code, 0);
-    assert.match(`${created.stderr}${created.stdout}`, /at least 8/);
+    assert.match(`${created.stderr}${created.stdout}`, /at least 6/);
 
     const store = openStore(dataDir);
     try {

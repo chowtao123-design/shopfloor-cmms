@@ -7,7 +7,7 @@ export const SCRYPT_R = 8;
 export const SCRYPT_P = 1;
 export const SCRYPT_KEY_LENGTH = 64;
 export const SCRYPT_SALT_LENGTH = 16;
-export const MIN_PASSWORD_LENGTH = 8;
+export const MIN_PASSWORD_LENGTH = 6;
 export const MAX_PASSWORD_LENGTH = 128;
 export const SESSION_TOKEN_BYTES = 32;
 export const SESSION_SLIDE_INTERVAL_MS = 60 * 60 * 1000;
@@ -96,7 +96,16 @@ export function validateSession(store, token, sessionDays) {
   } else {
     store.touchSession(tokenHash, { lastSeenAt: new Date(now).toISOString() });
   }
-  return { id: row.user_id, username: row.username, display_name: row.display_name, role: row.role };
+  // The legacy `role` column stays readable for one version (SPEC-v3.md
+  // 13.2); access itself is decided by can() from users.role_id.
+  return {
+    id: row.user_id,
+    username: row.username,
+    display_name: row.display_name,
+    role: row.legacy_role,
+    roleId: row.role_id === undefined ? null : row.role_id,
+    roleName: row.role_name === undefined ? null : row.role_name,
+  };
 }
 
 export function deleteSessionByToken(store, token) {

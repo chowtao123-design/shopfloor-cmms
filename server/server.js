@@ -60,6 +60,15 @@ import {
   aiPostTest,
   aiPutConfig,
 } from './ai.js';
+import {
+  areaLabel,
+  can,
+  enabledUsersWithAdminWrite,
+  hasAdminWrite,
+  normalizePermissions,
+  permissionsOf,
+  storeArea,
+} from './permissions.js';
 import { openStore } from './store.js';
 
 /**
@@ -132,14 +141,31 @@ export function readConfig(env = process.env) {
 // ---------------------------------------------------------------------------
 
 class HttpError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, extra = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.extra = extra;
   }
 }
 
-const errorResponse = (code, message) => ({ error: code, message });
+const errorResponse = (code, message, extra = {}) => ({ error: code, message, ...extra });
+
+/**
+ * Forbidden body for a failed permission check (SPEC-v3.md 13.2):
+ * `{error: "forbidden", area, needed: "read"|"write"}` (+ a human message).
+ */
+function forbiddenError(area, level) {
+  return new HttpError(403, 'forbidden', `Your role needs "${level}" access to ${areaLabel(area)} for this`, {
+    area,
+    needed: level,
+  });
+}
+
+/** The one gate used inside route handlers (the route table uses `area`). */
+function requireArea(ctx, area, level) {
+  if (!can(ctx.user, area, level)) throw forbiddenError(area, level);
+}
 
 function send(req, res, status, headers, body) {
   const extra = body === undefined ? {} : { 'Content-Length': Buffer.byteLength(body) };
@@ -290,7 +316,15 @@ async function serveStatic(req, res, resolved) {
 // ---------------------------------------------------------------------------
 
 function publicUser(row) {
-  return { id: row.id, username: row.username, displayName: row.display_name, role: row.role };
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    // Legacy role column, kept readable for one version (SPEC-v3.md 13.2).
+    role: row.role === undefined ? null : row.role,
+    roleId: row.role_id !== undefined ? row.role_id : (row.roleId ?? null),
+    roleName: row.role_name !== undefined ? row.role_name : (row.roleName ?? null),
+  };
 }
 
 function publicUserWithDisabled(row) {
@@ -328,12 +362,18 @@ function changesHandler(req, res, ctx) {
   const since = intQueryParam(query, 'since', { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
   const limit = intQueryParam(query, 'limit', { fallback: 500, min: 1, max: 1000 });
   const feed = ctx.store.changesFeed(since, limit);
-  // contractors.hourlyRate is admin-only (SPEC-v3.md section 5).
-  feed.records = feed.records.map((record) => sanitizeRecordForRole(record, ctx.user.role));
+  // Stores the user cannot Read are hidden entirely; contractors.hourlyRate
+  // needs contractorRates Read (SPEC-v3.md 13.2).
+  const showRates = can(ctx.user, 'contractorRates', 'read');
+  feed.records = feed.records
+    .filter((record) => can(ctx.user, storeArea(record.store), 'read'))
+    .map((record) => sanitizeRecordForRole(record, showRates));
   sendJson(req, res, 200, feed);
 }
 
 async function putRecordHandler(req, res, ctx, params) {
+  checkStoreParam(params.store);
+  requireArea(ctx, storeArea(params.store), 'write');
   const body = await readJsonBody(req);
   const result = putRecord(ctx.store, {
     storeName: params.store,
@@ -343,11 +383,13 @@ async function putRecordHandler(req, res, ctx, params) {
   });
   sendJson(req, res, 200, {
     ...result,
-    record: sanitizeRecordForRole(result.record, ctx.user.role),
+    record: sanitizeRecordForRole(result.record, can(ctx.user, 'contractorRates', 'read')),
   });
 }
 
 async function deleteRecordHandler(req, res, ctx, params) {
+  checkStoreParam(params.store);
+  requireArea(ctx, storeArea(params.store), 'write');
   const query = requestQuery(req);
   const baseVersionRaw = query.get('baseVersion');
   let baseVersion = null;
@@ -365,23 +407,48 @@ async function deleteRecordHandler(req, res, ctx, params) {
   });
   sendJson(req, res, 200, {
     ...result,
-    record: sanitizeRecordForRole(result.record, ctx.user.role),
+    record: sanitizeRecordForRole(result.record, can(ctx.user, 'contractorRates', 'read')),
   });
 }
 
 function historyHandler(req, res, ctx, params) {
   checkStoreParam(params.store);
+  requireArea(ctx, storeArea(params.store), 'read');
   if (ctx.store.getRecord(params.store, params.id) === null) {
     throw new HttpError(404, 'not_found', 'No such record');
   }
+  const showRates = can(ctx.user, 'contractorRates', 'read');
   sendJson(
     req,
     res,
     200,
     ctx.store
       .historyList(params.store, params.id)
-      .map((entry) => sanitizeHistoryForRole(entry, ctx.user.role))
+      .map((entry) => sanitizeHistoryForRole(entry, showRates))
   );
+}
+
+/**
+ * Stock moves need `parts` Write; job deductions (job-done/job-reopened with
+ * the order's id) also pass with `serviceOrders` Write, because they are
+ * sent when that user's Service Order save is applied (SPEC-v3.md 13.1).
+ */
+function isJobDeduction(move) {
+  return (
+    isJsonObject(move) &&
+    (move.reason === 'job-done' || move.reason === 'job-reopened') &&
+    typeof move.workOrderId === 'string' &&
+    move.workOrderId !== ''
+  );
+}
+
+function checkStockMovesAccess(user, moves) {
+  if (can(user, 'parts', 'write')) return;
+  if (Array.isArray(moves) && moves.length > 0 && moves.every(isJobDeduction)) {
+    if (can(user, 'serviceOrders', 'write')) return;
+    throw forbiddenError('serviceOrders', 'write');
+  }
+  throw forbiddenError('parts', 'write');
 }
 
 async function stockMovesHandler(req, res, ctx) {
@@ -389,11 +456,13 @@ async function stockMovesHandler(req, res, ctx) {
   if (!isJsonObject(body)) {
     throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
   }
+  checkStockMovesAccess(ctx.user, body.moves);
   const result = applyStockMoves(ctx.store, { moves: body.moves, user: ctx.user });
   sendJson(req, res, 200, result);
 }
 
 async function importV1Handler(req, res, ctx) {
+  requireArea(ctx, 'admin', 'write');
   const body = await readJsonBody(req);
   const counts = importV1(ctx.store, body, ctx.user);
   sendJson(req, res, 200, counts);
@@ -404,6 +473,7 @@ async function importV1Handler(req, res, ctx) {
 // ---------------------------------------------------------------------------
 
 async function uploadFileHandler(req, res, ctx) {
+  requireArea(ctx, 'files', 'write');
   const file = await createUploadedFile(ctx.store, ctx.store.dataDir, req, {
     uploadedBy: ctx.user.id,
   });
@@ -411,6 +481,7 @@ async function uploadFileHandler(req, res, ctx) {
 }
 
 function getFileHandler(req, res, ctx, params) {
+  requireArea(ctx, 'files', 'read');
   const row = findFileById(ctx.store, params.id);
   if (row === null) {
     notFound(req, res);
@@ -424,6 +495,7 @@ function getBrandingHandler(req, res, ctx) {
 }
 
 async function putBrandingHandler(req, res, ctx) {
+  requireArea(ctx, 'settings', 'write');
   const body = await readJsonBody(req);
   if (!isJsonObject(body)) {
     throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
@@ -437,6 +509,7 @@ async function putBrandingHandler(req, res, ctx) {
 }
 
 async function postBrandingLogoHandler(req, res, ctx) {
+  requireArea(ctx, 'settings', 'write');
   const payload = await setBrandingLogo(ctx.store, ctx.store.dataDir, req, {
     version: SERVER_VERSION,
     uploadedBy: ctx.user.id,
@@ -454,6 +527,7 @@ function getBrandingLogoHandler(req, res, ctx) {
 }
 
 function deleteBrandingLogoHandler(req, res, ctx) {
+  requireArea(ctx, 'settings', 'write');
   sendJson(req, res, 200, clearBrandingLogo(ctx.store, ctx.store.dataDir, SERVER_VERSION));
 }
 
@@ -462,8 +536,10 @@ function deleteBrandingLogoHandler(req, res, ctx) {
 // return {status, body, headers} or throw ApiError; this wrapper sends them.
 // ---------------------------------------------------------------------------
 
-function aiRoute(handler) {
+function aiRoute(handler, area, level) {
+  if (!area || !level) throw new Error('aiRoute needs a permission area and level');
   return async function aiHandler(req, res, ctx) {
+    requireArea(ctx, area, level);
     const body = req.method === 'POST' || req.method === 'PUT' ? await readJsonBody(req) : undefined;
     const out = await handler(ctx, req, body);
     sendJson(req, res, out.status ?? 200, out.body ?? {}, out.headers ?? {});
@@ -471,6 +547,7 @@ function aiRoute(handler) {
 }
 
 async function createBackupHandler(req, res, ctx) {
+  requireArea(ctx, 'backups', 'write');
   let meta;
   try {
     meta = await createBackup({
@@ -493,6 +570,7 @@ async function createBackupHandler(req, res, ctx) {
 }
 
 function listBackupsHandler(req, res, ctx) {
+  requireArea(ctx, 'backups', 'read');
   sendJson(req, res, 200, listBackups(ctx.store.db));
 }
 
@@ -525,6 +603,7 @@ function streamBackupFile(req, res, filePath, filename) {
 }
 
 function downloadBackupHandler(req, res, ctx, params) {
+  requireArea(ctx, 'backups', 'write');
   if (!isValidBackupName(ctx.store.db, params.file)) {
     notFound(req, res);
     return;
@@ -586,45 +665,101 @@ function logoutHandler(req, res, ctx) {
 }
 
 function meHandler(req, res, ctx) {
-  sendJson(req, res, 200, publicUser(ctx.user));
+  // 13.2: adds roleId, roleName, permissions (read fresh from the database).
+  sendJson(req, res, 200, {
+    ...publicUser(ctx.user),
+    permissions: permissionsOf(ctx.store, ctx.user.roleId),
+  });
 }
 
 function listUsersHandler(req, res, ctx) {
   sendJson(req, res, 200, ctx.store.listUsers().map(publicUserWithDisabled));
 }
 
+// Role names: 1-40 characters, unique (case-insensitive); the Administrator
+// role is immutable (SPEC-v3.md 13.1).
+function checkRoleName(value) {
+  if (typeof value !== 'string') return { ok: false, message: 'name must be a string' };
+  const name = value.trim();
+  if (name.length < 1 || name.length > 40) {
+    return { ok: false, message: 'name must be between 1 and 40 characters' };
+  }
+  return { ok: true, value: name };
+}
+
+const LAST_ADMIN_MESSAGE =
+  'This is the last enabled user with "write" access to Users & roles; it cannot be disabled or demoted';
+
+/** Resolve the role a create/update refers to (roleId, or the legacy split). */
+function resolveTargetRole(store, { roleId, role }) {
+  if (roleId !== undefined) {
+    if (typeof roleId !== 'string' || roleId === '') {
+      throw new HttpError(400, 'bad_request', 'roleId must be a string');
+    }
+    const row = store.getRoleById(roleId);
+    if (row === null) throw new HttpError(400, 'bad_request', `No role with id "${roleId}"`);
+    return row;
+  }
+  const legacy = checkRole(role);
+  if (!legacy.ok) throw new HttpError(400, 'bad_request', legacy.message);
+  const name = legacy.value === 'admin' ? 'Administrator' : 'Technician';
+  const row = store.getRoleByName(name);
+  if (row === null) {
+    throw new HttpError(400, 'bad_request', `The built-in role "${name}" is missing`);
+  }
+  return row;
+}
+
 async function createUserHandler(req, res, ctx) {
+  requireArea(ctx, 'admin', 'write');
   const body = await readJsonBody(req);
   if (!isJsonObject(body)) {
     throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
   }
+  for (const key of Object.keys(body)) {
+    if (!['username', 'displayName', 'role', 'roleId', 'password'].includes(key)) {
+      throw new HttpError(400, 'bad_request', `Unknown body field "${key}"`);
+    }
+  }
+  if (body.roleId !== undefined && body.role !== undefined) {
+    throw new HttpError(400, 'bad_request', 'Provide either roleId or role, not both');
+  }
+  if (body.roleId === undefined && body.role === undefined) {
+    throw new HttpError(400, 'bad_request', 'roleId (or the legacy role) is required');
+  }
   const checks = [
     checkUsername(body.username),
     checkDisplayName(body.displayName),
-    checkRole(body.role),
     checkPassword(body.password),
   ];
   const failed = checks.find((check) => !check.ok);
   if (failed) {
     throw new HttpError(400, 'bad_request', failed.message);
   }
-  const [username, displayName, role, password] = checks.map((check) => check.value);
+  const [username, displayName, password] = checks.map((check) => check.value);
+  const roleRow = resolveTargetRole(ctx.store, { roleId: body.roleId, role: body.role });
   if (ctx.store.getUserByUsername(username) !== null) {
     throw new HttpError(409, 'username_taken', `Username "${username}" is already in use`);
   }
   const user = ctx.store.createUser({
     username,
     displayName,
-    role,
+    roleId: roleRow.id,
     passwordHash: hashPassword(password),
   });
   sendJson(req, res, 201, publicUserWithDisabled(user));
 }
 
 async function patchUserHandler(req, res, ctx, params) {
+  requireArea(ctx, 'admin', 'write');
   const body = await readJsonBody(req);
   if (!isJsonObject(body)) {
     throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
+  }
+  for (const key of Object.keys(body)) {
+    if (!['displayName', 'role', 'roleId', 'disabled', 'password', 'username'].includes(key)) {
+      throw new HttpError(400, 'bad_request', `Unknown body field "${key}"`);
+    }
   }
   const existing = ctx.store.getUserById(params.id);
   if (existing === null) {
@@ -636,16 +771,18 @@ async function patchUserHandler(req, res, ctx, params) {
   ) {
     throw new HttpError(400, 'bad_request', 'Usernames cannot be changed');
   }
+  if (body.roleId !== undefined && body.role !== undefined) {
+    throw new HttpError(400, 'bad_request', 'Provide either roleId or role, not both');
+  }
   const fields = {};
   if (body.displayName !== undefined) {
     const displayName = checkDisplayName(body.displayName);
     if (!displayName.ok) throw new HttpError(400, 'bad_request', displayName.message);
     fields.displayName = displayName.value;
   }
-  if (body.role !== undefined) {
-    const role = checkRole(body.role);
-    if (!role.ok) throw new HttpError(400, 'bad_request', role.message);
-    fields.role = role.value;
+  if (body.roleId !== undefined || body.role !== undefined) {
+    const roleRow = resolveTargetRole(ctx.store, { roleId: body.roleId, role: body.role });
+    if (roleRow.id !== existing.role_id) fields.roleId = roleRow.id;
   }
   if (body.disabled !== undefined) {
     if (typeof body.disabled !== 'boolean') {
@@ -659,11 +796,172 @@ async function patchUserHandler(req, res, ctx, params) {
     fields.passwordHash = hashPassword(password.value);
   }
   if (Object.keys(fields).length === 0) {
-    throw new HttpError(400, 'bad_request', 'Provide at least one of displayName, role, disabled, password');
+    throw new HttpError(400, 'bad_request', 'Provide at least one of displayName, roleId, disabled, password');
+  }
+  // 13.2 safety: the last enabled user with admin Write cannot be disabled
+  // or demoted (409).
+  const disabling = fields.disabled === 1;
+  const roleChanged = fields.roleId !== undefined;
+  if (disabling || roleChanged) {
+    const isLastAdmin =
+      Number(existing.disabled) !== 1 &&
+      hasAdminWrite(permissionsOf(ctx.store, existing.role_id)) &&
+      enabledUsersWithAdminWrite(ctx.store).every((row) => row.id === existing.id);
+    const keepsAdmin =
+      roleChanged && !disabling && hasAdminWrite(permissionsOf(ctx.store, fields.roleId));
+    if (isLastAdmin && !keepsAdmin) {
+      throw new HttpError(409, 'last_admin', LAST_ADMIN_MESSAGE);
+    }
   }
   const user = ctx.store.updateUser(existing.id, fields);
   if (fields.disabled === 1) ctx.store.deleteUserSessions(existing.id);
   sendJson(req, res, 200, publicUserWithDisabled(user));
+}
+
+// ---------------------------------------------------------------------------
+// Roles (SPEC-v3.md sections 13.1, 13.2)
+// ---------------------------------------------------------------------------
+
+function publicRole(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    builtin: Number(row.builtin) === 1,
+    permissions: JSON.parse(row.permissions),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by === undefined || row.updated_by === null ? null : row.updated_by,
+  };
+}
+
+function getRoleOr404(ctx, id) {
+  const role = ctx.store.getRoleById(id);
+  if (role === null) throw new HttpError(404, 'not_found', 'No such role');
+  return role;
+}
+
+function listRolesHandler(req, res, ctx) {
+  requireArea(ctx, 'admin', 'write');
+  sendJson(req, res, 200, ctx.store.listRoles().map(publicRole));
+}
+
+async function createRoleHandler(req, res, ctx) {
+  requireArea(ctx, 'admin', 'write');
+  const body = await readJsonBody(req);
+  if (!isJsonObject(body)) {
+    throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
+  }
+  for (const key of Object.keys(body)) {
+    if (!['name', 'permissions', 'copyOf'].includes(key)) {
+      throw new HttpError(400, 'bad_request', `Unknown body field "${key}"`);
+    }
+  }
+  const name = checkRoleName(body.name);
+  if (!name.ok) throw new HttpError(400, 'bad_request', name.message);
+  if (ctx.store.getRoleByName(name.value) !== null) {
+    throw new HttpError(409, 'name_taken', `A role named "${name.value}" already exists`);
+  }
+  let permissions;
+  if (body.copyOf !== undefined) {
+    if (body.permissions !== undefined) {
+      throw new HttpError(400, 'bad_request', 'Provide either permissions or copyOf, not both');
+    }
+    const source = getRoleOr404(ctx, body.copyOf);
+    permissions = permissionsOf(ctx.store, source.id);
+  } else {
+    permissions = normalizeRolePermissionsInput(body.permissions);
+  }
+  const role = ctx.store.createRole({ name: name.value, permissions, updatedBy: ctx.user.id });
+  sendJson(req, res, 201, publicRole(role));
+}
+
+function normalizeRolePermissionsInput(raw) {
+  try {
+    return normalizePermissions(raw);
+  } catch (err) {
+    throw new HttpError(400, 'bad_request', err.message);
+  }
+}
+
+async function patchRoleHandler(req, res, ctx, params) {
+  requireArea(ctx, 'admin', 'write');
+  const body = await readJsonBody(req);
+  if (!isJsonObject(body)) {
+    throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
+  }
+  for (const key of Object.keys(body)) {
+    if (!['name', 'permissions'].includes(key)) {
+      throw new HttpError(400, 'bad_request', `Unknown body field "${key}"`);
+    }
+  }
+  const role = getRoleOr404(ctx, params.id);
+  if (Number(role.builtin) === 1 && role.name === 'Administrator') {
+    throw new HttpError(409, 'role_immutable', 'The Administrator role cannot be changed');
+  }
+  const fields = {};
+  if (body.name !== undefined) {
+    const name = checkRoleName(body.name);
+    if (!name.ok) throw new HttpError(400, 'bad_request', name.message);
+    const clash = ctx.store.getRoleByName(name.value);
+    if (clash !== null && clash.id !== role.id) {
+      throw new HttpError(409, 'name_taken', `A role named "${name.value}" already exists`);
+    }
+    fields.name = name.value;
+  }
+  if (body.permissions !== undefined) {
+    fields.permissions = normalizeRolePermissionsInput(body.permissions);
+  }
+  if (fields.name === undefined && fields.permissions === undefined) {
+    throw new HttpError(400, 'bad_request', 'Provide at least one of name, permissions');
+  }
+  // 13.2 safety: nobody can remove admin Write from their own role, and the
+  // roles of the last enabled admins cannot lose it either (409).
+  if (fields.permissions !== undefined) {
+    const oldPerms = permissionsOf(ctx.store, role.id);
+    if (hasAdminWrite(oldPerms) && !hasAdminWrite(fields.permissions)) {
+      if (role.id === ctx.user.roleId) {
+        throw new HttpError(
+          409,
+          'last_admin',
+          'You cannot remove "write" access to Users & roles from your own role'
+        );
+      }
+      const remaining = enabledUsersWithAdminWrite(ctx.store).filter((row) => row.role_id !== role.id);
+      if (remaining.length === 0) {
+        throw new HttpError(
+          409,
+          'last_admin',
+          `Role "${role.name}" is assigned to the last enabled users with "write" access to Users & roles`
+        );
+      }
+    }
+  }
+  const updated = ctx.store.updateRole(role.id, { ...fields, updatedBy: ctx.user.id });
+  sendJson(req, res, 200, publicRole(updated));
+}
+
+async function deleteRoleHandler(req, res, ctx, params) {
+  requireArea(ctx, 'admin', 'write');
+  const role = getRoleOr404(ctx, params.id);
+  if (Number(role.builtin) === 1 && role.name === 'Administrator') {
+    throw new HttpError(409, 'role_immutable', 'The Administrator role cannot be deleted');
+  }
+  const users = ctx.store.roleUsersCount(role.id);
+  if (users > 0) {
+    throw new HttpError(
+      409,
+      'role_in_use',
+      `Role "${role.name}" is assigned to ${users} user${users === 1 ? '' : 's'} and cannot be deleted`
+    );
+  }
+  ctx.store.deleteRole(role.id, { updatedBy: ctx.user.id });
+  sendJson(req, res, 200, { ok: true });
+}
+
+async function roleHistoryHandler(req, res, ctx, params) {
+  requireArea(ctx, 'admin', 'write');
+  const role = getRoleOr404(ctx, params.id);
+  sendJson(req, res, 200, ctx.store.roleHistory(role.id));
 }
 
 function compileRoute(method, pathPattern, options, handler) {
@@ -681,14 +979,24 @@ function compileRoute(method, pathPattern, options, handler) {
   return { method, regex: new RegExp(`^${source}$`), keys, ...options, handler };
 }
 
+// Access is decided inside each handler by can()/requireArea() (SPEC-v3.md
+// 13.2): users, roles and import management need `admin` Write; records,
+// stock moves, files, backups and branding need their area's level.
 const ROUTES = [
   compileRoute('GET', '/api/health', { auth: false }, healthHandler),
   compileRoute('POST', '/api/login', { auth: false }, loginHandler),
   compileRoute('POST', '/api/logout', { auth: true }, logoutHandler),
   compileRoute('GET', '/api/me', { auth: true }, meHandler),
+  // Any signed-in user may list users (SPEC-v2.md section 7: "edited by"
+  // names); managing them (create/patch) needs `admin` Write in the handler.
   compileRoute('GET', '/api/users', { auth: true }, listUsersHandler),
-  compileRoute('POST', '/api/users', { auth: true, admin: true }, createUserHandler),
-  compileRoute('PATCH', '/api/users/:id', { auth: true, admin: true }, patchUserHandler),
+  compileRoute('POST', '/api/users', { auth: true }, createUserHandler),
+  compileRoute('PATCH', '/api/users/:id', { auth: true }, patchUserHandler),
+  compileRoute('GET', '/api/roles', { auth: true }, listRolesHandler),
+  compileRoute('POST', '/api/roles', { auth: true }, createRoleHandler),
+  compileRoute('PATCH', '/api/roles/:id', { auth: true }, patchRoleHandler),
+  compileRoute('DELETE', '/api/roles/:id', { auth: true }, deleteRoleHandler),
+  compileRoute('GET', '/api/roles/:id/history', { auth: true }, roleHistoryHandler),
   compileRoute('GET', '/api/changes', { auth: true }, changesHandler),
   compileRoute('PUT', '/api/records/:store/:id', { auth: true }, putRecordHandler),
   compileRoute('DELETE', '/api/records/:store/:id', { auth: true }, deleteRecordHandler),
@@ -696,62 +1004,24 @@ const ROUTES = [
   compileRoute('POST', '/api/stock-moves', { auth: true }, stockMovesHandler),
   compileRoute('POST', '/api/backups', { auth: true }, createBackupHandler),
   compileRoute('GET', '/api/backups', { auth: true }, listBackupsHandler),
-  compileRoute(
-    'GET',
-    '/api/backups/:file',
-    { auth: true, admin: true, adminMessage: 'Only admins can download backups' },
-    downloadBackupHandler
-  ),
-  compileRoute(
-    'POST',
-    '/api/import-v1',
-    { auth: true, admin: true, adminMessage: 'Only admins can import v1 data' },
-    importV1Handler
-  ),
+  compileRoute('GET', '/api/backups/:file', { auth: true }, downloadBackupHandler),
+  compileRoute('POST', '/api/import-v1', { auth: true }, importV1Handler),
   compileRoute('POST', '/api/files', { auth: true }, uploadFileHandler),
   compileRoute('GET', '/api/files/:id', { auth: true }, getFileHandler),
   compileRoute('GET', '/api/branding', { auth: false }, getBrandingHandler),
-  compileRoute(
-    'PUT',
-    '/api/branding',
-    { auth: true, admin: true, adminMessage: 'Only admins can change branding' },
-    putBrandingHandler
-  ),
-  compileRoute(
-    'POST',
-    '/api/branding/logo',
-    { auth: true, admin: true, adminMessage: 'Only admins can change the logo' },
-    postBrandingLogoHandler
-  ),
+  compileRoute('PUT', '/api/branding', { auth: true }, putBrandingHandler),
+  compileRoute('POST', '/api/branding/logo', { auth: true }, postBrandingLogoHandler),
   compileRoute('GET', '/api/branding/logo', { auth: false }, getBrandingLogoHandler),
-  compileRoute(
-    'DELETE',
-    '/api/branding/logo',
-    { auth: true, admin: true, adminMessage: 'Only admins can change the logo' },
-    deleteBrandingLogoHandler
-  ),
-  compileRoute(
-    'GET',
-    '/api/ai/config',
-    { auth: true, admin: true, adminMessage: 'Only admins can manage the AI assistant' },
-    aiRoute(aiGetConfig)
-  ),
-  compileRoute(
-    'PUT',
-    '/api/ai/config',
-    { auth: true, admin: true, adminMessage: 'Only admins can manage the AI assistant' },
-    aiRoute(aiPutConfig)
-  ),
-  compileRoute(
-    'POST',
-    '/api/ai/test',
-    { auth: true, admin: true, adminMessage: 'Only admins can test the AI assistant' },
-    aiRoute(aiPostTest)
-  ),
-  compileRoute('GET', '/api/ai/status', { auth: true }, aiRoute(aiGetStatus)),
-  compileRoute('POST', '/api/ai/chat', { auth: true }, aiRoute(aiPostChat)),
-  compileRoute('GET', '/api/ai/history', { auth: true }, aiRoute(aiGetHistory)),
-  compileRoute('DELETE', '/api/ai/history', { auth: true }, aiRoute(aiDeleteHistory)),
+  compileRoute('DELETE', '/api/branding/logo', { auth: true }, deleteBrandingLogoHandler),
+  // AI routes (v3 section 9) gated by the roles model (v3 section 13): settings write for
+  // provider config, aiAssistant read to use the chat.
+  compileRoute('GET', '/api/ai/config', { auth: true }, aiRoute(aiGetConfig, 'settings', 'write')),
+  compileRoute('PUT', '/api/ai/config', { auth: true }, aiRoute(aiPutConfig, 'settings', 'write')),
+  compileRoute('POST', '/api/ai/test', { auth: true }, aiRoute(aiPostTest, 'settings', 'write')),
+  compileRoute('GET', '/api/ai/status', { auth: true }, aiRoute(aiGetStatus, 'aiAssistant', 'read')),
+  compileRoute('POST', '/api/ai/chat', { auth: true }, aiRoute(aiPostChat, 'aiAssistant', 'read')),
+  compileRoute('GET', '/api/ai/history', { auth: true }, aiRoute(aiGetHistory, 'aiAssistant', 'read')),
+  compileRoute('DELETE', '/api/ai/history', { auth: true }, aiRoute(aiDeleteHistory, 'aiAssistant', 'read')),
 ];
 
 function matchRoute(method, apiPath) {
@@ -789,7 +1059,9 @@ async function handleApi(req, res, decodedPath, ctx) {
       sendJson(req, res, 401, errorResponse('login_required', 'Sign in to use the API'));
       return;
     }
-    context.user = user;
+    // The session user carries the store handle so can() can re-read the
+    // role's permissions from the database on every request (13.2).
+    context.user = { ...user, store: context.store };
   }
   if (effectiveMethod !== 'GET') {
     const csrfError = checkCsrf(req);
@@ -797,15 +1069,6 @@ async function handleApi(req, res, decodedPath, ctx) {
       sendJson(req, res, 403, errorResponse('forbidden', csrfError));
       return;
     }
-  }
-  if (route.admin && context.user.role !== 'admin') {
-    sendJson(
-      req,
-      res,
-      403,
-      errorResponse('forbidden', route.adminMessage || 'Only admins can manage users')
-    );
-    return;
   }
   await route.handler(req, res, context, params);
 }
@@ -860,7 +1123,7 @@ export function createRequestHandler(context = {}) {
       .catch((err) => {
         if (res.writableEnded) return;
         if (err instanceof HttpError || err instanceof ApiError) {
-          sendJson(req, res, err.status, errorResponse(err.code, err.message));
+          sendJson(req, res, err.status, errorResponse(err.code, err.message, err.extra));
           return;
         }
         console.error('[maint-log] request error:', err);
