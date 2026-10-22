@@ -83,7 +83,7 @@ import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
 import * as sync from './sync.js';
 import { checkSession, logout, renderLogin } from './login.js';
-import { AREA_KEYS, allows } from './permissions.js';
+import { AREAS, AREA_KEYS, allows } from './permissions.js';
 import * as adminUI from './admin.js';
 
 const appMain = document.getElementById('app-main');
@@ -7397,7 +7397,7 @@ function openRoleHistoryDrawer(role) {
     });
 }
 
-function rolesTabSection({ roles, users, dirty, errorBox }) {
+function rolesTabSection({ roles, users, dirty, errorBox = h('div', { class: 'form-error', role: 'alert' }) }) {
   const draft = adminUI.draftFromRoles(roles);
   const unsavedBar = h('div', { class: 'unsaved-bar', hidden: true });
   const matrixHost = h('div');
