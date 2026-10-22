@@ -56,9 +56,16 @@ export const DEFAULT_MACHINE_TYPE = 'single-needle';
 
 export const MACHINE_STATUSES = ['running', 'down', 'in-storage', 'retired'];
 export const WORK_ORDER_KINDS = ['breakdown', 'pm', 'facility', 'install', 'other'];
-export const PRIORITIES = ['low', 'normal', 'urgent'];
+// SPEC-v3.md section 2: the new priority enum. The legacy value `normal` is
+// not offered any more but stays readable (server stores it as `medium`).
+export const PRIORITIES = ['none', 'low', 'medium', 'high', 'urgent'];
 export const WORK_ORDER_STATUSES = ['open', 'in-progress', 'waiting-parts', 'waiting-tech', 'done'];
 export const PM_STATES = ['overdue', 'due-soon', 'ok'];
+
+/** Map a stored priority to its current value; legacy `normal` reads as `medium`. */
+export function priorityValue(priority) {
+  return priority === 'normal' ? 'medium' : priority;
+}
 
 export const LABELS = {
   machineType: Object.fromEntries([
@@ -79,9 +86,13 @@ export const LABELS = {
     other: 'Other',
   },
   priority: {
+    none: 'None',
     low: 'Low',
-    normal: 'Normal',
+    medium: 'Medium',
+    high: 'High',
     urgent: 'Urgent',
+    // Legacy v1/v2 value; the server stores it as `medium` (SPEC-v3.md 2).
+    normal: 'Medium',
   },
   status: {
     open: 'Open',
@@ -305,7 +316,7 @@ export function completePMTask(task, options = {}) {
     title: task.title,
     machineId: task.machineId,
     kind: 'pm',
-    priority: 'normal',
+    priority: 'medium',
     status: 'done',
     reportedAt: today,
     completedAt: today,

@@ -96,6 +96,23 @@ CREATE TABLE IF NOT EXISTS counters (
   name TEXT PRIMARY KEY,
   value INTEGER NOT NULL
 );
+
+-- v3 (SPEC-v3.md section 8): key/value app settings (branding name, logo file id).
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- v3 (SPEC-v3.md section 6): uploaded files metadata; bytes live in DATA_DIR/files/<id>.
+CREATE TABLE IF NOT EXISTS files (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  uploaded_by TEXT,
+  uploaded_at TEXT NOT NULL
+);
 `;
 
 function getMetaValue(db, key) {
@@ -204,6 +221,58 @@ export function openStore(dataDir) {
         )
         .get();
       return Number(row.value);
+    },
+    /**
+     * Next sequential service order number (SPEC-v3.md section 2). Must be
+     * called inside the same transaction as the record write so concurrent
+     * creates get distinct numbers.
+     */
+    nextWorkOrderNumber() {
+      const row = db
+        .prepare(
+          `INSERT INTO counters (name, value) VALUES ('workOrderNumber', 1)
+           ON CONFLICT(name) DO UPDATE SET value = value + 1
+           RETURNING value`
+        )
+        .get();
+      return Number(row.value);
+    },
+    /** Settings value by key, or null (SPEC-v3.md section 8). */
+    getSetting(key) {
+      const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+      return row === undefined ? null : row.value;
+    },
+    setSetting(key, value) {
+      db.prepare(
+        'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+      ).run(key, value);
+    },
+    deleteSetting(key) {
+      db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+    },
+    /** Insert one uploaded-file row (SPEC-v3.md section 6). */
+    insertFile(file) {
+      db.prepare(
+        `INSERT INTO files (id, name, mime, size, sha256, uploaded_by, uploaded_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        file.id,
+        file.name,
+        file.mime,
+        file.size,
+        file.sha256,
+        file.uploadedBy === undefined ? null : file.uploadedBy,
+        file.uploadedAt
+      );
+      return this.getFileById(file.id);
+    },
+    /** One files row by id, or null. */
+    getFileById(id) {
+      const row = db.prepare('SELECT * FROM files WHERE id = ?').get(id);
+      return row === undefined ? null : row;
+    },
+    deleteFileById(id) {
+      return db.prepare('DELETE FROM files WHERE id = ?').run(id).changes > 0;
     },
     createUser({ username, displayName, role, passwordHash }) {
       const id = crypto.randomUUID();

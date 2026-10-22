@@ -40,7 +40,17 @@ import {
   deleteRecord,
   importV1,
   putRecord,
+  sanitizeHistoryForRole,
+  sanitizeRecordForRole,
 } from './records.js';
+import { createUploadedFile, findFileById, streamStoredFile } from './files.js';
+import {
+  brandingPayload,
+  clearBrandingLogo,
+  getBrandingLogoFile,
+  setBrandingLogo,
+  setBrandingName,
+} from './branding.js';
 import { openStore } from './store.js';
 
 /**
@@ -308,7 +318,10 @@ function changesHandler(req, res, ctx) {
   const query = requestQuery(req);
   const since = intQueryParam(query, 'since', { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
   const limit = intQueryParam(query, 'limit', { fallback: 500, min: 1, max: 1000 });
-  sendJson(req, res, 200, ctx.store.changesFeed(since, limit));
+  const feed = ctx.store.changesFeed(since, limit);
+  // contractors.hourlyRate is admin-only (SPEC-v3.md section 5).
+  feed.records = feed.records.map((record) => sanitizeRecordForRole(record, ctx.user.role));
+  sendJson(req, res, 200, feed);
 }
 
 async function putRecordHandler(req, res, ctx, params) {
@@ -319,7 +332,10 @@ async function putRecordHandler(req, res, ctx, params) {
     body,
     user: ctx.user,
   });
-  sendJson(req, res, 200, result);
+  sendJson(req, res, 200, {
+    ...result,
+    record: sanitizeRecordForRole(result.record, ctx.user.role),
+  });
 }
 
 async function deleteRecordHandler(req, res, ctx, params) {
@@ -338,7 +354,10 @@ async function deleteRecordHandler(req, res, ctx, params) {
     baseVersion,
     user: ctx.user,
   });
-  sendJson(req, res, 200, result);
+  sendJson(req, res, 200, {
+    ...result,
+    record: sanitizeRecordForRole(result.record, ctx.user.role),
+  });
 }
 
 function historyHandler(req, res, ctx, params) {
@@ -346,7 +365,14 @@ function historyHandler(req, res, ctx, params) {
   if (ctx.store.getRecord(params.store, params.id) === null) {
     throw new HttpError(404, 'not_found', 'No such record');
   }
-  sendJson(req, res, 200, ctx.store.historyList(params.store, params.id));
+  sendJson(
+    req,
+    res,
+    200,
+    ctx.store
+      .historyList(params.store, params.id)
+      .map((entry) => sanitizeHistoryForRole(entry, ctx.user.role))
+  );
 }
 
 async function stockMovesHandler(req, res, ctx) {
@@ -362,6 +388,64 @@ async function importV1Handler(req, res, ctx) {
   const body = await readJsonBody(req);
   const counts = importV1(ctx.store, body, ctx.user);
   sendJson(req, res, 200, counts);
+}
+
+// ---------------------------------------------------------------------------
+// Files and branding (SPEC-v3.md sections 6 and 8)
+// ---------------------------------------------------------------------------
+
+async function uploadFileHandler(req, res, ctx) {
+  const file = await createUploadedFile(ctx.store, ctx.store.dataDir, req, {
+    uploadedBy: ctx.user.id,
+  });
+  sendJson(req, res, 201, file);
+}
+
+function getFileHandler(req, res, ctx, params) {
+  const row = findFileById(ctx.store, params.id);
+  if (row === null) {
+    notFound(req, res);
+    return;
+  }
+  streamStoredFile(req, res, row, ctx.store.dataDir);
+}
+
+function getBrandingHandler(req, res, ctx) {
+  sendJson(req, res, 200, brandingPayload(ctx.store, SERVER_VERSION));
+}
+
+async function putBrandingHandler(req, res, ctx) {
+  const body = await readJsonBody(req);
+  if (!isJsonObject(body)) {
+    throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
+  }
+  for (const key of Object.keys(body)) {
+    if (key !== 'name') {
+      throw new HttpError(400, 'bad_request', 'Only "name" can be set with PUT /api/branding');
+    }
+  }
+  sendJson(req, res, 200, setBrandingName(ctx.store, body.name, SERVER_VERSION));
+}
+
+async function postBrandingLogoHandler(req, res, ctx) {
+  const payload = await setBrandingLogo(ctx.store, ctx.store.dataDir, req, {
+    version: SERVER_VERSION,
+    uploadedBy: ctx.user.id,
+  });
+  sendJson(req, res, 200, payload);
+}
+
+function getBrandingLogoHandler(req, res, ctx) {
+  const row = getBrandingLogoFile(ctx.store);
+  if (row === null) {
+    notFound(req, res);
+    return;
+  }
+  streamStoredFile(req, res, row, ctx.store.dataDir);
+}
+
+function deleteBrandingLogoHandler(req, res, ctx) {
+  sendJson(req, res, 200, clearBrandingLogo(ctx.store, ctx.store.dataDir, SERVER_VERSION));
 }
 
 async function createBackupHandler(req, res, ctx) {
@@ -601,6 +685,28 @@ const ROUTES = [
     '/api/import-v1',
     { auth: true, admin: true, adminMessage: 'Only admins can import v1 data' },
     importV1Handler
+  ),
+  compileRoute('POST', '/api/files', { auth: true }, uploadFileHandler),
+  compileRoute('GET', '/api/files/:id', { auth: true }, getFileHandler),
+  compileRoute('GET', '/api/branding', { auth: false }, getBrandingHandler),
+  compileRoute(
+    'PUT',
+    '/api/branding',
+    { auth: true, admin: true, adminMessage: 'Only admins can change branding' },
+    putBrandingHandler
+  ),
+  compileRoute(
+    'POST',
+    '/api/branding/logo',
+    { auth: true, admin: true, adminMessage: 'Only admins can change the logo' },
+    postBrandingLogoHandler
+  ),
+  compileRoute('GET', '/api/branding/logo', { auth: false }, getBrandingLogoHandler),
+  compileRoute(
+    'DELETE',
+    '/api/branding/logo',
+    { auth: true, admin: true, adminMessage: 'Only admins can change the logo' },
+    deleteBrandingLogoHandler
   ),
 ];
 

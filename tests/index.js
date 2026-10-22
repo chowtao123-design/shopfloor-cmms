@@ -4,5 +4,6 @@ import './server.test.js';
 import './auth.test.js';
 import './records.test.js';
 import './backup.test.js';
+import './v3-server.test.js';
 import './ui.test.js';
 import './is-main.test.js';

@@ -1,13 +1,17 @@
 'use strict';
 
 /**
- * Record validation and write operations for the four record stores
- * (SPEC-v2.md sections 5, 7.1, 7.3, 11; field rules from SPEC.md section 6).
+ * Record validation and write operations for the six record stores
+ * (SPEC-v2.md sections 5, 7.1, 7.3, 11; SPEC-v3.md sections 2 and 5;
+ * field rules from SPEC.md section 6).
  *
- * `data` holds the v1 record fields minus id/createdAt/updatedAt, which live
- * in `records` columns. Parts' qtyOnHand is server-owned (SPEC-v2.md 7.3):
+ * `data` holds the record fields minus id/createdAt/updatedAt, which live in
+ * `records` columns. Parts' qtyOnHand is server-owned (SPEC-v2.md 7.3):
  * client PUTs of parts ignore qtyOnHand except on create; quantity changes go
- * through stock moves.
+ * through stock moves. WorkOrders.number is server-assigned (SPEC-v3.md 2) and
+ * ignored in client data. Contractors' hourlyRate is admin-only (SPEC-v3.md
+ * 5): it is hidden from non-admins in read responses and non-admin writes keep
+ * the stored value.
  */
 
 export class ApiError extends Error {
@@ -20,7 +24,14 @@ export class ApiError extends Error {
 
 const bad = (message) => new ApiError(400, 'bad_request', message);
 
-export const STORES = ['machines', 'parts', 'workOrders', 'pmTasks'];
+export const STORES = [
+  'machines',
+  'parts',
+  'workOrders',
+  'pmTasks',
+  'coworkers',
+  'contractors',
+];
 
 export const STOCK_REASONS = ['job-done', 'job-reopened', 'manual', 'import'];
 
@@ -56,10 +67,25 @@ const MACHINE_TYPES = [
 ];
 const MACHINE_STATUSES = ['running', 'down', 'in-storage', 'retired'];
 const WORK_ORDER_KINDS = ['breakdown', 'pm', 'facility', 'install', 'other'];
-const WORK_ORDER_PRIORITIES = ['low', 'normal', 'urgent'];
+// SPEC-v3.md section 2: `normal` is the legacy v1/v2 value; it is accepted and
+// stored as `medium` (see the workOrders finalize step below).
+const WORK_ORDER_PRIORITIES = ['none', 'low', 'medium', 'high', 'urgent', 'normal'];
+const WORK_ORDER_CATEGORIES = [
+  'mechanical',
+  'electrical',
+  'pneumatic',
+  'facility',
+  'safety',
+  'cleaning',
+  'other',
+];
 const WORK_ORDER_STATUSES = ['open', 'in-progress', 'waiting-parts', 'waiting-tech', 'done'];
+// SPEC-v3.md section 5: assignee/labour person kinds.
+const PERSON_KINDS = ['user', 'coworker', 'contractor'];
+// SPEC-v3.md section 5: coworker shifts.
+const COWORKER_SHIFTS = ['day', 'evening', 'night', 'rotating', 'other'];
 
-const UUID_RE =
+export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SAMPLE_ID_RE = /^sample-[A-Za-z0-9._-]+$/;
 
@@ -105,13 +131,16 @@ function isISODateOrTimestamp(value) {
   return isISODate(value) || isISOTimestamp(value);
 }
 
-function expectString(store, key, value, { nonEmpty = false, orNull = false } = {}) {
+function expectString(store, key, value, { nonEmpty = false, orNull = false, maxLength } = {}) {
   if (value === null && orNull) return value;
   if (typeof value !== 'string') {
     throw bad(`${store}.${key} must be a string${orNull ? ' or null' : ''}`);
   }
   if (nonEmpty && value.trim() === '') {
     throw bad(`${store}.${key} must not be empty`);
+  }
+  if (maxLength !== undefined && value.length > maxLength) {
+    throw bad(`${store}.${key} must be at most ${maxLength} characters`);
   }
   return value;
 }
@@ -121,6 +150,16 @@ function expectInteger(store, key, value, { min = -Infinity } = {}) {
     throw bad(`${store}.${key} must be an integer`);
   }
   if (value < min) {
+    throw bad(`${store}.${key} must be >= ${min}`);
+  }
+  return value;
+}
+
+function expectNumber(store, key, value, { min } = {}) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw bad(`${store}.${key} must be a number`);
+  }
+  if (min !== undefined && value < min) {
     throw bad(`${store}.${key} must be >= ${min}`);
   }
   return value;
@@ -178,6 +217,90 @@ function expectPartsUsed(store, key, value) {
   return value;
 }
 
+/** Reject unknown keys inside one array item object. */
+function checkItemKeys(store, where, item, allowedKeys) {
+  if (!isPlainObject(item)) throw bad(`${where} must be an object`);
+  for (const itemKey of Object.keys(item)) {
+    if (!allowedKeys.includes(itemKey)) {
+      throw bad(`${where} has an unknown field "${itemKey}"`);
+    }
+  }
+  return item;
+}
+
+// SPEC-v3.md section 2: assignees — array of at most 10 {kind, id}.
+function expectAssignees(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of {kind, id}`);
+  if (value.length > 10) throw bad(`${store}.${key} must have at most 10 entries`);
+  return value.map((item, index) => {
+    const where = `${store}.${key}[${index}]`;
+    checkItemKeys(store, where, item, ['kind', 'id']);
+    expectEnum(store, `${key}[${index}].kind`, item.kind, PERSON_KINDS);
+    expectString(store, `${key}[${index}].id`, item.id, { nonEmpty: true });
+    return { kind: item.kind, id: item.id };
+  });
+}
+
+// SPEC-v3.md section 2: labour — array of at most 200 entries; hours are
+// 0.25–24 in steps of 0.25; note is at most 200 characters.
+function expectLabour(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of labour entries`);
+  if (value.length > 200) throw bad(`${store}.${key} must have at most 200 entries`);
+  return value.map((item, index) => {
+    const where = `${store}.${key}[${index}]`;
+    checkItemKeys(store, where, item, ['id', 'kind', 'personId', 'date', 'hours', 'note']);
+    expectString(store, `${key}[${index}].id`, item.id, { nonEmpty: true });
+    expectEnum(store, `${key}[${index}].kind`, item.kind, PERSON_KINDS);
+    expectString(store, `${key}[${index}].personId`, item.personId, { nonEmpty: true });
+    expectDate(store, `${key}[${index}].date`, item.date);
+    const hours = item.hours;
+    if (
+      typeof hours !== 'number' ||
+      !Number.isFinite(hours) ||
+      hours < 0.25 ||
+      hours > 24 ||
+      !Number.isInteger(hours * 4)
+    ) {
+      throw bad(`${store}.${key}[${index}].hours must be 0.25–24 in steps of 0.25`);
+    }
+    const note =
+      item.note === undefined
+        ? ''
+        : expectString(store, `${key}[${index}].note`, item.note, { maxLength: 200 });
+    return { id: item.id, kind: item.kind, personId: item.personId, date: item.date, hours, note };
+  });
+}
+
+// SPEC-v3.md section 2: checklist — array of at most 50 items; text ≤ 200.
+function expectChecklist(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of checklist items`);
+  if (value.length > 50) throw bad(`${store}.${key} must have at most 50 entries`);
+  return value.map((item, index) => {
+    const where = `${store}.${key}[${index}]`;
+    checkItemKeys(store, where, item, ['id', 'text', 'done']);
+    expectString(store, `${key}[${index}].id`, item.id, { nonEmpty: true });
+    expectString(store, `${key}[${index}].text`, item.text, { nonEmpty: true, maxLength: 200 });
+    const done = item.done === undefined ? false : expectBoolean(store, `${key}[${index}].done`, item.done);
+    return { id: item.id, text: item.text, done };
+  });
+}
+
+// SPEC-v3.md section 2 + section 6: attachments — at most 20 references to
+// uploaded files {fileId, name, mime, size}.
+function expectAttachments(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of {fileId, name, mime, size}`);
+  if (value.length > 20) throw bad(`${store}.${key} must have at most 20 entries`);
+  return value.map((item, index) => {
+    const where = `${store}.${key}[${index}]`;
+    checkItemKeys(store, where, item, ['fileId', 'name', 'mime', 'size']);
+    expectString(store, `${key}[${index}].fileId`, item.fileId, { nonEmpty: true });
+    expectString(store, `${key}[${index}].name`, item.name, { nonEmpty: true, maxLength: 200 });
+    expectString(store, `${key}[${index}].mime`, item.mime, { nonEmpty: true, maxLength: 100 });
+    expectInteger(store, `${key}[${index}].size`, item.size, { min: 0 });
+    return { fileId: item.fileId, name: item.name, mime: item.mime, size: item.size };
+  });
+}
+
 /**
  * Field specs per SPEC.md section 6. `required` fields must be present;
  * `defaults()` fills spec-noted defaults on create only.
@@ -232,24 +355,39 @@ const FIELD_SPECS = {
   },
   workOrders: {
     required: ['title', 'machineId'],
+    // `number` is server-assigned (SPEC-v3.md section 2): it is ignored in
+    // incoming data and set on first save, inside the write transaction.
+    serverOwned: ['number'],
     fields: {
       title: { type: 'string', nonEmpty: true },
       machineId: { type: 'string', nonEmpty: true },
       kind: { type: 'enum', values: WORK_ORDER_KINDS },
       priority: { type: 'enum', values: WORK_ORDER_PRIORITIES },
       status: { type: 'enum', values: WORK_ORDER_STATUSES },
+      category: { type: 'enum', values: WORK_ORDER_CATEGORIES },
       reportedAt: { type: 'date' },
       completedAt: { type: 'date', orNull: true },
+      dueDate: { type: 'date', orNull: true },
+      requestedBy: { type: 'string', maxLength: 80 },
       problem: { type: 'string' },
       actionTaken: { type: 'string' },
+      assignees: { type: 'assignees' },
+      labour: { type: 'labour' },
+      checklist: { type: 'checklist' },
       partsUsed: { type: 'partsUsed' },
+      attachments: { type: 'attachments' },
       minutesSpent: { type: 'int', min: 0 },
       downtimeMinutes: { type: 'int', min: 0 },
       pmTaskId: { type: 'string', orNull: true },
       stockDeducted: { type: 'boolean' },
       photos: { type: 'photos' },
     },
-    defaults: () => ({ reportedAt: todayISO() }),
+    defaults: () => ({ reportedAt: todayISO(), priority: 'medium' }),
+    // Legacy `normal` is read as `medium` (SPEC-v3.md section 2).
+    finalize: (data) => {
+      if (data.priority === 'normal') data.priority = 'medium';
+      return data;
+    },
   },
   pmTasks: {
     required: ['title', 'machineId'],
@@ -263,14 +401,52 @@ const FIELD_SPECS = {
     },
     defaults: () => ({ active: true }),
   },
+  // SPEC-v3.md section 5: people stores share the versioning/history rules.
+  coworkers: {
+    required: ['name'],
+    fields: {
+      name: { type: 'string', nonEmpty: true, maxLength: 80 },
+      role: { type: 'string', maxLength: 60 },
+      phone: { type: 'string' },
+      email: { type: 'string' },
+      shift: { type: 'enum', values: COWORKER_SHIFTS },
+      skills: { type: 'string', maxLength: 200 },
+      linkedUserId: { type: 'string', orNull: true },
+      active: { type: 'boolean' },
+      notes: { type: 'string' },
+    },
+    defaults: () => ({ active: true }),
+  },
+  contractors: {
+    required: ['company'],
+    fields: {
+      company: { type: 'string', nonEmpty: true, maxLength: 80 },
+      trade: { type: 'string', maxLength: 60 },
+      contactName: { type: 'string' },
+      phone: { type: 'string' },
+      email: { type: 'string' },
+      // Admins only (SPEC-v3.md section 5): see putRecord for the non-admin rule.
+      hourlyRate: { type: 'number', min: 0 },
+      machineIds: { type: 'stringArray' },
+      active: { type: 'boolean' },
+      notes: { type: 'string' },
+    },
+    defaults: () => ({ active: true }),
+  },
 };
 
 function validateField(store, key, spec, value) {
   switch (spec.type) {
     case 'string':
-      return expectString(store, key, value, { nonEmpty: spec.nonEmpty === true });
+      return expectString(store, key, value, {
+        nonEmpty: spec.nonEmpty === true,
+        orNull: spec.orNull === true,
+        maxLength: spec.maxLength,
+      });
     case 'int':
       return expectInteger(store, key, value, { min: spec.min ?? -Infinity });
+    case 'number':
+      return expectNumber(store, key, value, { min: spec.min });
     case 'boolean':
       return expectBoolean(store, key, value);
     case 'enum':
@@ -281,6 +457,14 @@ function validateField(store, key, spec, value) {
       return expectStringArray(store, key, value);
     case 'partsUsed':
       return expectPartsUsed(store, key, value);
+    case 'assignees':
+      return expectAssignees(store, key, value);
+    case 'labour':
+      return expectLabour(store, key, value);
+    case 'checklist':
+      return expectChecklist(store, key, value);
+    case 'attachments':
+      return expectAttachments(store, key, value);
     case 'photos': {
       if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array (reserved)`);
       return value;
@@ -310,6 +494,7 @@ export function validateRecordData(storeName, raw, { isCreate = true, part = 're
   const data = {};
   for (const [key, value] of Object.entries(raw)) {
     if (EXCLUDED_KEYS.has(key)) continue;
+    if (spec.serverOwned !== undefined && spec.serverOwned.includes(key)) continue;
     const fieldSpec = spec.fields[key];
     if (fieldSpec === undefined) {
       throw bad(`Unknown field "${key}" for store "${storeName}"`);
@@ -367,6 +552,34 @@ function conflictFor(current, baseVersion, store) {
 const conflictNote = (conflict) =>
   `overwrote v${conflict.overwrittenVersion} by ${conflict.overwrittenBy} at ${conflict.overwrittenAt}`;
 
+// ---------------------------------------------------------------------------
+// Contractors' hourlyRate is admin-only (SPEC-v3.md section 5): the server
+// omits it for non-admins in changes/history responses (and record responses).
+// ---------------------------------------------------------------------------
+
+function withoutHourlyRate(data) {
+  if (!isPlainObject(data) || !('hourlyRate' in data)) return data;
+  const copy = { ...data };
+  delete copy.hourlyRate;
+  return copy;
+}
+
+/** Hide contractors.hourlyRate from a non-admin viewer of one record. */
+export function sanitizeRecordForRole(record, role) {
+  if (!record || record.store !== 'contractors' || role === 'admin') return record;
+  if (record.data === withoutHourlyRate(record.data)) return record;
+  return { ...record, data: withoutHourlyRate(record.data) };
+}
+
+/** Hide contractors.hourlyRate from a non-admin viewer of one history entry. */
+export function sanitizeHistoryForRole(entry, role) {
+  if (!entry || entry.store !== 'contractors' || role === 'admin') return entry;
+  const before = withoutHourlyRate(entry.before);
+  const after = withoutHourlyRate(entry.after);
+  if (before === entry.before && after === entry.after) return entry;
+  return { ...entry, before, after };
+}
+
 function recordJson(
   storeName,
   id,
@@ -408,12 +621,24 @@ export function putRecord(store, { storeName, id, body, user }) {
   const baseVersion = checkBaseVersion(body.baseVersion);
   const current = store.getRecord(storeName, id);
   const isCreate = current === null;
-  const data = validateRecordData(storeName, body.data, { isCreate });
+  // Only admins may edit contractors.hourlyRate (SPEC-v3.md section 5): a
+  // non-admin PUT that includes it keeps the stored value instead.
+  const nonAdminContractor = storeName === 'contractors' && user.role !== 'admin';
+  let rawData = body.data;
+  if (nonAdminContractor && isPlainObject(rawData) && rawData.hourlyRate !== undefined) {
+    rawData = { ...rawData };
+    delete rawData.hourlyRate;
+  }
+  const data = validateRecordData(storeName, rawData, { isCreate });
   if (storeName === 'parts' && !isCreate) {
     // qtyOnHand is server-owned: keep the stored quantity on updates.
     const currentData = JSON.parse(current.data);
     delete data.qtyOnHand;
     data.qtyOnHand = Number.isInteger(currentData.qtyOnHand) ? currentData.qtyOnHand : 0;
+  }
+  if (nonAdminContractor && !isCreate) {
+    const currentData = JSON.parse(current.data);
+    if (currentData.hourlyRate !== undefined) data.hourlyRate = currentData.hourlyRate;
   }
 
   return store.transaction(() => {
@@ -437,6 +662,17 @@ export function putRecord(store, { storeName, id, body, user }) {
       before = current.data;
       action = Number(current.deleted) === 1 ? 'restore' : 'update';
       conflict = conflictFor(current, baseVersion, store);
+    }
+    if (storeName === 'workOrders') {
+      // Sequential server-assigned number on first save (SPEC-v3.md section
+      // 2): assigned inside the same transaction as the write, kept afterwards.
+      // Records saved before v3 (no stored number) get one on their next save.
+      const prior = isCreate ? null : JSON.parse(current.data);
+      if (prior === null || prior.number === undefined) {
+        data.number = store.nextWorkOrderNumber();
+      } else {
+        data.number = prior.number;
+      }
     }
     const dataJson = JSON.stringify(data);
     store.upsertRecord({
@@ -692,10 +928,22 @@ export function importV1(store, payload, user) {
     );
   }
   const incoming = [];
-  for (const storeName of STORES) {
+  // v1 backups (schemaVersion 1) predate the v3 people stores: machines,
+  // parts, workOrders and pmTasks are required lists, coworkers/contractors
+  // are imported when present and must be arrays then.
+  const importStores = [
+    ['machines', true],
+    ['parts', true],
+    ['workOrders', true],
+    ['pmTasks', true],
+    ['coworkers', false],
+    ['contractors', false],
+  ];
+  for (const [storeName, required] of importStores) {
     const list = payload[storeName];
     if (!Array.isArray(list)) {
-      throw bad(`The backup is missing a valid "${storeName}" list.`);
+      if (required) throw bad(`The backup is missing a valid "${storeName}" list.`);
+      continue;
     }
     for (const [index, record] of list.entries()) {
       if (!isPlainObject(record)) throw bad(`${storeName}[${index}] must be an object`);
@@ -727,6 +975,8 @@ export function importV1(store, payload, user) {
       created += 1;
       const seq = store.nextSeq();
       const createdAt = item.createdAt === null ? now : item.createdAt;
+      // Imported service orders get their sequential number here too.
+      if (item.storeName === 'workOrders') item.data.number = store.nextWorkOrderNumber();
       const dataJson = JSON.stringify(item.data);
       store.upsertRecord({
         store: item.storeName,

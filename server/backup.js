@@ -55,6 +55,49 @@ function enforceRetention(db, backupsDir, keep) {
   for (const row of rows) {
     db.prepare('DELETE FROM backups WHERE file = ?').run(row.file);
     fs.rmSync(path.join(backupsDir, row.file), { force: true });
+    // v3 (SPEC-v3.md section 6): each backup's files/ copy goes too.
+    fs.rmSync(path.join(backupsDir, `${row.file}.files`), { recursive: true, force: true });
+  }
+}
+
+/**
+ * Copy DATA_DIR/files next to the backup as `<backup-name>.files/`
+ * (SPEC-v3.md section 6): hard links where possible, plain copies otherwise.
+ * The `files` table itself travels inside the backed-up database.
+ */
+function copyFilesDir(dataDir, backupsDir, backupFile) {
+  const sourceDir = path.join(dataDir, 'files');
+  let entries;
+  try {
+    entries = fs.readdirSync(sourceDir);
+  } catch {
+    return; // no files dir yet: nothing to copy
+  }
+  const targetDir = path.join(backupsDir, `${backupFile}.files`);
+  fs.mkdirSync(targetDir, { recursive: true });
+  let failure = null;
+  for (const entry of entries) {
+    const source = path.join(sourceDir, entry);
+    const target = path.join(targetDir, entry);
+    let stat;
+    try {
+      stat = fs.statSync(source);
+      if (!stat.isFile()) continue;
+    } catch {
+      continue;
+    }
+    try {
+      fs.linkSync(source, target);
+    } catch {
+      try {
+        fs.copyFileSync(source, target);
+      } catch (err) {
+        failure = failure ?? err;
+      }
+    }
+  }
+  if (failure !== null) {
+    throw new Error(`could not copy the files directory into the backup: ${failure.message}`);
   }
 }
 
@@ -114,6 +157,16 @@ export async function createBackup({ db, dataDir, createdBy, kind = 'manual', ke
   } catch (err) {
     fs.rmSync(tempPath, { force: true });
     throw new Error(`could not write the backup file: ${err.message}`);
+  }
+
+  // v3 (SPEC-v3.md section 6): the files/ folder goes next to the backup.
+  // On failure remove the half-made backup so the next attempt starts clean.
+  try {
+    copyFilesDir(dataDir, backupsDir, file);
+  } catch (err) {
+    fs.rmSync(finalPath, { force: true });
+    fs.rmSync(path.join(backupsDir, `${file}.files`), { recursive: true, force: true });
+    throw err;
   }
 
   const createdAt = new Date().toISOString();
