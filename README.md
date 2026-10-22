@@ -153,15 +153,43 @@ TLS_CERT=cert.pem TLS_KEY=key.pem npm start
 
 ### Backups
 
-- **One click:** anyone signed in → Settings → **Back up now**. The file is
-  written to `DATA_DIR/backups/` and shows up in the list right away.
+- **One click:** anyone signed in with *Backups → Write* permission → Settings →
+  **Back up now**. The file is written to `DATA_DIR/backups/` and shows up in
+  the list right away (listing needs *Backups → Read*).
 - **Automatic:** the server backs itself up daily at `BACKUP_DAILY_AT` and
   keeps the newest `BACKUP_KEEP` backups (older files are deleted).
-- **Admins** can download any backup from Settings.
+- Downloading a backup file needs *Backups → Write*.
 - **Restore** (with the server stopped):
   `node server/admin.js restore <backup-file>` — the current database is
   saved first as `backups/pre-restore-<timestamp>.db`. There is no restore
   over HTTP.
+
+### Roles and permissions
+
+Instead of the fixed admin/tech split, an **Administrator** (a user whose role
+has *Users & roles → Write*) defines **roles**, and each role sets a level
+**None / Read / Write** for every area of the app (Service Orders, Preventive
+Maintenance, Machines, Parts & Stock, Coworkers, Outside Contractors,
+Contractor rates & costs, Statistics, Photos & files, Backups, AI assistant,
+Branding & AI settings, Users & roles).
+
+- Built-in roles (created automatically, levels per SPEC-v3.md 13.1):
+  **Administrator** (everything Write; the role itself cannot be edited or
+  deleted), **Technician** (Write on the day-to-day areas, Read on Statistics
+  and Backups), **Viewer** (Read on most areas).
+- The server checks the signed-in user's role permissions on **every
+  request**; a change takes effect on the user's next request. A denied call
+  returns `403` with `{error: "forbidden", area, needed}`.
+- Safety rails: the last enabled user with *Users & roles → Write* cannot be
+  disabled or demoted, and nobody can strip that Write from their own role.
+- Manage roles over the API (`GET/POST /api/roles`, `PATCH/DELETE
+  /api/roles/:id`, history per role) or on the server:
+
+```
+node server/admin.js create-user --admin <username> "<Display Name>"
+node server/admin.js create-user --role "Supervisor" <username> "<Display Name>"
+node server/admin.js list-users        # shows each user's role name
+```
 
 ### Importing v1 data
 
@@ -182,6 +210,41 @@ Replace the app files (git pull, or copy the folder), restart the server, done.
 Records live in `data/maint.db`, not in the app files, so an update does not
 touch them. Devices pick up the new app shell on their next reload (the
 service-worker cache is versioned and refreshes itself).
+
+## AI assistant (v3)
+
+Admins configure the assistant in Settings → **AI assistant** (the chat button
+is hidden when no provider is configured). Providers:
+
+- **openai-compatible** – base URL + API key + model id; works with OpenAI,
+  vLLM, Ollama, LM Studio.
+- **opencode** – run `opencode serve` **on the same machine**, bound to
+  `127.0.0.1`, set `OPENCODE_SERVER_PASSWORD` and use it as the server
+  password here, and start it in an **empty dedicated folder** (opencode can
+  read and edit the folder it runs in; an empty one gives it nothing to touch).
+
+Always use the **Test connection** button after changing settings. Secrets (the
+API key, the opencode password) are stored server-side only and are never sent
+back to the browser (the API answers `{configured: true}` style booleans).
+
+How it behaves:
+
+- The server, not the browser, talks to the provider. Each question sends a
+  short explanation of the app plus a **read-only** snapshot: open and overdue
+  service orders, down machines, PM due within 7 days, low-stock parts and up
+  to 20 records matching the question — but only the areas your role can Read
+  (a machine you cannot read shows as "a machine"; contractor hourly rates and
+  costs need the *Contractor rates & costs* permission). The assistant is told
+  which areas are hidden from you, so it answers "you do not have access to X"
+  instead of guessing. Other people's chats stay out, and the assistant cannot
+  change any data.
+- It may propose a **draft service order** as a JSON block; nothing is saved
+  until you review it and press Save.
+- Limit: 20 messages per minute per user (then a short cool-down).
+- Chat history is stored per user (`GET /api/ai/history`) and everyone can
+  clear only their own (`DELETE /api/ai/history`).
+- If the provider is down or times out (60 s), the chat shows a friendly
+  error; the server logs the failure without secrets.
 
 ## Run locally (standalone, single device)
 

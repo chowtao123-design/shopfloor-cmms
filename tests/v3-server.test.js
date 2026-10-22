@@ -38,6 +38,7 @@ let handle;
 let base;
 let anna; // admin
 let ben; // tech
+let pat; // contractors Write without the contractorRates permission
 
 function setCookies(res) {
   if (typeof res.headers.getSetCookie === 'function') return res.headers.getSetCookie();
@@ -119,8 +120,22 @@ before(async () => {
     role: 'tech',
     passwordHash: auth.hashPassword('ben-password-1'),
   });
+  // A role that can edit contractors but has no contractorRates access, for
+  // the rate rules (SPEC-v3.md 13.1).
+  const ratelessRole = handle.store.createRole({
+    name: 'Rateless',
+    permissions: { contractors: 'write' },
+    updatedBy: null,
+  });
+  handle.store.createUser({
+    username: 'pat',
+    displayName: 'Pat Rateless',
+    roleId: ratelessRole.id,
+    passwordHash: auth.hashPassword('pat-password-1'),
+  });
   anna = await login('anna', 'anna-password-1');
   ben = await login('ben', 'ben-password-1');
+  pat = await login('pat', 'pat-password-1');
 });
 
 after(async () => {
@@ -384,7 +399,7 @@ test('coworkers store: field rules, defaults and history', async () => {
   }
 });
 
-test('contractors.hourlyRate is admin-only: hidden in changes/history, kept on non-admin writes', async () => {
+test('contractors.hourlyRate needs the contractorRates permission: hidden in changes/history, kept on writes without it', async () => {
   const contractorId = uuid();
   const created = await put(anna, 'contractors', contractorId, {
     company: 'Juki Service Ltd',
@@ -399,8 +414,9 @@ test('contractors.hourlyRate is admin-only: hidden in changes/history, kept on n
   assert.equal(created.res.status, 200);
   assert.equal(created.body.record.data.hourlyRate, 85.5, 'admin sees the rate');
 
-  // Non-admin PUT that includes hourlyRate keeps the stored value.
-  const benUpdate = await put(ben, 'contractors', contractorId, {
+  // A PUT without contractorRates Write that includes hourlyRate keeps the
+  // stored value (SPEC-v3.md 13.1).
+  const patUpdate = await put(pat, 'contractors', contractorId, {
     company: 'Juki Service Ltd',
     trade: 'Juki service + presses',
     contactName: 'Marco Bell',
@@ -410,35 +426,39 @@ test('contractors.hourlyRate is admin-only: hidden in changes/history, kept on n
     machineIds: ['m1', 'm2'],
     notes: 'Quarterly service',
   });
-  assert.equal(benUpdate.res.status, 200);
-  assert.equal(benUpdate.body.record.data.hourlyRate, undefined, 'non-admin PUT response hides the rate');
+  assert.equal(patUpdate.res.status, 200);
+  assert.equal(patUpdate.body.record.data.hourlyRate, undefined, 'PUT response hides the rate without Read');
 
   const adminFeed = await changes(anna);
   const contractor = adminFeed.body.records.find((record) => record.id === contractorId);
-  assert.equal(contractor.data.hourlyRate, 85.5, 'the stored rate is unchanged by the non-admin PUT');
+  assert.equal(contractor.data.hourlyRate, 85.5, 'the stored rate is unchanged by the no-Write PUT');
+
+  const patFeed = await changes(pat);
+  const patContractor = patFeed.body.records.find((record) => record.id === contractorId);
+  assert.equal(patContractor.data.hourlyRate, undefined, 'changes omits the rate without Read');
+  assert.ok(!('hourlyRate' in patContractor.data));
 
   const benFeed = await changes(ben);
   const benContractor = benFeed.body.records.find((record) => record.id === contractorId);
-  assert.equal(benContractor.data.hourlyRate, undefined, 'changes omits the rate for non-admins');
-  assert.ok(!('hourlyRate' in benContractor.data));
+  assert.equal(benContractor.data.hourlyRate, 85.5, 'the Technician role has rates Write and sees the rate');
 
   const adminHistory = await history(anna, 'contractors', contractorId);
   assert.equal(adminHistory.res.status, 200);
   assert.ok(
     adminHistory.body.every((entry) => entry.after !== null && entry.after.hourlyRate === 85.5),
-    'admin history shows the rate'
+    'history shows the rate with Read'
   );
 
-  const benHistory = await history(ben, 'contractors', contractorId);
-  assert.equal(benHistory.res.status, 200);
-  assert.ok(benHistory.body.length >= 2, 'history has the create and update entries');
+  const patHistory = await history(pat, 'contractors', contractorId);
+  assert.equal(patHistory.res.status, 200);
+  assert.ok(patHistory.body.length >= 2, 'history has the create and update entries');
   assert.ok(
-    benHistory.body.every(
+    patHistory.body.every(
       (entry) =>
         (entry.before === null || !('hourlyRate' in entry.before)) &&
         !('hourlyRate' in entry.after)
     ),
-    'non-admin history omits the rate from before/after'
+    'history without Read omits the rate from before/after'
   );
 
   // Admin can change the rate; zero is allowed; bad rates are rejected.
@@ -464,17 +484,17 @@ test('contractors.hourlyRate is admin-only: hidden in changes/history, kept on n
     assert.equal(badRate.res.status, 400, `hourlyRate ${JSON.stringify(rate)} must be rejected`);
   }
 
-  // Non-admin creates cannot sneak a rate in.
-  const benCreate = await put(ben, 'contractors', uuid(), {
-    company: 'Ben Electric',
+  // A create without contractorRates Write cannot sneak a rate in.
+  const patCreate = await put(pat, 'contractors', uuid(), {
+    company: 'Pat Electric',
     trade: 'Electrician',
     hourlyRate: 500,
   });
-  assert.equal(benCreate.res.status, 200);
-  const benCreatedId = benCreate.body.record.id;
+  assert.equal(patCreate.res.status, 200);
+  const patCreatedId = patCreate.body.record.id;
   const checkFeed = await changes(anna);
-  const benCreated = checkFeed.body.records.find((record) => record.id === benCreatedId);
-  assert.equal(benCreated.data.hourlyRate, undefined, 'non-admin create stores no rate');
+  const patCreated = checkFeed.body.records.find((record) => record.id === patCreatedId);
+  assert.equal(patCreated.data.hourlyRate, undefined, 'a create without Write stores no rate');
 
   // Field rules for contractors.
   const invalid = [

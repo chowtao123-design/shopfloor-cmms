@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import * as auth from './auth.js';
 import { BACKUP_NAME_RE, formatBackupStamp, isValidBackupName } from './backup.js';
+import { can } from './permissions.js';
 import { importV1 } from './records.js';
 import { openStore } from './store.js';
 import { isMainModule } from './is-main.js';
@@ -14,7 +15,7 @@ const DATA_DIR =
   process.env.DATA_DIR === undefined || process.env.DATA_DIR === '' ? './data' : process.env.DATA_DIR;
 
 const USAGE = `Usage:
-  node server/admin.js create-user [--admin] <username> "<Display Name>" [--password-stdin]
+  node server/admin.js create-user [--admin | --role "<Role name>"] <username> "<Display Name>" [--password-stdin]
   node server/admin.js reset-password <username> [--password-stdin]
   node server/admin.js disable-user <username>
   node server/admin.js enable-user <username>
@@ -27,9 +28,11 @@ Passwords are read hidden from the terminal, or as one line from stdin
 when --password-stdin is given. import-v1 reads a v1 JSON backup and
 attributes the imported records to the given admin user.
 
-restore copies a backup from DATA_DIR/backups over the live database.
-Stop the Shop Maintenance Log server first; restore asks for --yes to
-confirm. The current database is kept as backups/pre-restore-<timestamp>.db.`;
+create-user assigns the Administrator role with --admin, the named role
+with --role "<Role name>" (see list-users), and the Technician role
+otherwise. restore copies a backup from DATA_DIR/backups over the live
+database. Stop the Shop Maintenance Log server first; restore asks for
+--yes to confirm. The current database is kept as backups/pre-restore-<timestamp>.db.`;
 
 function usageError() {
   console.error(USAGE);
@@ -90,13 +93,27 @@ async function obtainPassword(passwordStdin, username) {
 async function cmdCreateUser(args) {
   let admin = false;
   let passwordStdin = false;
+  let roleName = null;
   const positional = [];
-  for (const arg of args) {
-    if (arg === '--admin') admin = true;
-    else if (arg === '--password-stdin') passwordStdin = true;
-    else positional.push(arg);
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--admin') {
+      admin = true;
+    } else if (arg === '--role') {
+      roleName = args[i + 1] ?? null;
+      i += 1;
+    } else if (arg.startsWith('--role=')) {
+      roleName = arg.slice(7);
+    } else if (arg === '--password-stdin') {
+      passwordStdin = true;
+    } else {
+      positional.push(arg);
+    }
   }
   if (positional.length !== 2) return usageError();
+  if (admin && roleName !== null) {
+    throw new Error('create-user takes either --admin or --role "<Role name>", not both');
+  }
   const username = auth.checkUsername(positional[0]);
   if (!username.ok) throw new Error(`username: ${username.message}`);
   const displayName = auth.checkDisplayName(positional[1]);
@@ -107,13 +124,26 @@ async function cmdCreateUser(args) {
     if (store.getUserByUsername(username.value) !== null) {
       throw new Error(`user "${username.value}" already exists`);
     }
+    // --admin assigns Administrator, --role "<name>" the named role, and the
+    // default is Technician (SPEC-v3.md 13.2).
+    let roleRow = null;
+    if (admin) {
+      roleRow = store.getRoleByName('Administrator');
+      if (roleRow === null) throw new Error('the built-in role "Administrator" is missing');
+    } else if (roleName !== null) {
+      roleRow = store.getRoleByName(roleName);
+      if (roleRow === null) throw new Error(`no role named "${roleName}" (see list-users)`);
+    } else {
+      roleRow = store.getRoleByName('Technician');
+      if (roleRow === null) throw new Error('the built-in role "Technician" is missing');
+    }
     const user = store.createUser({
       username: username.value,
       displayName: displayName.value,
-      role: admin ? 'admin' : 'tech',
+      roleId: roleRow.id,
       passwordHash: auth.hashPassword(password),
     });
-    console.log(`Created ${user.role} "${user.username}" (${user.display_name})`);
+    console.log(`Created ${user.role_name} "${user.username}" (${user.display_name})`);
     return 0;
   } finally {
     store.close();
@@ -186,7 +216,7 @@ async function cmdListUsers(args) {
       const cells = [
         user.username,
         user.display_name,
-        user.role,
+        user.role_name === undefined || user.role_name === null ? `(no role)` : user.role_name,
         Number(user.disabled) === 1 ? 'yes' : 'no',
         user.created_at,
       ];
@@ -222,8 +252,8 @@ async function cmdImportV1(args) {
   try {
     const user = store.getUserByUsername(asUsername);
     if (user === null) throw new Error(`no user named "${asUsername}"`);
-    if (user.role !== 'admin') {
-      throw new Error(`user "${asUsername}" is not an admin; only admins can import v1 data`);
+    if (!can({ ...user, store }, 'admin', 'write')) {
+      throw new Error(`user "${asUsername}" cannot import v1 data; their role needs "write" access to Users & roles`);
     }
     let payload;
     try {
