@@ -2177,6 +2177,12 @@ body.logged-out .global-search {
     color: #e0e8f1;
   }
 
+  /* Active item: the older light-theme rule paints the badge white; keep it readable on the dark sidebar. */
+  .sidebar .sidebar-link[aria-current="page"] .nav-count {
+    background: #f07a3e;
+    color: #1b1f27;
+  }
+
   .sidebar-group-title {
     margin: 0.85rem 0.6rem 0.3rem;
     color: #7f8ea0;
@@ -3384,4 +3390,9 @@ body.logged-out .global-search {
 .split-list .data-table [data-col="category"],
 .split-list .data-table [data-col="age"] {
   display: none;
+}
+
+/* Service order numbers never break across lines (SO-0001). */
+.so-number {
+  white-space: nowrap;
 }
