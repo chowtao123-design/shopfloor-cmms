@@ -55,10 +55,13 @@ test('coworker shifts: the five v3 values with labels', () => {
 
 /* ---------- formatMoney (logic.js, pure) ---------- */
 
-test('formatMoney: dollars with two decimals, null for missing values', () => {
-  assert.equal(formatMoney(126.5), '$126.50');
+test('formatMoney: integer cents with separators, null for missing values', () => {
+  // v4 (SPEC-v4.md section 2): money is formatted from integer cents.
+  assert.equal(formatMoney(12650), '$126.50');
   assert.equal(formatMoney(0), '$0.00');
-  assert.equal(formatMoney(95), '$95.00');
+  assert.equal(formatMoney(9500), '$95.00');
+  assert.equal(formatMoney(1), '$0.01');
+  assert.equal(formatMoney(123450), '$1,234.50');
   assert.equal(formatMoney(null), null);
   assert.equal(formatMoney(undefined), null);
   assert.equal(formatMoney(''), null);

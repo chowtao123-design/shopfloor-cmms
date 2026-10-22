@@ -86,6 +86,16 @@ import { checkSession, logout, renderLogin } from './login.js';
 import { AREAS, AREA_KEYS, allows } from './permissions.js';
 import * as adminUI from './admin.js';
 
+/**
+ * Contractor rates and costs are stored in dollars (SPEC-v3.md section 5);
+ * formatMoney takes integer cents (SPEC-v4.md section 2), so convert first.
+ * null/undefined/non-numbers stay null for "hide the figure".
+ */
+function dollarsToCents(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return Math.round(Number(value) * 100);
+}
+
 const appMain = document.getElementById('app-main');
 const pageTitle = document.getElementById('page-title');
 const backButton = document.getElementById('back-button');
@@ -4982,7 +4992,9 @@ function personHoursGrid(entries) {
       h(
         'dd',
         {},
-        entry.cost === null || entry.cost === undefined ? hours : `${hours} · ${formatMoney(entry.cost)}`,
+        entry.cost === null || entry.cost === undefined
+          ? hours
+          : `${hours} · ${formatMoney(dollarsToCents(entry.cost))}`,
       ),
     );
   }
@@ -5122,7 +5134,7 @@ function contractorsTableColumns() {
     columns.push({
       key: 'hourlyRate',
       label: 'Hourly rate',
-      value: (contractor) => formatMoney(contractor.hourlyRate) || '—',
+      value: (contractor) => formatMoney(dollarsToCents(contractor.hourlyRate)) || '—',
       sortValue: (contractor) => {
         const rate = Number(contractor.hourlyRate);
         return contractor.hourlyRate === null || contractor.hourlyRate === undefined || !Number.isFinite(rate)
@@ -5521,7 +5533,7 @@ function renderContractorDetail(route) {
     showRate
       ? [
           h('dt', {}, 'Hourly rate'),
-          h('dd', {}, formatMoney(contractor.hourlyRate) || '—'),
+          h('dd', {}, formatMoney(dollarsToCents(contractor.hourlyRate)) || '—'),
         ]
       : null,
     h('dt', {}, 'Machines serviced'),
@@ -8244,7 +8256,7 @@ function renderStatisticsReports() {
             orders: row.orders,
             hours: row.hours,
           };
-          if (includeCost) entry.cost = row.cost === null ? '' : formatMoney(row.cost);
+          if (includeCost) entry.cost = row.cost === null ? '' : formatMoney(dollarsToCents(row.cost));
           return entry;
         }),
         filename: `statistics-contractor-hours-${todayISO()}.csv`,

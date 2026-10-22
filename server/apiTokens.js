@@ -12,7 +12,7 @@
 import crypto from 'node:crypto';
 
 import { hashPassword } from './auth.js';
-import { normalizePermissions } from './permissions.js';
+import { addMissingRolePermissions, normalizePermissions } from './permissions.js';
 
 export const AGENT_USERNAME = 'muse-agent';
 export const AGENT_DISPLAY_NAME = 'Muse Agent';
@@ -30,7 +30,20 @@ function agentPermissions() {
     contractors: 'read',
     statistics: 'read',
     files: 'read',
+    // v4 (SPEC-v4.md section 1): Muse reads requests from /api/changes and
+    // writes purchaseRequests.
+    purchasing: 'write',
+    library: 'read',
   });
+}
+
+/**
+ * Upgrade a stored role row with the permission keys it is missing
+ * (SPEC-v4.md section 1): keys the row already has are never changed, so an
+ * admin's edit survives the idempotent ensure. Returns the role row used.
+ */
+function ensureRoleUpgraded(store, roleId) {
+  return addMissingRolePermissions(store, roleId, agentPermissions());
 }
 
 /** Raw users row (snake_case) -> the {id, roleId} shape can() reads. */
@@ -46,10 +59,17 @@ export function ensureAgentUser(store, options = {}) {
   const username = options.username ?? AGENT_USERNAME;
   const displayName = options.displayName ?? AGENT_DISPLAY_NAME;
   const existing = store.getUserByUsername(username);
-  if (existing !== null) return asSessionUser(existing);
+  if (existing !== null) {
+    // The live DB already carries the role: add keys it is missing (v4),
+    // never lower keys an admin changed.
+    ensureRoleUpgraded(store, existing.role_id ?? existing.roleId ?? null);
+    return asSessionUser(existing);
+  }
   let role = store.getRoleByName(displayName);
   if (role === null) {
     role = store.createRole({ name: displayName, permissions: agentPermissions() });
+  } else {
+    role = ensureRoleUpgraded(store, role.id) ?? role;
   }
   const created = store.createUser({
     username,

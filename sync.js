@@ -13,7 +13,9 @@ import {
 } from './logic-sync.js';
 import { areaLabel } from './permissions.js';
 
-const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors'];
+// v4 (SPEC-v4.md section 2): purchaseRequests pull like the other record
+// stores (stored offline by db.js; the requests page reads them in V4-M2).
+const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests'];
 const PULL_INTERVAL_MS = 30000;
 const PULL_PAGE_LIMIT = 500;
 const MAX_PULL_PAGES = 200;

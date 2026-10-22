@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { BUILTIN_ROLES } from './permissions.js';
+import { BUILTIN_ROLE_BY_NAME, BUILTIN_ROLES, mergeMissingPermissions } from './permissions.js';
 
 /**
  * SQLite store for the Shop Maintenance Log team server.
@@ -209,6 +209,44 @@ function seedBuiltinRoles(db) {
   }
 }
 
+function snapshotOrNull(row) {
+  try {
+    return JSON.stringify(roleSnapshot(row));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * v4 (SPEC-v4.md section 1): a role saved before the purchasing and library
+ * areas existed has no value for those keys. Built-in roles get the built-in
+ * default for every missing key (custom roles parse missing as `none`); keys
+ * an admin already set are never touched. Idempotent, runs on every startup,
+ * and records a `roles` history row for each actual change.
+ */
+function upgradeBuiltinRolePermissions(db) {
+  const rows = db.prepare('SELECT * FROM roles WHERE builtin = 1').all();
+  for (const row of rows) {
+    const builtin = BUILTIN_ROLE_BY_NAME.get(row.name);
+    if (builtin === undefined) continue;
+    const { permissions, changed } = mergeMissingPermissions(row.permissions, builtin.permissions);
+    if (!changed) continue;
+    const before = snapshotOrNull(row);
+    db.prepare('UPDATE roles SET permissions = ? WHERE id = ?').run(JSON.stringify(permissions), row.id);
+    const refreshed = db.prepare('SELECT * FROM roles WHERE id = ?').get(row.id);
+    db.prepare(
+      `INSERT INTO history (store, record_id, action, user_id, at, before, after, conflict, note)
+       VALUES ('roles', ?, 'update', NULL, ?, ?, ?, 0, ?)`
+    ).run(
+      row.id,
+      new Date().toISOString(),
+      before,
+      snapshotOrNull(refreshed),
+      'added the purchasing and library areas (SPEC-v4.md section 1)'
+    );
+  }
+}
+
 /** users.role_id for the whole legacy `admin`/`tech` split (13.2 migration). */
 function mapLegacyUsers(db) {
   const byName = db.prepare('SELECT id, name FROM roles');
@@ -228,6 +266,7 @@ function migrate(db) {
     db.exec('ALTER TABLE users ADD COLUMN role_id TEXT REFERENCES roles(id)');
   }
   seedBuiltinRoles(db);
+  upgradeBuiltinRolePermissions(db);
   mapLegacyUsers(db);
   const row = getMetaValue(db, 'schema_version');
   const current = row ? Number(row.value) : null;
@@ -369,6 +408,21 @@ export function openStore(dataDir) {
       const row = db
         .prepare(
           `INSERT INTO counters (name, value) VALUES ('workOrderNumber', 1)
+           ON CONFLICT(name) DO UPDATE SET value = value + 1
+           RETURNING value`
+        )
+        .get();
+      return Number(row.value);
+    },
+    /**
+     * Next sequential parts request number (SPEC-v4.md section 2), own
+     * `PR-0001` sequence. Same transaction rule as nextWorkOrderNumber:
+     * called inside the record write so concurrent creates stay distinct.
+     */
+    nextPurchaseRequestNumber() {
+      const row = db
+        .prepare(
+          `INSERT INTO counters (name, value) VALUES ('purchaseRequestNumber', 1)
            ON CONFLICT(name) DO UPDATE SET value = value + 1
            RETURNING value`
         )

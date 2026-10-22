@@ -3,9 +3,10 @@
 import { can } from './permissions.js';
 
 /**
- * Record validation and write operations for the six record stores
+ * Record validation and write operations for the record stores
  * (SPEC-v2.md sections 5, 7.1, 7.3, 11; SPEC-v3.md sections 2 and 5;
- * field rules from SPEC.md section 6).
+ * SPEC-v4.md section 2 for purchaseRequests; field rules from SPEC.md
+ * section 6).
  *
  * `data` holds the record fields minus id/createdAt/updatedAt, which live in
  * `records` columns. Parts' qtyOnHand is server-owned (SPEC-v2.md 7.3):
@@ -34,6 +35,9 @@ export const STORES = [
   'pmTasks',
   'coworkers',
   'contractors',
+  // v4 (SPEC-v4.md section 2): parts requests, ruled by the `purchasing`
+  // permission area like the stores above.
+  'purchaseRequests',
 ];
 
 export const STOCK_REASONS = ['job-done', 'job-reopened', 'manual', 'import'];
@@ -87,6 +91,8 @@ const WORK_ORDER_STATUSES = ['open', 'in-progress', 'waiting-parts', 'waiting-te
 const PERSON_KINDS = ['user', 'coworker', 'contractor'];
 // SPEC-v3.md section 5: coworker shifts.
 const COWORKER_SHIFTS = ['day', 'evening', 'night', 'rotating', 'other'];
+// SPEC-v4.md section 2: parts request statuses.
+const REQUEST_STATUSES = ['draft', 'sent', 'received', 'cancelled'];
 
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -321,6 +327,143 @@ function expectEstimatedHours(store, key, value) {
 }
 
 /**
+ * A number between `min` and `max` with at most `decimals` decimal places
+ * (SPEC-v4.md section 2 money and quantity rules). `min` is exclusive when
+ * `minExclusive` is set.
+ */
+function expectDecimal(store, key, value, { min = 0, max = Infinity, minExclusive = false, decimals = 2 } = {}) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw bad(`${store}.${key} must be a number`);
+  }
+  if (minExclusive ? value <= min : value < min) {
+    throw bad(`${store}.${key} must be ${minExclusive ? 'greater than' : 'at least'} ${min}`);
+  }
+  if (value > max) {
+    throw bad(`${store}.${key} must be at most ${max}`);
+  }
+  const scale = 10 ** decimals;
+  if (Math.abs(value * scale - Math.round(value * scale)) > 1e-6) {
+    throw bad(`${store}.${key} must have at most ${decimals} decimals`);
+  }
+  return value;
+}
+
+/** SPEC-v4.md section 2: the HST percent, 0–30 with at most two decimals. */
+function expectHstRate(store, key, value) {
+  return expectDecimal(store, key, value, { min: 0, max: 30 });
+}
+
+/** ISO datetime or null (SPEC-v4.md section 2: sentAt / receivedAt). */
+function expectTimestampOrNull(store, key, value) {
+  if (value === null) return value;
+  if (typeof value !== 'string' || !isISOTimestamp(value)) {
+    throw bad(`${store}.${key} must be an ISO datetime or null`);
+  }
+  return value;
+}
+
+/** http/https URL of at most 500 characters (SPEC-v4.md section 2 `link`). */
+function expectHttpUrl(store, key, value) {
+  expectString(store, key, value, { nonEmpty: true });
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw bad(`${store}.${key} must be a valid http/https URL`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw bad(`${store}.${key} must be an http or https URL`);
+  }
+  if (value.length > 500) {
+    throw bad(`${store}.${key} must be at most 500 characters`);
+  }
+  return value;
+}
+
+// SPEC-v4.md section 2: parts request lines. Totals are computed from the
+// lines client-side (logic.js requestTotals) and never stored.
+const REQUEST_LINE_KEYS = [
+  'id',
+  'description',
+  'qty',
+  'unit',
+  'unitPrice',
+  'partId',
+  'partNumber',
+  'supplier',
+  'machineId',
+  'workOrderId',
+  'link',
+  'note',
+];
+
+/**
+ * Validate the `lines` array of a parts request: at most 100 entries, each
+ * checked line by line, unknown fields rejected. `description` is required;
+ * `unit` defaults to "pcs" and a missing/null `unitPrice` stays null for
+ * "price unknown".
+ */
+function expectRequestLines(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of line items`);
+  if (value.length > 100) throw bad(`${store}.${key} must have at most 100 entries`);
+  return value.map((item, index) => {
+    const where = `${store}.${key}[${index}]`;
+    checkItemKeys(store, where, item, REQUEST_LINE_KEYS);
+    const line = {};
+    if (item.id !== undefined) {
+      line.id = expectString(store, `${key}[${index}].id`, item.id, { maxLength: 40 });
+    }
+    line.description = expectString(store, `${key}[${index}].description`, item.description, {
+      nonEmpty: true,
+      maxLength: 200,
+    });
+    line.qty = expectDecimal(store, `${key}[${index}].qty`, item.qty, {
+      min: 0,
+      minExclusive: true,
+      max: 100000,
+    });
+    line.unit =
+      item.unit === undefined
+        ? 'pcs'
+        : expectString(store, `${key}[${index}].unit`, item.unit, { maxLength: 20 });
+    line.unitPrice =
+      item.unitPrice === undefined || item.unitPrice === null
+        ? null
+        : expectDecimal(store, `${key}[${index}].unitPrice`, item.unitPrice, { min: 0, max: 1000000 });
+    if (item.partId !== undefined) {
+      line.partId = expectString(store, `${key}[${index}].partId`, item.partId, { nonEmpty: true });
+    }
+    if (item.partNumber !== undefined) {
+      line.partNumber = expectString(store, `${key}[${index}].partNumber`, item.partNumber, {
+        maxLength: 60,
+      });
+    }
+    if (item.supplier !== undefined) {
+      line.supplier = expectString(store, `${key}[${index}].supplier`, item.supplier, {
+        maxLength: 120,
+      });
+    }
+    if (item.machineId !== undefined) {
+      line.machineId = expectString(store, `${key}[${index}].machineId`, item.machineId, {
+        nonEmpty: true,
+      });
+    }
+    if (item.workOrderId !== undefined) {
+      line.workOrderId = expectString(store, `${key}[${index}].workOrderId`, item.workOrderId, {
+        nonEmpty: true,
+      });
+    }
+    if (item.link !== undefined) {
+      line.link = expectHttpUrl(store, `${key}[${index}].link`, item.link);
+    }
+    if (item.note !== undefined) {
+      line.note = expectString(store, `${key}[${index}].note`, item.note, { maxLength: 200 });
+    }
+    return line;
+  });
+}
+
+/**
  * Field specs per SPEC.md section 6. `required` fields must be present;
  * `defaults()` fills spec-noted defaults on create only.
  */
@@ -471,6 +614,26 @@ const FIELD_SPECS = {
     },
     defaults: () => ({ active: true }),
   },
+  // SPEC-v4.md section 2: parts requests. `number` is server-assigned on
+  // first save (own PR- sequence, see putRecord) and ignored in incoming
+  // data; totals are computed (logic.js requestTotals), never stored.
+  purchaseRequests: {
+    required: ['title'],
+    serverOwned: ['number'],
+    fields: {
+      title: { type: 'string', nonEmpty: true, maxLength: 120 },
+      status: { type: 'enum', values: REQUEST_STATUSES },
+      supplier: { type: 'string', maxLength: 120 },
+      neededBy: { type: 'date', orNull: true },
+      requestedBy: { type: 'string', maxLength: 80 },
+      hstRate: { type: 'hstRate' },
+      notes: { type: 'string', maxLength: 2000 },
+      sentAt: { type: 'datetime' },
+      receivedAt: { type: 'datetime' },
+      lines: { type: 'requestLines' },
+    },
+    defaults: () => ({ status: 'draft', hstRate: 13, lines: [], sentAt: null, receivedAt: null }),
+  },
 };
 
 function validateField(store, key, spec, value) {
@@ -505,6 +668,12 @@ function validateField(store, key, spec, value) {
       return expectAttachments(store, key, value);
     case 'estimatedHours':
       return expectEstimatedHours(store, key, value);
+    case 'hstRate':
+      return expectHstRate(store, key, value);
+    case 'datetime':
+      return expectTimestampOrNull(store, key, value);
+    case 'requestLines':
+      return expectRequestLines(store, key, value);
     case 'photos': {
       if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array (reserved)`);
       return value;
@@ -713,6 +882,16 @@ export function putRecord(store, { storeName, id, body, user, note = null }) {
       const prior = isCreate ? null : JSON.parse(current.data);
       if (prior === null || prior.number === undefined) {
         data.number = store.nextWorkOrderNumber();
+      } else {
+        data.number = prior.number;
+      }
+    }
+    if (storeName === 'purchaseRequests') {
+      // Same pattern, own PR- sequence (SPEC-v4.md section 2): assigned on
+      // first save inside the write transaction, kept on every later save.
+      const prior = isCreate ? null : JSON.parse(current.data);
+      if (prior === null || prior.number === undefined) {
+        data.number = store.nextPurchaseRequestNumber();
       } else {
         data.number = prior.number;
       }

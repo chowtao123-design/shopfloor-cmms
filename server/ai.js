@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 
 import { hashPassword } from './auth.js';
 import { ApiError, UUID_RE, putRecord } from './records.js';
-import { can, normalizePermissions, storeArea } from './permissions.js';
+import { addMissingRolePermissions, can, normalizePermissions, storeArea } from './permissions.js';
 
 /**
  * AI assistant server parts (SPEC-v3.md section 9): provider
@@ -1007,30 +1007,44 @@ export const AI_MAX_PROPOSALS = 3;
 /** Fields the model may never set through a proposal. */
 const ASSISTANT_PROTECTED_FIELDS = new Set(['id', 'version', 'number', 'createdBy', 'updatedBy']);
 
+/** What the AI Assistant role may do (v4: read requests, write the library). */
+function assistantPermissions() {
+  return normalizePermissions({
+    serviceOrders: 'write',
+    pm: 'write',
+    machines: 'write',
+    parts: 'read',
+    coworkers: 'read',
+    contractors: 'read',
+    statistics: 'read',
+    files: 'read',
+    aiAssistant: 'write',
+    purchasing: 'read',
+    library: 'write',
+  });
+}
+
 /**
  * The AI Assistant user, created on first use (idempotent): its own role with
  * Write on exactly the three editable areas, and disabled so nobody can sign
- * in as it. Returns the user row.
+ * in as it. Returns the user row. When the role already exists (the live DB
+ * does), keys it is missing are added and existing keys are never lowered
+ * (SPEC-v4.md section 1).
  */
 export function ensureAiAssistantUser(store) {
   const existing = store.getUserByUsername(AI_ASSISTANT_USERNAME);
-  if (existing !== null) return asSessionUser(existing);
+  if (existing !== null) {
+    addMissingRolePermissions(store, existing.role_id ?? existing.roleId ?? null, assistantPermissions());
+    return asSessionUser(existing);
+  }
   let role = store.getRoleByName(AI_ASSISTANT_ROLE_NAME);
   if (role === null) {
     role = store.createRole({
       name: AI_ASSISTANT_ROLE_NAME,
-      permissions: normalizePermissions({
-        serviceOrders: 'write',
-        pm: 'write',
-        machines: 'write',
-        parts: 'read',
-        coworkers: 'read',
-        contractors: 'read',
-        statistics: 'read',
-        files: 'read',
-        aiAssistant: 'write',
-      }),
+      permissions: assistantPermissions(),
     });
+  } else {
+    role = addMissingRolePermissions(store, role.id, assistantPermissions()) ?? role;
   }
   const created = store.createUser({
     username: AI_ASSISTANT_USERNAME,

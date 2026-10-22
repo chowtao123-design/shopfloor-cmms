@@ -652,15 +652,68 @@ export function formatHours(hours) {
 }
 
 /**
- * "$126.50" for money values (contractor rates and costs, SPEC-v3.md section
- * 5); null/undefined/non-numbers become null so callers can hide the figure.
+ * "$1,234.50" for money in integer cents (SPEC-v4.md section 2, CAD):
+ * totals are calculated in cents so client math never drifts, and this
+ * formats them with thousands separators. null/undefined/non-numbers stay
+ * null so callers can hide the figure.
  */
-export function formatMoney(value) {
-  const amount = Number(value);
-  if (value === null || value === undefined || value === '' || !Number.isFinite(amount)) {
+export function formatMoney(cents) {
+  const amount = Number(cents);
+  if (cents === null || cents === undefined || cents === '' || !Number.isFinite(amount)) {
     return null;
   }
-  return `$${amount.toFixed(2)}`;
+  const absolute = Math.abs(Math.round(amount));
+  const whole = String(Math.floor(absolute / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${amount < 0 ? '-' : ''}$${whole}.${String(absolute % 100).padStart(2, '0')}`;
+}
+
+/* ---------- Parts request helpers (SPEC-v4.md section 2) ---------- */
+
+/**
+ * "PR-0001" for a server-assigned request number, "PR-pending" before the
+ * first sync (SPEC-v4.md section 2).
+ */
+export function formatRequestNumber(number) {
+  const value = Number(number);
+  if (number === null || number === undefined || number === '' || !Number.isFinite(value)) {
+    return 'PR-pending';
+  }
+  return `PR-${String(Math.floor(Math.abs(value))).padStart(4, '0')}`;
+}
+
+/**
+ * Money math for one parts request in integer cents (SPEC-v4.md section 2):
+ * `lineTotal = round(qty × unitPrice × 100)` per line, the subtotal before
+ * HST, `hst = round(subtotal × hstRate / 100)` and the grand total. Lines
+ * without a unit price count as 0 and are reported in `unpricedCount`. The
+ * totals are calculated, never stored.
+ */
+export function requestTotals(request) {
+  const lines = Array.isArray(request && request.lines) ? request.lines.filter(Boolean) : [];
+  const rate = Number(request && request.hstRate);
+  const hstRate = Number.isFinite(rate) && rate >= 0 ? rate : 13;
+  const lineTotals = lines.map((line) => {
+    const unitPrice = line.unitPrice;
+    if (unitPrice === null || unitPrice === undefined) return 0;
+    const price = Number(unitPrice);
+    if (!Number.isFinite(price)) return 0;
+    const qty = Number(line.qty);
+    const quantity = Number.isFinite(qty) ? qty : 0;
+    return Math.round(quantity * price * 100);
+  });
+  let subtotalCents = 0;
+  for (const cents of lineTotals) subtotalCents += cents;
+  const unpricedCount = lines.filter(
+    (line) => line.unitPrice === null || line.unitPrice === undefined
+  ).length;
+  const hstCents = Math.round((subtotalCents * hstRate) / 100);
+  return {
+    lines: lineTotals.map((lineTotalCents) => ({ lineTotalCents })),
+    subtotalCents,
+    hstCents,
+    totalCents: subtotalCents + hstCents,
+    unpricedCount,
+  };
 }
 
 /**

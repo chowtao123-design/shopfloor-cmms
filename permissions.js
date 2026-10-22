@@ -7,6 +7,9 @@ const AREAS = [
   { key: 'pm', label: 'Preventive Maintenance' },
   { key: 'machines', label: 'Machines' },
   { key: 'parts', label: 'Parts & Stock' },
+  // v4 (SPEC-v4.md section 1): parts requests and the repair library.
+  { key: 'purchasing', label: 'Parts requests' },
+  { key: 'library', label: 'Library (manuals & repair methods)' },
   { key: 'coworkers', label: 'Coworkers' },
   { key: 'contractors', label: 'Outside Contractors' },
   { key: 'contractorRates', label: 'Contractor rates & costs' },
@@ -27,6 +30,10 @@ const STORE_AREAS = new Map([
   ['pmTasks', 'pm'],
   ['machines', 'machines'],
   ['parts', 'parts'],
+  // v4 (SPEC-v4.md section 1): purchaseRequests -> purchasing,
+  // libraryItems -> library.
+  ['purchaseRequests', 'purchasing'],
+  ['libraryItems', 'library'],
   ['coworkers', 'coworkers'],
   ['contractors', 'contractors'],
 ]);

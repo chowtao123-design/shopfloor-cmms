@@ -21,6 +21,9 @@ export const AREAS = [
   { key: 'pm', label: 'Preventive Maintenance' },
   { key: 'machines', label: 'Machines' },
   { key: 'parts', label: 'Parts & Stock' },
+  // v4 (SPEC-v4.md section 1): parts requests and the repair library.
+  { key: 'purchasing', label: 'Parts requests' },
+  { key: 'library', label: 'Library (manuals & repair methods)' },
   { key: 'coworkers', label: 'Coworkers' },
   { key: 'contractors', label: 'Outside Contractors' },
   { key: 'contractorRates', label: 'Contractor rates & costs' },
@@ -48,6 +51,8 @@ const STORE_AREAS = new Map([
   ['pmTasks', 'pm'],
   ['machines', 'machines'],
   ['parts', 'parts'],
+  ['purchaseRequests', 'purchasing'],
+  ['libraryItems', 'library'],
   ['coworkers', 'coworkers'],
   ['contractors', 'contractors'],
 ]);
@@ -88,19 +93,29 @@ export function normalizePermissions(raw) {
 }
 
 /**
- * Parse a stored permissions JSON column without ever throwing: rows written
- * before an area existed (or corrupted JSON) behave as `none` everywhere.
+ * Parse a stored permissions JSON column without ever throwing. Rows written
+ * before an area existed (or corrupted JSON) behave as `none` everywhere —
+ * except v4 (SPEC-v4.md section 1): a built-in role gets the built-in default
+ * for keys its stored JSON lacks; custom roles get `none`. Stored keys (even
+ * an explicit `none`) always win, so an admin's edit is never lowered.
  */
-function permissiveParse(text) {
-  if (typeof text !== 'string' || text === '') return allNone();
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return allNone();
+function permissiveParse(text, builtinName = undefined) {
+  let parsed = null;
+  if (typeof text === 'string' && text !== '') {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
   }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return allNone();
-  const permissions = allNone();
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
+  const defaults =
+    builtinName === undefined ? undefined : BUILTIN_ROLE_BY_NAME.get(builtinName);
+  const permissions = {};
+  for (const key of AREA_KEYS) {
+    permissions[key] =
+      defaults !== undefined && LEVEL_RANK.has(defaults[key]) ? defaults[key] : 'none';
+  }
   for (const key of Object.keys(parsed)) {
     if (AREA_BY_KEY.has(key) && LEVEL_RANK.has(parsed[key])) permissions[key] = parsed[key];
   }
@@ -125,6 +140,8 @@ export const BUILTIN_ROLES = [
       coworkers: 'write',
       contractors: 'write',
       contractorRates: 'write',
+      purchasing: 'write',
+      library: 'write',
       files: 'write',
       aiAssistant: 'write',
       statistics: 'read',
@@ -138,6 +155,8 @@ export const BUILTIN_ROLES = [
       pm: 'read',
       machines: 'read',
       parts: 'read',
+      purchasing: 'read',
+      library: 'read',
       coworkers: 'read',
       contractors: 'read',
       statistics: 'read',
@@ -146,14 +165,71 @@ export const BUILTIN_ROLES = [
   },
 ];
 
+/** Default permissions of a built-in role by name (the 13.1/v4 levels). */
+export const BUILTIN_ROLE_BY_NAME = new Map(BUILTIN_ROLES.map((role) => [role.name, role]));
+
+/**
+ * Effective permissions of a stored role JSON column when keys saved before an
+ * area existed must fall back to `defaults` (SPEC-v4.md section 1): keys the
+ * row carries keep their stored value — an admin's edit is never lowered —
+ * while missing or invalid keys get the default. `changed` says whether that
+ * differs from reading the row as-is (missing -> none), so callers rewrite
+ * the row only when the defaults actually add something.
+ */
+export function mergeMissingPermissions(storedText, defaults) {
+  let parsed = null;
+  if (typeof storedText === 'string' && storedText !== '') {
+    try {
+      parsed = JSON.parse(storedText);
+    } catch {
+      parsed = null;
+    }
+  }
+  const raw = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  const permissions = allNone();
+  for (const key of Object.keys(raw)) {
+    if (AREA_BY_KEY.has(key) && LEVEL_RANK.has(raw[key])) permissions[key] = raw[key];
+  }
+  let changed = false;
+  for (const key of AREA_KEYS) {
+    if (AREA_BY_KEY.has(key) && LEVEL_RANK.has(raw[key])) continue;
+    const fallback = defaults !== null && typeof defaults === 'object' && LEVEL_RANK.has(defaults[key])
+      ? defaults[key]
+      : 'none';
+    if (fallback !== 'none') {
+      permissions[key] = fallback;
+      changed = true;
+    }
+  }
+  return { permissions, changed };
+}
+
+/**
+ * Add `defaults` keys a stored role row does not have yet (SPEC-v4.md section
+ * 1, the live-DB upgrade for the agent and AI assistant roles): present keys
+ * are kept exactly as stored, so an admin's change — even a lower level —
+ * survives the idempotent upgrade. Returns the role row (refreshed when an
+ * update was written) or null when the role does not exist.
+ */
+export function addMissingRolePermissions(store, roleId, defaults) {
+  if (roleId === null || roleId === undefined) return null;
+  const role = store.getRoleById(roleId);
+  if (role === null) return null;
+  const { permissions, changed } = mergeMissingPermissions(role.permissions, defaults);
+  if (!changed) return role;
+  return store.updateRole(role.id, { permissions, updatedBy: undefined });
+}
+
 /** Permissions for the user's role, read from the database right now. */
 export function permissionsOf(store, roleId) {
   if (store === null || store === undefined || roleId === null || roleId === undefined) {
     return allNone();
   }
-  const row = store.db.prepare('SELECT permissions FROM roles WHERE id = ?').get(roleId);
+  const row = store.db.prepare('SELECT permissions, builtin, name FROM roles WHERE id = ?').get(roleId);
   if (row === undefined) return allNone();
-  return permissiveParse(row.permissions);
+  // Built-in roles fall back to their default for keys saved before the area
+  // existed (SPEC-v4.md section 1); custom roles read missing as `none`.
+  return permissiveParse(row.permissions, Number(row.builtin) === 1 ? row.name : undefined);
 }
 
 /**
@@ -185,6 +261,6 @@ export function enabledUsersWithAdminWrite(store) {
     .filter(
       (row) =>
         Number(row.disabled) !== 1 &&
-        hasAdminWrite(permissiveParse(row.role_permissions === undefined ? null : row.role_permissions))
+        hasAdminWrite(permissionsOf(store, row.role_id ?? row.roleId ?? null))
     );
 }

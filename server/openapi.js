@@ -9,7 +9,7 @@
  * per-record GET, because the client mirror is the source of truth.
  */
 
-const storeEnum = ['machines', 'workOrders', 'pmTasks'];
+const storeEnum = ['machines', 'workOrders', 'pmTasks', 'purchaseRequests'];
 
 function recordRef() {
   return { $ref: '#/components/schemas/Record' };
@@ -53,6 +53,54 @@ export function openApiSpec(version = '2.0.0') {
             version: { type: 'integer' },
             deleted: { type: 'boolean', description: 'Tombstone: the record was deleted.' },
           },
+        },
+        PurchaseRequestLine: {
+          type: 'object',
+          description: 'One line of a parts request. Unknown fields are rejected.',
+          properties: {
+            id: { type: 'string', maxLength: 40 },
+            description: { type: 'string', minLength: 1, maxLength: 200 },
+            qty: { type: 'number', description: 'Greater than 0, at most 100000, up to two decimals.' },
+            unit: { type: 'string', maxLength: 20, default: 'pcs' },
+            unitPrice: {
+              type: ['number', 'null'],
+              minimum: 0,
+              maximum: 1000000,
+              description: 'Unit price in dollars, up to two decimals; null means "price unknown" (counts as 0 in the totals).',
+            },
+            partId: { type: 'string' },
+            partNumber: { type: 'string', maxLength: 60 },
+            supplier: { type: 'string', maxLength: 120 },
+            machineId: { type: 'string' },
+            workOrderId: { type: 'string' },
+            link: { type: 'string', maxLength: 500, description: 'http or https URL.' },
+            note: { type: 'string', maxLength: 200 },
+          },
+          required: ['description'],
+        },
+        PurchaseRequest: {
+          type: 'object',
+          description:
+            'A parts request (SPEC-v4.md section 2). `number` is assigned by the server on the first save ' +
+            '(shown as PR-0001); totals are calculated from the lines, never stored. Unknown fields are rejected.',
+          properties: {
+            number: { type: 'integer', description: 'Server-assigned sequence (PR-0001); ignored in request bodies.' },
+            title: { type: 'string', minLength: 1, maxLength: 120 },
+            status: { type: 'string', enum: ['draft', 'sent', 'received', 'cancelled'], default: 'draft' },
+            supplier: { type: 'string', maxLength: 120, description: 'Default supplier for the whole request (optional).' },
+            neededBy: { type: ['string', 'null'], format: 'date', description: 'ISO date (YYYY-MM-DD) or null.' },
+            requestedBy: { type: 'string', maxLength: 80 },
+            hstRate: { type: 'number', minimum: 0, maximum: 30, default: 13, description: 'HST percent, up to two decimals.' },
+            notes: { type: 'string', maxLength: 2000 },
+            sentAt: { type: ['string', 'null'], format: 'date-time', description: 'Set by the client when the status becomes sent.' },
+            receivedAt: { type: ['string', 'null'], format: 'date-time', description: 'Set by the client when the status becomes received.' },
+            lines: {
+              type: 'array',
+              maxItems: 100,
+              items: { $ref: '#/components/schemas/PurchaseRequestLine' },
+            },
+          },
+          required: ['title'],
         },
         HistoryEntry: {
           type: 'object',
@@ -184,7 +232,10 @@ export function openApiSpec(version = '2.0.0') {
           summary: 'Create or update one record (write scope)',
           description:
             'Send `{data: {...}}`. Omit `version` to create with a client-generated id, or send the current ' +
-            '`version` to update; a stale version returns 409 with the server copy.',
+            '`version` to update; a stale version returns 409 with the server copy. `store` may also be ' +
+            '`purchaseRequests` (parts requests, the `PurchaseRequest` schema): `number` there is assigned by ' +
+            'the server and ignored in the body, and a PUT replaces the whole record — read the current one ' +
+            'from `GET /api/changes` first, then send it back with the new lines.',
           requestBody: {
             required: true,
             content: {
