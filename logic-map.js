@@ -114,11 +114,14 @@ export function searchStations(stations, query, machines = []) {
 // in drawing units: an average glyph is ~0.6 of the font size wide and a line
 // is 1.2 font sizes tall (sans-serif approximations, SVG-rendered later).
 
-const FIT_CHAR_WIDTH = 0.6;
+export const FIT_CHAR_WIDTH = 0.6;
 const FIT_LINE_HEIGHT = 1.2;
 const FIT_MIN_SIZE = 4;
 const FIT_MAX_SIZE = 14;
 const FIT_STEP = 0.5;
+// Below FIT_MIN_SIZE text keeps shrinking (in finer steps) so nothing is cut
+// off; zoom or the PDF makes it readable.
+const FIT_FLOOR = 1.5;
 
 /**
  * Greedy word wrap at `maxChars` per line: a word that fits whole never
@@ -127,7 +130,7 @@ const FIT_STEP = 0.5;
  * @param {number} maxChars at least 1
  * @returns {Array<string>} the lines; empty for empty input
  */
-function wrapWords(text, maxChars) {
+export function wrapWords(text, maxChars) {
   const words = String(text).split(/\s+/).filter((word) => word !== '');
   const lines = [];
   let current = '';
@@ -184,13 +187,14 @@ export function fitText(text, w, h) {
     return { lines: [], fontSize: 0 };
   }
   let fontSize = FIT_MAX_SIZE;
-  while (fontSize >= FIT_MIN_SIZE) {
+  while (fontSize >= FIT_FLOOR) {
     const maxChars = Math.max(1, Math.floor(w / (fontSize * FIT_CHAR_WIDTH)));
     const lines = wrapWords(clean, maxChars);
     if (lines.length * fontSize * FIT_LINE_HEIGHT <= h) {
       return { lines, fontSize: Math.round(fontSize * 10) / 10 };
     }
-    fontSize -= FIT_STEP;
+    fontSize -= fontSize > FIT_MIN_SIZE ? FIT_STEP : FIT_STEP / 2;
+    if (fontSize < FIT_MIN_SIZE && fontSize < FIT_FLOOR) break;
   }
   // Nothing fits at 4: hard-slice, and let the size shrink below 4 so the
   // kept lines still fit a very flat slot (never overflow the box).

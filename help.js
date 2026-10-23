@@ -583,8 +583,10 @@ function helpFloor(h) {
     h('h3', { class: 'help-question' }, 'Getting around the map'),
     helpSteps(h, [
       'Search by station code, staff name, employee ID or machine name; matching stations light up and the first match moves to the middle. The Filter chips (All · Down · Open orders · Unlinked · Vacant) fade out everything that does not fit.',
-      'Drag to pan; scroll, pinch or double-click to zoom (from half size to 8×). The − and + buttons zoom around the middle, and Fit puts the whole floor back.',
+      'Drag to pan (or hold the mouse wheel down and drag — this also works while editing); scroll, pinch or double-click to zoom (from half size to 8×). The − and + buttons zoom around the middle, and Fit shows the whole drawing.',
       'Show names toggles the staff names under the station codes. Employee IDs never show on the map — they are in the station panel.',
+      'Names: Auto picks the largest name size that still fits every name inside its box. A− and A+ make the names smaller or larger (a name that no longer fits ends with “…”); click the middle button to go back to Auto. Station codes always stay fully visible.',
+      'Print / PDF prints just the map on one Letter page (portrait or landscape to suit the floor), with the floor name and date. Pick “Save as PDF” as the printer for a PDF file.',
       'Zoom and search stay put while the data refreshes behind them.',
     ]),
     h('h3', { class: 'help-question' }, 'The station panel'),

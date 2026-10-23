@@ -5465,3 +5465,88 @@ body.logged-out .ai-chat-fab {
   flex-direction: column;
   gap: 0.45rem;
 }
+
+/* ---------- Floor map: fill the screen, print on Letter (client request 2026-10-22) ---------- */
+
+.fm-print-head {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  /* The map page uses the whole content width and the screen height. */
+  .page:has(.fm-svg) {
+    max-width: none;
+  }
+
+  .fm-svg {
+    height: max(420px, calc(100vh - 300px));
+  }
+}
+
+@media print {
+  body.fm-printing * {
+    visibility: hidden;
+  }
+
+  body.fm-printing .fm-print-area,
+  body.fm-printing .fm-print-area * {
+    visibility: visible;
+  }
+
+  body.fm-printing .fm-print-area {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border: 0;
+  }
+
+  /* "+ Add" on empty slots is an editing aid, not part of the plan. */
+  body.fm-printing .fm-slot-add-text {
+    display: none;
+  }
+
+  body.fm-printing .fm-print-head {
+    display: block;
+    font-size: 10pt;
+    margin-bottom: 4pt;
+  }
+
+  body.fm-printing .fm-svg {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+  }
+}
+
+/* ---------- Wide desktop screens: use the space, larger type ---------- */
+
+@media (min-width: 1440px) {
+  html {
+    font-size: 17px;
+  }
+
+  /* 17rem = the 272px design width, growing with the larger type. */
+  :root {
+    --sidebar-w: 17rem;
+  }
+
+  .app-header,
+  .page,
+  .split {
+    max-width: 1560px;
+  }
+}
+
+@media (min-width: 1800px) {
+  html {
+    font-size: 18px;
+  }
+
+  .app-header,
+  .page,
+  .split {
+    max-width: 1720px;
+  }
+}

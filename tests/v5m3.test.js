@@ -462,7 +462,9 @@ test('map.js: empty slots offer + Add station for writers (placement in the view
   assert.match(src, /showNewStationPanel\(ctx, map\.id, empty\.box, empty\.slot\)/);
   assert.match(src, /function newStationBody\(ctx, mapId, box, slot\)/);
   assert.match(src, /await sync\.saveRecord\('floorStations', record\)/);
-  assert.match(src, /'\+ Add station'/);
+  // A small "+" mark; the slot's aria-label says what it does.
+  assert.ok(src.includes("fitText('+',"));
+  assert.ok(src.includes("'aria-label': canAdd ? 'Add a station in this slot' : null"));
 });
 
 test('app.js + help.js + sw.js + styles.css: the editor is wired into the shell', () => {
@@ -500,4 +502,43 @@ test('a plain move or resize marks the map changed (Save map enables, Cancel ask
   const end = src.indexOf('// move / resize / band: the undo snapshot went on at drag start');
   assert.ok(end > 0);
   assert.match(src.slice(end, end + 400), /recomputeEditDirty\(\);\s*ctx\.render\(\);/);
+});
+
+test('map fit: the drawing, not the paper margins; empty maps still fit the page', async () => {
+  const { fitViewBox, drawingBounds } = await import('../map.js');
+  const map = { width: 612, height: 792, boxes: [{ id: 'b1', x: 50, y: 10, w: 45, h: 28, slots: 1 }], corridors: [{ x: 40, y: 600, w: 500, h: 5 }], fills: [] };
+  assert.deepEqual(drawingBounds(map), { x: 36, y: 6, w: 508, h: 603 });
+  assert.deepEqual(fitViewBox(map), drawingBounds(map));
+  assert.deepEqual(fitViewBox({ width: 612, height: 792, boxes: [] }), { x: 0, y: 0, w: 612, h: 792 });
+});
+
+test('fitText: shrinks below the old 4-unit minimum instead of cutting words off', async () => {
+  const { fitText } = await import('../logic-map.js');
+  const name = 'Chen, Mei Ling (Michelle)';
+  const fit = fitText(name, 20, 6);
+  assert.equal(fit.lines.join(' ').replace(/\s+/g, ' '), name, 'every word is still there');
+  assert.ok(fit.fontSize < 4 && fit.lines.length * fit.fontSize * 1.2 <= 6 + 1e-9);
+});
+
+test('import: machine on top + operator below in one box merge into one station', async () => {
+  const { mergeSplitStations } = await import('../server/admin.js');
+  const map = { boxes: [{ id: 'b1', slots: 2 }, { id: 'b2', slots: 2 }, { id: 'b3', slots: 2 }] };
+  const rows = [
+    { id: 's1', box: 'b1', slot: 0, code: 'SN 104', emp: '', en: '', cn: '', vac: true },
+    { id: 's2', box: 'b1', slot: 1, code: '691A Doe', emp: '', en: 'Doe, Jane', cn: '珍', vac: false, rem: 'left-handed' },
+    // Two real operators in one box (PAC 1 style) stay two stations.
+    { id: 's3', box: 'b2', slot: 0, code: 'PAC 1', emp: '1', en: 'A', vac: false },
+    { id: 's4', box: 'b2', slot: 1, code: 'PAC 1', emp: '2', en: 'B', vac: false },
+    // A bottom code that is not an employee ID is left alone.
+    { id: 's5', box: 'b3', slot: 0, code: 'Cutter', en: '', vac: true },
+    { id: 's6', box: 'b3', slot: 1, code: 'Helper', en: 'C', vac: false },
+  ];
+  const { stations, merged } = mergeSplitStations(map, rows);
+  assert.equal(merged, 1);
+  assert.deepEqual(stations.map((r) => r.id), ['s1', 's3', 's4', 's5', 's6']);
+  assert.deepEqual(
+    { code: stations[0].code, emp: stations[0].emp, en: stations[0].en, cn: stations[0].cn, vac: stations[0].vac, rem: stations[0].rem },
+    { code: 'SN 104', emp: '691A', en: 'Doe, Jane', cn: '珍', vac: false, rem: 'left-handed' },
+  );
+  assert.deepEqual(map.boxes.map((b) => b.slots), [1, 2, 2]);
 });

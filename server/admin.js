@@ -429,6 +429,46 @@ function buildStationData(station, mapId) {
   return data;
 }
 
+/**
+ * Some printed boxes put the machine in the top half and its operator in the
+ * bottom half (e.g. "SN 104" over "691A Isbilir"): two roster rows that are
+ * really one station. Merge them: the machine row keeps its code and takes
+ * the person, the employee ID comes from the bottom code ("691A") when the
+ * row has none, and the box gets one slot. Mutates `map.boxes`.
+ * @returns {{stations: object[], merged: number}}
+ */
+const EMPLOYEE_CODE_RE = /^(\d{3,4}[A-Za-z]?)(?:\s|$)/;
+
+export function mergeSplitStations(map, stations) {
+  const text = (value) => String(value ?? '').trim();
+  const hasPerson = (row) => Boolean(text(row.en) || text(row.cn) || text(row.emp));
+  const byBox = new Map();
+  for (const row of stations) {
+    if (!isPlainObject(row) || typeof row.box !== 'string') continue;
+    if (!byBox.has(row.box)) byBox.set(row.box, []);
+    byBox.get(row.box).push(row);
+  }
+  const dropped = new Set();
+  let merged = 0;
+  for (const box of map.boxes) {
+    const pair = byBox.get(box.id);
+    if (box.slots !== 2 || !pair || pair.length !== 2) continue;
+    const [top, bottom] = [...pair].sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+    const id = EMPLOYEE_CODE_RE.exec(text(bottom.code));
+    if (hasPerson(top) || !hasPerson(bottom) || !id) continue;
+    top.emp = text(top.emp) || text(bottom.emp) || id[1];
+    top.en = bottom.en ?? '';
+    top.cn = bottom.cn ?? '';
+    top.vac = false;
+    top.slot = 0;
+    top.rem = [text(top.rem), text(bottom.rem)].filter(Boolean).join('; ');
+    box.slots = 1;
+    dropped.add(bottom);
+    merged += 1;
+  }
+  return { stations: stations.filter((row) => !dropped.has(row)), merged };
+}
+
 /** A station code's match key: case, space and dash insensitive (section 4). */
 function machineKey(text) {
   return String(text ?? '').toLowerCase().replace(/[\s-]+/g, '');
@@ -458,7 +498,7 @@ async function cmdImportFloorMap(args) {
   name = name.trim();
   const [layoutFile, stationsFile] = positional;
   const layout = await readJsonFile(layoutFile, 'layout');
-  const stations = await readJsonFile(stationsFile, 'stations');
+  let stations = await readJsonFile(stationsFile, 'stations');
   if (!Array.isArray(stations)) throw new Error('the stations file must be a JSON array');
 
   const store = openStore(DATA_DIR);
@@ -466,6 +506,8 @@ async function cmdImportFloorMap(args) {
     const user = ensureSystemUser(store);
     const map = buildMapData(layout, name);
     const boxIds = new Set(map.boxes.map((box) => box.id));
+    const split = mergeSplitStations(map, stations);
+    stations = split.stations;
 
     // Auto-link: station code == machine name, case/space/dash-insensitive.
     const machineByKey = new Map();
@@ -549,6 +591,9 @@ async function cmdImportFloorMap(args) {
       `  ${map.boxes.length} boxes, ${map.corridors.length} corridors, ${map.fills.length} floor patches.`
     );
     console.log(`  ${rows.length} stations: ${rows.length - offMap} placed, ${offMap} off-map.`);
+    if (split.merged > 0) {
+      console.log(`  ${split.merged} box(es) with the machine on top and its operator below merged into one station.`);
+    }
     console.log(`  ${linked} station(s) auto-linked to a machine by code.`);
     if (unlinked.length > 0) {
       console.log(`  ${unlinked.length} station(s) without a machine link: ${unlinked.join(', ')}.`);
