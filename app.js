@@ -102,7 +102,7 @@ import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
 // v5 (SPEC-v5.md section 2): the Floor map view module (V5-M2). app.js only
 // routes to it and passes the shared UI helpers through mapPageContext().
-import { renderMapPage, stationForMachine } from './map.js';
+import { renderMapPage, stationForMachine, stopMapPrint } from './map.js';
 import * as sync from './sync.js';
 import { checkSession, logout, renderLogin } from './login.js';
 import { AREAS, AREA_KEYS, allows } from './permissions.js';
@@ -10962,6 +10962,10 @@ async function render() {
   // Leaving a manual detail stops its badge polling (SPEC-v4.md 4.3); the
   // manual page restarts it while it stays on screen.
   stopLibraryBadgePolling();
+  // Leaving the map page removes its print hook (V5-M4): a Ctrl+P elsewhere
+  // must not print a svg that is no longer on screen. The map view restarts
+  // the hook on every render of #/map.
+  if (tab !== 'map') stopMapPrint();
   // Hidden areas leave the navigation too (SPEC-v3.md 13.3).
   applyNavPermissions();
   // AI chat button (V3-M8, SPEC-v3.md section 9): visibility follows the

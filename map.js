@@ -19,8 +19,9 @@ import {
   clampMapNumber,
   createShapeFromRect,
   defaultShapeRect,
-  FIT_CHAR_WIDTH,
+  fitSlotText,
   fitText,
+  FIT_SLOT_PAD,
   hitTest,
   MAP_COORD_MAX,
   MAP_COORD_MIN,
@@ -41,8 +42,8 @@ import {
   snap,
   RESIZE_HANDLES,
   stationState,
+  personLine,
   UNDO_LIMIT,
-  wrapWords,
 } from './logic-map.js';
 import { LABELS } from './logic.js';
 import * as sync from './sync.js';
@@ -288,7 +289,8 @@ const mapView = {
   mapId: null,
   viewBox: null,
   names: true,
-  // 1 = Auto: the largest size that shows all text inside its slot.
+  // 1 = Auto: the largest ONE size that shows every line of a slot (code and
+  // person line) inside it; other steps multiply it for the whole slot.
   textScale: 1,
   search: '',
   filter: 'all',
@@ -323,59 +325,49 @@ function viewBoxString(view) {
 }
 
 /**
- * The `<text>` lines inside one slot: the station code (bold) then the staff
- * name, each wrapped and shrunk by fitText() so text never overflows the
- * box (SPEC section 2). The name lines carry the fm-name class; Show names
- * off hides them via one class on the svg.
+ * The `<text>` rows inside one slot (V5-M4, client feedback 2026-10-22):
+ * the station code (bold) and, when names are shown, one person line
+ * "<employee ID> <staff name>" (personLine, ID first like the client's
+ * printed plan). Every row in the slot uses ONE font size — fitSlotText()
+ * picks the largest at which all wrapped rows fit inside the slot
+ * (padding FIT_SLOT_PAD, words never split); the Text control multiplies
+ * that Auto size for the whole slot, dropping rows that no longer fit (an
+ * ellipsis ends the last kept one; the code row always survives). The person
+ * rows carry the fm-name class; Show names off hides them via one class on
+ * the svg.
  * @param {{x: number, y: number, w: number, h: number}} rect the slot
- * @param {string|null} code @param {string|null} name
+ * @param {{code?: string|null, name?: string|null, empId?: string|null}} station
+ * @param {boolean} [showNames] person line in (default: the module's toggle)
+ * @param {number} [scale] text scale multiplier (default: the module's)
  * @returns {Array<SVGElement>}
  */
-function slotTextNodes(rect, code, name, scale = mapView.textScale) {
-  const pad = 1.6;
-  const innerW = Math.max(0, rect.w - pad * 2);
-  const innerH = Math.max(0, rect.h - pad * 2);
-  const cleanCode = String(code ?? '').trim();
-  const cleanName = String(name ?? '').trim();
-  if (!innerW || innerH <= 4 || !cleanCode) return [];
-  // The code takes the first ~55% of the slot, the name the rest; without a
-  // name the code may use the whole height.
-  const codeBudget = cleanName ? innerH * 0.55 : innerH;
-  const nameBudget = cleanName ? innerH * 0.45 : 0;
+function slotTextNodes(rect, station, showNames = mapView.names, scale = mapView.textScale) {
+  const defs = [
+    { text: String((station && station.code) ?? '').trim(), className: 'fm-code' },
+    { text: showNames ? personLine(station) : '', className: 'fm-name' },
+  ].filter((entry) => entry.text !== '');
+  if (defs.length === 0) return [];
+  const fit = fitSlotText(defs.map((entry) => entry.text), rect.w, rect.h, { scale });
+  const size = fit.fontSize;
+  if (!size) return [];
   const nodes = [];
-  let cursorY = rect.y + pad;
-  for (const [text, budget, className] of [
-    [cleanCode, codeBudget, 'fm-code'],
-    [cleanName, nameBudget, 'fm-name'],
-  ]) {
-    if (!text || budget <= 0) continue;
-    // The station code is always Auto (fully shown). The Text size control
-    // scales the staff name only: it re-wraps to the slot width and lines
-    // past the bottom of the slot are dropped, the last one ending in "…".
-    const k = className === 'fm-name' && Number(scale) > 0 ? Number(scale) : 1;
-    const fit = fitText(text, innerW, budget);
-    const size = Math.max(0.5, fit.fontSize * k);
-    if (k !== 1 && fit.lines.length > 0) {
-      fit.lines = wrapWords(text, Math.max(1, Math.floor(innerW / (size * FIT_CHAR_WIDTH))));
-    }
-    const bottom = rect.y + rect.h - pad / 2;
-    for (const [index, raw] of fit.lines.entries()) {
-      if (cursorY + size > bottom + 0.01) {
-        // A larger text size than fits: mark what was left out.
-        const last = nodes.at(-1);
-        if (last && index > 0) last.lastChild.textContent = `${last.lastChild.textContent.replace(/…$/, '')}…`;
-        break;
-      }
-      const line = raw;
-      cursorY += size;
+  let cursorY = rect.y + FIT_SLOT_PAD + size;
+  for (const [index, rows] of fit.lines.entries()) {
+    for (const row of rows) {
       nodes.push(
         svgEl(
           'text',
-          { class: className, x: round2(rect.x + pad), y: round2(cursorY), 'font-size': round2(size) },
-          [svgEl('tspan', { text: line })],
+          {
+            class: defs[index].className,
+            x: round2(rect.x + FIT_SLOT_PAD),
+            y: round2(cursorY),
+            'font-size': round2(size),
+          },
+          [svgEl('tspan', { text: row })],
         ),
       );
-      cursorY += size * 1.2 - size;
+      // One row is 1.2 font sizes tall (logic-map.js FIT_LINE_HEIGHT).
+      cursorY += size * 1.2;
     }
   }
   return nodes;
@@ -422,6 +414,9 @@ function activeMap(maps, route) {
 export function renderMapPage(ctx, route) {
   const { h } = ctx;
   ctx.setTitle('Floor map');
+  // V5-M4: this render decides whether the map view (and its Ctrl+P hook) is
+  // on screen at all; the view restarts the hook once its svg exists.
+  stopMapPrint();
   const maps = (ctx.state.floorMaps || [])
     .slice()
     .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
@@ -917,11 +912,12 @@ export function renderMapPage(ctx, route) {
       class: `btn btn-small${mapView.names ? ' is-active' : ''}`,
       type: 'button',
       'aria-pressed': mapView.names ? 'true' : 'false',
+      title: 'With names on, every slot shows the employee ID and staff name under the station code (one shared text size).',
       onclick: () => {
+        // The slot text is laid out for the lines actually shown (the person
+        // line changes the shared font size), so re-render on toggle.
         mapView.names = !mapView.names;
-        namesToggle.classList.toggle('is-active', mapView.names);
-        namesToggle.setAttribute('aria-pressed', String(mapView.names));
-        svg.classList.toggle('fm-hide-names', !mapView.names);
+        ctx.render();
       },
     },
     'Show names',
@@ -1054,17 +1050,17 @@ export function renderMapPage(ctx, route) {
   applyHighlight();
   attachMiddlePan(svg, applyView, (view) => clampViewBox(view, map.width, map.height));
 
-  // Shown only on paper/PDF (Print / PDF button).
-  const printHead = h(
-    'div',
-    { class: 'fm-print-head' },
-    h('strong', {}, map.name || 'Floor map'),
-    h('span', {}, ` · printed ${ctx.todayISO()}`),
-  );
-  const svgWrap = h('div', { class: 'fm-svg-wrap fm-print-area' }, printHead, svg);
+  // V5-M4: the print hook follows the shown page (Ctrl+P works too).
+  startPrintHook(svg, map);
+  const svgWrap = h('div', { class: 'fm-svg-wrap fm-print-area' }, svg);
   const printButton = h(
     'button',
-    { class: 'btn btn-small', type: 'button', title: 'Letter-size page; choose “Save as PDF” as the printer for a PDF', onclick: () => printMap(svg, map) },
+    {
+      class: 'btn btn-small',
+      type: 'button',
+      title: 'The whole layout auto-fitted on one Letter page (6 mm margin, no header text). Choose “Save as PDF” as the printer for a PDF',
+      onclick: () => printMap(svg, map),
+    },
     'Print / PDF',
   );
 
@@ -1100,7 +1096,7 @@ try {
   // Private mode or blocked storage: Auto it is.
 }
 
-/** Text size: A− / A+ step through TEXT_SCALES; the middle button resets to Auto. */
+/** Text: A− / A+ step through TEXT_SCALES; the middle button resets to Auto. */
 function textSizeControl(ctx) {
   const { h } = ctx;
   const index = Math.max(0, TEXT_SCALES.indexOf(mapView.textScale));
@@ -1113,22 +1109,22 @@ function textSizeControl(ctx) {
     }
     ctx.render();
   };
-  const label = mapView.textScale === 1 ? 'Names: Auto' : `Names: ${Math.round(mapView.textScale * 100)}%`;
+  const label = mapView.textScale === 1 ? 'Text: Auto' : `Text: ${Math.round(mapView.textScale * 100)}%`;
   return h(
     'div',
     { class: 'fm-zoom fm-textsize', role: 'group', 'aria-label': 'Text size' },
-    h('button', { class: 'btn btn-small', type: 'button', 'aria-label': 'Smaller names', disabled: index === 0, onclick: () => set(TEXT_SCALES[index - 1]) }, 'A−'),
+    h('button', { class: 'btn btn-small', type: 'button', 'aria-label': 'Smaller text', disabled: index === 0, onclick: () => set(TEXT_SCALES[index - 1]) }, 'A−'),
     h(
       'button',
       {
         class: 'btn btn-small',
         type: 'button',
-        title: 'Size of the staff names. Auto: the largest that shows every name inside its box. Click to go back to Auto.',
+        title: 'Size of the slot text: code and person line share one size. Auto: the largest that shows every line inside its box. Click to go back to Auto.',
         onclick: () => set(1),
       },
       label,
     ),
-    h('button', { class: 'btn btn-small', type: 'button', 'aria-label': 'Larger names', disabled: index === TEXT_SCALES.length - 1, onclick: () => set(TEXT_SCALES[index + 1]) }, 'A+'),
+    h('button', { class: 'btn btn-small', type: 'button', 'aria-label': 'Larger text', disabled: index === TEXT_SCALES.length - 1, onclick: () => set(TEXT_SCALES[index + 1]) }, 'A+'),
   );
 }
 
@@ -1167,26 +1163,69 @@ function attachMiddlePan(svg, applyView, clamp) {
   svg.addEventListener('pointercancel', end);
 }
 
-/**
- * Print / PDF on Letter paper: only the map (whole drawing, current names
- * and text size), portrait or landscape by the drawing's shape. The screen
- * view comes back after the print dialog closes.
- */
-function printMap(svg, map) {
-  const bounds = drawingBounds(map) || fitViewBox(map);
-  const style = document.createElement('style');
-  style.textContent = `@page { size: letter ${bounds.w > bounds.h ? 'landscape' : 'portrait'}; margin: 0.35in; }`;
-  const saved = svg.getAttribute('viewBox');
-  svg.setAttribute('viewBox', viewBoxString(bounds));
-  document.head.append(style);
-  document.body.classList.add('fm-printing');
-  const restore = () => {
-    window.removeEventListener('afterprint', restore);
-    style.remove();
-    document.body.classList.remove('fm-printing');
-    if (saved) svg.setAttribute('viewBox', saved);
+// --- Print / PDF (V5-M4, client feedback 2026-10-22) -------------------------
+//
+// Exactly the client's original tool: the WHOLE layout auto-fitted on one
+// Letter page (portrait or landscape, whichever suits the drawing), a 6 mm
+// margin, no header text, and none of the current zoom or pan. It runs from
+// window beforeprint/afterprint listeners registered while the map view is
+// shown, so Ctrl+P works too — stopMapPrint() removes them when the page is
+// left (route change) or another render takes over.
+
+let printHook = null; // {svg, map, beforeprint, afterprint, style, savedViewBox}
+
+function endPrintSession() {
+  if (!printHook || !printHook.style) return;
+  printHook.style.remove();
+  printHook.style = null;
+  document.body.classList.remove('fm-printing');
+  if (printHook.savedViewBox) printHook.svg.setAttribute('viewBox', printHook.savedViewBox);
+  printHook.savedViewBox = null;
+}
+
+/** Register the print listeners for this map view svg; replaces any old hook. */
+function startPrintHook(svg, map) {
+  stopMapPrint();
+  const hook = {
+    svg,
+    map,
+    style: null,
+    savedViewBox: null,
+    beforeprint() {
+      // A stale svg (the page re-rendered behind the dialog) prints nothing.
+      if (printHook !== hook || hook.style || !svg.isConnected) return;
+      const bounds = drawingBounds(map) || fitViewBox(map);
+      hook.savedViewBox = svg.getAttribute('viewBox');
+      svg.setAttribute('viewBox', viewBoxString(bounds));
+      // The whole layout on Letter paper, 6 mm margin, nothing else written.
+      const style = document.createElement('style');
+      style.textContent = `@page { size: letter ${bounds.w > bounds.h ? 'landscape' : 'portrait'}; margin: 6mm; }`;
+      document.head.append(style);
+      hook.style = style;
+      document.body.classList.add('fm-printing');
+    },
+    afterprint() {
+      if (printHook !== hook) return;
+      endPrintSession();
+    },
   };
-  window.addEventListener('afterprint', restore);
+  window.addEventListener('beforeprint', hook.beforeprint);
+  window.addEventListener('afterprint', hook.afterprint);
+  printHook = hook;
+}
+
+/** Remove the print listeners (and undo any active print layout). */
+export function stopMapPrint() {
+  if (!printHook) return;
+  window.removeEventListener('beforeprint', printHook.beforeprint);
+  window.removeEventListener('afterprint', printHook.afterprint);
+  endPrintSession();
+  printHook = null;
+}
+
+/** The Print / PDF button: the listeners do the layout, this just prints. */
+function printMap(svg, map) {
+  startPrintHook(svg, map);
   window.print();
 }
 
@@ -1239,7 +1278,7 @@ function stationNode(ctx, station, rect, live, machines) {
       'stroke-width': down ? '1.1' : '0.6',
     }),
   );
-  for (const text of slotTextNodes(rect, station.code, station.name)) {
+  for (const text of slotTextNodes(rect, station)) {
     group.append(text);
   }
   if (live.openOrders > 0) {
@@ -2337,7 +2376,7 @@ function renderMapEditor(ctx, mapRecord) {
     for (const slot of slotRects(obj)) {
       const station = entry.occupants.get(slot.slot);
       if (station && slot.slot < count) {
-        texts.push(...slotTextNodes(slot, station.code, mapView.names ? station.name : null));
+        texts.push(...slotTextNodes(slot, station, mapView.names));
       }
     }
     entry.dim.replaceChildren(...texts);

@@ -205,6 +205,179 @@ export function fitText(text, w, h) {
   return { lines: all.slice(0, maxLines), fontSize: size };
 }
 
+// --- Slot text (V5-M4, client feedback 2026-10-22) -------------------------
+//
+// Every line in a slot — the station code and the person line — shares ONE
+// font size, so codes are no longer much bigger than names. The size is the
+// largest at which all wrapped rows fit inside the slot with FIT_SLOT_PAD
+// breathing room, and words are never split while any size >= the floor fits
+// with whole words: only a single word wider than the slot at the floor size
+// may be hard-sliced (which is why fitSlotText("Ribbon cutting", 22.1, 28.3)
+// wraps to "Ribbon" / "cutting", never "Ribb" / "on c").
+
+/** Padding kept around the text inside a slot, in drawing units. */
+export const FIT_SLOT_PAD = 1.2;
+const ELLIPSIS = '…';
+
+/** The longest word of `text` (split on whitespace); 0 for empty text. */
+function longestWord(text) {
+  let longest = 0;
+  for (const word of String(text).split(/\s+/)) {
+    if (word.length > longest) longest = word.length;
+  }
+  return longest;
+}
+
+/**
+ * A word that fits `maxChars` whole never splits; when a word is wider than
+ * that, the line simply stops before it (nothing is sliced). `rows` are the
+ * kept whole-word lines, `truncated` says whether any word was left out.
+ * @param {string} text
+ * @param {number} maxChars at least 1
+ * @returns {{rows: Array<string>, truncated: boolean}}
+ */
+function wrapFitWords(text, maxChars) {
+  const words = String(text).split(/\s+/).filter((word) => word !== '');
+  const rows = [];
+  let current = '';
+  let truncated = false;
+  for (const word of words) {
+    if (word.length > maxChars) {
+      truncated = true;
+      break;
+    }
+    if (current === '') current = word;
+    else if (`${current} ${word}`.length <= maxChars) current += ` ${word}`;
+    else {
+      rows.push(current);
+      current = word;
+    }
+  }
+  if (current !== '') rows.push(current);
+  return { rows, truncated };
+}
+
+/**
+ * The Auto fit for one slot: the largest size (14 down, half steps above 4,
+ * quarter steps below) at which EVERY input line wraps into whole words that
+ * fit the width and all rows together fit the height. When no size >= floor
+ * manages that, wrapWords hard-slices at the floor width and only the rows
+ * that fit are kept (mirroring fitText), the first line (the code) first.
+ * @param {Array<string>} input non-empty trimmed lines, code first
+ * @param {number} padW slot width minus padding (> 0)
+ * @param {number} padH slot height minus padding (> 0)
+ * @param {number} floor the minimum font size
+ * @returns {{lines: Array<Array<string>>, fontSize: number}}
+ */
+function fitSlotAuto(input, padW, padH, floor) {
+  let fontSize = FIT_MAX_SIZE;
+  while (fontSize >= floor - 1e-9) {
+    const maxChars = Math.max(1, Math.floor(padW / (fontSize * FIT_CHAR_WIDTH)));
+    if (input.every((text) => longestWord(text) <= maxChars)) {
+      const lines = input.map((text) => wrapWords(text, maxChars));
+      const rows = lines.reduce((sum, wrapped) => sum + wrapped.length, 0);
+      if (rows * fontSize * FIT_LINE_HEIGHT <= padH + 1e-9) {
+        return { lines, fontSize: Math.round(fontSize * 10) / 10 };
+      }
+    }
+    fontSize -= fontSize > FIT_MIN_SIZE ? FIT_STEP : FIT_STEP / 2;
+  }
+  const maxChars = Math.max(1, Math.floor(padW / (floor * FIT_CHAR_WIDTH)));
+  const size = Math.min(floor, padH / FIT_LINE_HEIGHT);
+  const maxRows = Math.max(1, Math.floor(padH / (size * FIT_LINE_HEIGHT) + 1e-9));
+  const lines = input.map(() => []);
+  let left = maxRows;
+  for (const [index, wrapped] of input
+    .map((text) => wrapWords(text, maxChars))
+    .entries()) {
+    lines[index] = wrapped.slice(0, Math.max(0, left));
+    left -= wrapped.length;
+  }
+  return { lines, fontSize: Math.round(size * 10) / 10 };
+}
+
+/**
+ * The text layout of ONE station slot (V5-M4): `lines` are the slot's text
+ * lines, lines[0] the station code (always kept) and lines[1] the person line
+ * "<employee ID> <staff name>" built by personLine(); every returned row uses
+ * the SAME fontSize. `lines[i]` holds the wrapped rows of input line i.
+ *
+ * scale 1 (Auto, the default) picks the largest size at which all rows fit
+ * with whole words (see fitSlotAuto). Other steps multiply the Auto size for
+ * the whole slot: the lines re-wrap at the multiplied size, rows that no
+ * longer fit are dropped from the bottom and the last kept row ends with an
+ * ellipsis, and lines[0] (the code) is always kept — when not even its first
+ * row would fit, the whole slot falls back to its Auto layout.
+ *
+ * @param {Array<string|null>} lines the slot's text lines, code first
+ * @param {number} w slot width in drawing units (padding FIT_SLOT_PAD inside)
+ * @param {number} h slot height in drawing units (padding FIT_SLOT_PAD inside)
+ * @param {{floor?: number, scale?: number}} [options] floor defaults to 1.5,
+ *   scale to 1 (Auto)
+ * @returns {{lines: Array<Array<string>>, fontSize: number}} fontSize 0 when
+ *   there is no text or no room
+ */
+export function fitSlotText(lines, w, h, { floor = FIT_FLOOR, scale = 1 } = {}) {
+  const input = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line ?? '').trim())
+    .filter((line) => line !== '');
+  const padW = Number(w) - FIT_SLOT_PAD * 2;
+  const padH = Number(h) - FIT_SLOT_PAD * 2;
+  if (input.length === 0 || !(padW > 0) || !(padH > 0)) {
+    return { lines: [], fontSize: 0 };
+  }
+  const minFloor = Number.isFinite(floor) && floor > 0 ? floor : FIT_FLOOR;
+  const auto = fitSlotAuto(input, padW, padH, minFloor);
+  const k = Number(scale);
+  if (!Number.isFinite(k) || k === 1) return auto;
+  const size = Math.round(auto.fontSize * k * 10) / 10;
+  if (!(size > 0)) return auto;
+  // The multiplied size for the WHOLE slot (V5-M4): re-wrap without ever
+  // slicing a word, drop rows that no longer fit from the bottom, mark the
+  // last kept row with an ellipsis, keep the code.
+  const maxChars = Math.max(1, Math.floor(padW / (size * FIT_CHAR_WIDTH)));
+  const wrapped = input.map((text) => wrapFitWords(text, maxChars));
+  const codeFits =
+    wrapped[0].rows.length > 0 && size * FIT_LINE_HEIGHT <= padH + 1e-9;
+  if (!codeFits) return auto;
+  const maxRows = Math.max(1, Math.floor(padH / (size * FIT_LINE_HEIGHT) + 1e-9));
+  const out = input.map(() => []);
+  let dropped = false;
+  let left = maxRows;
+  for (const [index, { rows, truncated }] of wrapped.entries()) {
+    out[index] = rows.slice(0, Math.max(0, left));
+    left -= rows.length;
+    dropped = dropped || truncated || out[index].length < rows.length;
+  }
+  if (dropped) {
+    for (let index = out.length - 1; index >= 0; index -= 1) {
+      if (out[index].length > 0) {
+        out[index] = [
+          ...out[index].slice(0, -1),
+          `${out[index][out[index].length - 1].replace(/…$/, '')}${ELLIPSIS}`,
+        ];
+        break;
+      }
+    }
+  }
+  return { lines: out, fontSize: size };
+}
+
+/**
+ * The one person line under the station code: the employee ID first, then the
+ * staff name — "123 Doe, Jo Jo", exactly like the client's printed plan.
+ * The ID alone or the name alone when the other is empty, '' when both are.
+ * (SPEC-v5.md section 2: nothing else about the person is shown on the map.)
+ * @param {{empId?: string|null, name?: string|null}} station
+ * @returns {string}
+ */
+export function personLine(station) {
+  const empId = String((station && station.empId) ?? '').trim();
+  const name = String((station && station.name) ?? '').trim();
+  if (empId && name) return `${empId} ${name}`;
+  return empId || name;
+}
+
 // --- Snap and hit-testing ---------------------------------------------------
 
 /**

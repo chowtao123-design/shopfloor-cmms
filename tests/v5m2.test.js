@@ -216,7 +216,8 @@ test('stationForMachine: the station a Show-on-map button points at', () => {
 
 test('app.js: the #/map route is gated on can(\'floorMap\') and renders via map.js', () => {
   const src = read('app.js');
-  assert.match(src, /import \{ renderMapPage, stationForMachine \} from '\.\/map\.js';/);
+  // V5-M4 added stopMapPrint to the same import line.
+  assert.match(src, /import \{ renderMapPage, stationForMachine(?:, stopMapPrint)? \} from '\.\/map\.js';/);
   assert.match(src, /root === 'map'/);
   assert.match(src, /!can\('floorMap'\)/);
   assert.match(src, /renderMapPage\(mapPageContext\(\), route\)/);

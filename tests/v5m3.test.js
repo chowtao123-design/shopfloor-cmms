@@ -469,7 +469,8 @@ test('map.js: empty slots offer + Add station for writers (placement in the view
 
 test('app.js + help.js + sw.js + styles.css: the editor is wired into the shell', () => {
   const appSrc = read('app.js');
-  assert.match(appSrc, /import \{ renderMapPage, stationForMachine \} from '\.\/map\.js';/);
+  // V5-M4 added stopMapPrint to the same import line.
+  assert.match(appSrc, /import \{ renderMapPage, stationForMachine(?:, stopMapPrint)? \} from '\.\/map\.js';/);
   assert.match(appSrc, /renderMapPage\(mapPageContext\(\), route\)/);
   // The map context hands over showConfirm for the leave guards.
   assert.match(appSrc, /\n    showConfirm,\n/);

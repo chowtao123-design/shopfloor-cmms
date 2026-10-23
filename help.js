@@ -584,9 +584,9 @@ function helpFloor(h) {
     helpSteps(h, [
       'Search by station code, staff name, employee ID or machine name; matching stations light up and the first match moves to the middle. The Filter chips (All · Down · Open orders · Unlinked · Vacant) fade out everything that does not fit.',
       'Drag to pan (or hold the mouse wheel down and drag — this also works while editing); scroll, pinch or double-click to zoom (from half size to 8×). The − and + buttons zoom around the middle, and Fit shows the whole drawing.',
-      'Show names toggles the staff names under the station codes. Employee IDs never show on the map — they are in the station panel.',
-      'Names: Auto picks the largest name size that still fits every name inside its box. A− and A+ make the names smaller or larger (a name that no longer fits ends with “…”); click the middle button to go back to Auto. Station codes always stay fully visible.',
-      'Print / PDF prints just the map on one Letter page (portrait or landscape to suit the floor), with the floor name and date. Pick “Save as PDF” as the printer for a PDF file.',
+      'Show names toggles the person line under the station code: the employee ID first, then the staff name — “123 Doe, Jo Jo”, exactly like the shop’s printed plan (the ID alone or the name alone when the other is empty). With names off only the codes show.',
+      'Every slot uses one text size for all of its lines, so codes are no longer much bigger than names. Text: Auto picks the largest size that still fits every line inside its box, wrapping whole words (never cutting one in half); A− and A+ make the whole slot smaller or larger, dropping the rows that no longer fit with a “…” at the end — the code itself always stays. Click the middle button to go back to Auto.',
+      'Print / PDF lays the whole layout on one Letter page — portrait or landscape, whichever suits the floor — with a 6 mm margin and no header text, whatever the current zoom or pan is. Ctrl+P while the map page is shown does exactly the same. Pick “Save as PDF” as the printer for a PDF file.',
       'Zoom and search stay put while the data refreshes behind them.',
     ]),
     h('h3', { class: 'help-question' }, 'The station panel'),

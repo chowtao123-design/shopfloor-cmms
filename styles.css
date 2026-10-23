@@ -5468,10 +5468,6 @@ body.logged-out .ai-chat-fab {
 
 /* ---------- Floor map: fill the screen, print on Letter (client request 2026-10-22) ---------- */
 
-.fm-print-head {
-  display: none;
-}
-
 @media (min-width: 1024px) {
   /* The map page uses the whole content width and the screen height. */
   .page:has(.fm-svg) {
@@ -5484,6 +5480,9 @@ body.logged-out .ai-chat-fab {
 }
 
 @media print {
+  /* V5-M4: exactly the client's original tool — the whole layout auto-fitted
+     on one Letter page (portrait or landscape is picked by the injected
+     @page style in map.js), a 6 mm margin, no header text. */
   body.fm-printing * {
     visibility: hidden;
   }
@@ -5493,30 +5492,41 @@ body.logged-out .ai-chat-fab {
     visibility: visible;
   }
 
+  /* The fixed print area IS the page inside its 6 mm margin; the svg fills
+     it (width 100%, page height) and meet-fits the whole drawing — the
+     viewBox the beforeprint hook sets — whatever the screen zoom was. */
   body.fm-printing .fm-print-area {
     position: fixed;
     inset: 0;
-    display: flex;
-    flex-direction: column;
     background: #fff;
     border: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body.fm-printing .fm-print-area .fm-svg {
+    display: block;
+    width: 100%;
+    height: calc(100vh - 0px);
   }
 
   /* "+ Add" on empty slots is an editing aid, not part of the plan. */
-  body.fm-printing .fm-slot-add-text {
+  body.fm-printing .fm-slot-add-text,
+  body.fm-printing .fm-slot-add .fm-slot-empty-rect {
     display: none;
   }
 
-  body.fm-printing .fm-print-head {
-    display: block;
-    font-size: 10pt;
-    margin-bottom: 4pt;
+  /* Neither are the screen-only search highlight and station selection. */
+  body.fm-printing .fm-svg .fm-hit .fm-slot-rect,
+  body.fm-printing .fm-svg .fm-selected .fm-slot-rect {
+    stroke: #c9cedb;
+    stroke-width: 0.6;
   }
 
-  body.fm-printing .fm-svg {
-    flex: 1;
-    height: auto;
-    min-height: 0;
+  /* A down machine keeps its red border on paper. */
+  body.fm-printing .fm-svg .fm-station-down .fm-slot-rect {
+    stroke: #bb2d3f;
+    stroke-width: 1.1;
   }
 }
 
