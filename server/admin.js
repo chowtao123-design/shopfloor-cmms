@@ -417,7 +417,8 @@ function buildMapData(layout, name) {
  */
 function buildStationData(station, mapId) {
   const data = { mapId };
-  if (station.slot !== undefined) data.slot = station.slot;
+  // Off-map stations in the export have slot null; the slot means nothing without a box.
+  if (Number.isInteger(station.slot)) data.slot = station.slot;
   if (station.code !== undefined) data.code = station.code;
   if (station.zone !== undefined) data.zone = station.zone;
   if (station.en !== undefined) data.name = station.en;

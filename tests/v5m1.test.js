@@ -878,8 +878,8 @@ function writeImportFixtures(dir) {
     },
     {
       id: 'st-c',
-      box: 'b-missing',
-      slot: 0,
+      box: null, // the real export marks off-map stations with box and slot null
+      slot: null,
       zone: 'PAC',
       code: 'PAC 1',
       en: 'Off Map Personzz',
