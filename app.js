@@ -1074,7 +1074,12 @@ function searchBox(placeholder, onInput, autofocus = false) {
   input.id = `search-${++fieldCounter}`;
   if (autofocus) {
     input.autofocus = true;
-    requestAnimationFrame(() => input.focus());
+    // Only when nothing else has the cursor: in the split view the open
+    // detail (e.g. a request's "What to buy") must keep it.
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body) input.focus();
+    });
   }
   input.addEventListener('input', () => onInput(input.value));
   return h(
@@ -4754,7 +4759,7 @@ function requestPhoneCard(request) {
         'div',
         { class: 'row-sub' },
         h('span', { class: 'so-number' }, formatRequestNumber(request.number)),
-        ` · ${lines} line${lines === 1 ? '' : 's'}`,
+        ` · ${lines} item${lines === 1 ? '' : 's'}`,
         request.neededBy ? ` · needed ${formatDate(request.neededBy)}` : '',
       ),
       editedTag(request),
@@ -4790,7 +4795,7 @@ function requestsTableColumns() {
     },
     {
       key: 'lines',
-      label: 'Lines',
+      label: 'Items',
       value: (request) => (request.lines || []).length,
       sortValue: (request) => (request.lines || []).length,
     },
@@ -4937,358 +4942,6 @@ function rawRequestLine(line) {
   return out;
 }
 
-/** Problems with the current editor lines, shown in the form error box. */
-function requestLineProblemsFor(lines) {
-  const problems = [];
-  (Array.isArray(lines) ? lines : []).forEach((raw, index) => {
-    const label = `Line ${index + 1}`;
-    if (!String(raw.description || '').trim()) problems.push(`${label} needs a description.`);
-    else if (String(raw.description).length > 200) {
-      problems.push(`${label} description is longer than 200 characters.`);
-    }
-    const qty = Number(raw.qty);
-    if (!Number.isFinite(qty) || qty <= 0) problems.push(`${label} needs a quantity above 0.`);
-    else if (qty > 100000) problems.push(`${label} quantity is above 100000.`);
-    if (raw.unit && String(raw.unit).length > 20) problems.push(`${label} unit is longer than 20 characters.`);
-    if (raw.unitPrice !== null && raw.unitPrice !== undefined) {
-      const price = Number(raw.unitPrice);
-      if (!Number.isFinite(price)) problems.push(`${label} price is not a number.`);
-      else if (price > 1000000) problems.push(`${label} price is above 1000000.`);
-    }
-    if (raw.partNumber && String(raw.partNumber).length > 60) {
-      problems.push(`${label} part number is longer than 60 characters.`);
-    }
-  });
-  return problems;
-}
-
-function createRequestLinesEditor(initialLines = [], { onChange = null, focusLineId = null } = {}) {
-  const lines = (initialLines || []).filter(Boolean).map(normalizeRequestLine);
-  const listHost = h('div', { class: 'req-lines' });
-  const hint = h('p', { class: 'field-hint', role: 'status' });
-
-  function notify() {
-    hint.textContent = lines.length >= MAX_REQUEST_LINES ? 'At most 100 lines.' : '';
-    if (typeof onChange === 'function') onChange();
-  }
-
-/** Editor cell: visible label on phone, header row labels it on wider screens. */
-function reqCell(labelText, control, className) {
-  return h(
-    'div',
-    { class: `req-cell ${className}` },
-    labelText ? h('span', { class: 'req-cell-label', 'aria-hidden': 'true' }, labelText) : null,
-    control,
-  );
-}
-
-/** One editable row (SPEC-v4.md 3.2): inputs update the line in place. */
-function requestLineRow(line, index) {
-  const descriptionInput = h('input', {
-    type: 'text',
-    maxlength: '200',
-    value: line.description,
-    placeholder: 'What to buy',
-    autocomplete: 'off',
-    'aria-label': `Line ${index + 1} description`,
-    dataset: { lineId: line.id },
-  });
-  const suggestions = h('div', {
-    class: 'req-line-suggest',
-    role: 'listbox',
-    'aria-label': 'Matching catalogue parts',
-  });
-
-    function matches() {
-      const needle = descriptionInput.value.trim();
-      if (!needle) return [];
-      return searchParts(state.parts, needle).slice(0, 8);
-    }
-
-    function fillFromPart(part) {
-      line.description = part.name || line.description;
-      line.partId = part.id || '';
-      line.partNumber = part.partNumber || '';
-      line.unit = part.unit || 'pcs';
-      line.supplier = part.supplier || '';
-      // One fitting machine pre-selects itself; more leave the choice open.
-      if (!line.machineId && (part.machineIds || []).length === 1) line.machineId = part.machineIds[0];
-      suggestions.replaceChildren();
-      descriptionInput.value = line.description;
-      renderRows();
-      descriptionInput.focus();
-    }
-
-    function showSuggestions() {
-      suggestions.replaceChildren();
-      // Typing past a picked part breaks the link; emptying the description
-      // drops it, picking a suggestion sets it fresh.
-      if (!descriptionInput.value.trim()) line.partId = '';
-      const parts = matches();
-      let active = -1;
-      const options = parts.map((part) =>
-        h(
-          'button',
-          { type: 'button', class: 'req-line-suggest-item', role: 'option' },
-          h('span', {}, part.name),
-          part.partNumber ? h('span', { class: 'req-line-suggest-no' }, part.partNumber) : null,
-        ),
-      );
-      options.forEach((option, optionIndex) => {
-        option.addEventListener('mousedown', (event) => {
-          // Before the blur handler clears the list.
-          event.preventDefault();
-          fillFromPart(parts[optionIndex]);
-        });
-        suggestions.append(option);
-      });
-      descriptionInput.setAttribute('aria-expanded', String(options.length > 0));
-      descriptionInput.addEventListener('keydown', (event) => {
-        if (suggestions.childElementCount === 0) return;
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-          event.preventDefault();
-          active += event.key === 'ArrowDown' ? 1 : -1;
-          if (active < 0) active = options.length - 1;
-          if (active >= options.length) active = 0;
-          options.forEach((option, optionIndex) => {
-            option.classList.toggle('is-active', optionIndex === active);
-          });
-        } else if (event.key === 'Enter' && active >= 0) {
-          event.preventDefault();
-          fillFromPart(parts[active]);
-        } else if (event.key === 'Escape') {
-          // Only close the suggestion list; the drawer stays open.
-          event.stopPropagation();
-          event.preventDefault();
-          suggestions.replaceChildren();
-        }
-      });
-    }
-
-    descriptionInput.addEventListener('input', () => {
-      line.description = descriptionInput.value;
-      showSuggestions();
-      notify();
-    });
-    descriptionInput.addEventListener('blur', () => {
-      line.partId = '';
-      // Buttons pick with mousedown, so a plain blur just closes the list.
-      setTimeout(() => suggestions.replaceChildren(), 120);
-    });
-
-    const partNumberInput = h('input', {
-      type: 'text',
-      maxlength: '60',
-      value: line.partNumber,
-      'aria-label': `Line ${index + 1} part number`,
-      placeholder: 'Catalogue #',
-    });
-    partNumberInput.addEventListener('input', () => {
-      line.partNumber = partNumberInput.value;
-      notify();
-    });
-
-    const qtyInput = h('input', {
-      type: 'number',
-      min: '0',
-      max: '100000',
-      step: '0.01',
-      value: line.qty,
-      'aria-label': `Line ${index + 1} quantity`,
-    });
-    qtyInput.addEventListener('input', () => {
-      line.qty = qtyInput.value;
-      totalText.textContent = requestLineTotalText(line);
-      notify();
-    });
-
-    const unitInput = h('input', {
-      type: 'text',
-      maxlength: '20',
-      value: line.unit,
-      'aria-label': `Line ${index + 1} unit`,
-    });
-    unitInput.addEventListener('input', () => {
-      line.unit = unitInput.value;
-      notify();
-    });
-
-    const priceInput = h('input', {
-      type: 'number',
-      min: '0',
-      max: '1000000',
-      step: '0.01',
-      value: line.unitPrice,
-      placeholder: 'Unknown',
-      'aria-label': `Line ${index + 1} unit price (leave blank when unknown)`,
-    });
-    priceInput.addEventListener('input', () => {
-      line.unitPrice = priceInput.value;
-      totalText.textContent = requestLineTotalText(line);
-      notify();
-    });
-
-    const machineSelect = h('select', { 'aria-label': `Line ${index + 1} machine (optional)` },
-      h('option', { value: '' }, '—'),
-      ...orderedMachines().map((machine) =>
-        machine.id === line.machineId
-          ? h('option', { value: machine.id, selected: true }, machine.name)
-          : h('option', { value: machine.id }, machine.name),
-      ),
-    );
-    machineSelect.addEventListener('change', () => {
-      line.machineId = machineSelect.value;
-      notify();
-    });
-
-    const totalText = h('span', { class: 'req-line-total tabular' }, requestLineTotalText(line));
-
-    const upButton = h(
-      'button',
-      {
-        class: 'btn btn-ghost btn-small',
-        type: 'button',
-        'aria-label': `Move line ${index + 1} up`,
-        disabled: index === 0,
-        onclick: () => moveLine(index, 'up'),
-      },
-      '↑',
-    );
-    const downButton = h(
-      'button',
-      {
-        class: 'btn btn-ghost btn-small',
-        type: 'button',
-        'aria-label': `Move line ${index + 1} down`,
-        disabled: index === lines.length - 1,
-        onclick: () => moveLine(index, 'down'),
-      },
-      '↓',
-    );
-    const removeButton = h(
-      'button',
-      {
-        class: 'btn btn-ghost btn-small',
-        type: 'button',
-        'aria-label': `Remove line ${index + 1}`,
-        onclick: () => {
-          lines.splice(index, 1);
-          renderRows();
-          notify();
-        },
-      },
-      '×',
-    );
-
-    return h(
-      'div',
-      { class: 'req-line-row', dataset: { lineId: line.id } },
-      h(
-        'div',
-        { class: 'req-cell req-cell-n' },
-        h('span', { class: 'req-line-no tabular', 'aria-hidden': 'true' }, String(index + 1)),
-      ),
-      reqCell('Description', h('div', { class: 'req-desc-wrap' }, descriptionInput, suggestions), 'req-cell-desc'),
-      reqCell('Part #', partNumberInput, 'req-cell-part'),
-      reqCell('Qty', qtyInput, 'req-cell-qty'),
-      reqCell('Unit', unitInput, 'req-cell-unit'),
-      reqCell('Unit price', priceInput, 'req-cell-price'),
-      h(
-        'div',
-        { class: 'req-cell req-cell-total' },
-        h('span', { class: 'req-cell-label', 'aria-hidden': 'true' }, 'Line total'),
-        totalText,
-      ),
-      reqCell('Machine', machineSelect, 'req-cell-machine'),
-      h(
-        'div',
-        { class: 'req-cell req-cell-actions' },
-        h('span', { class: 'req-cell-label', 'aria-hidden': 'true' }, 'Order'),
-        upButton,
-        downButton,
-        removeButton,
-      ),
-    );
-  }
-
-  function renderRows({ focusId = null } = {}) {
-    const focusIndex = focusId ? lines.findIndex((line) => line.id === focusId) : -1;
-    listHost.replaceChildren(...lines.map((line, index) => requestLineRow(line, index)));
-    if (focusIndex >= 0) {
-      const row = listHost.children[focusIndex];
-      const input = row ? row.querySelector('input') : null;
-      if (input) {
-        // A frame later, so the drawer's own focus-after-open does not win.
-        requestAnimationFrame(() => {
-          input.focus();
-          if (typeof input.select === 'function') input.select();
-        });
-      }
-    }
-  }
-
-  function moveLine(index, direction) {
-    const to = direction === 'down' ? index + 1 : index - 1;
-    if (to < 0 || to >= lines.length) return;
-    const next = moveRequestLine(lines, index, direction);
-    lines.length = 0;
-    lines.push(...next);
-    renderRows();
-    notify();
-  }
-
-  function addLine() {
-    if (lines.length >= MAX_REQUEST_LINES) return null;
-    const line = normalizeRequestLine({ id: uid(), qty: 1, unit: 'pcs' });
-    lines.push(line);
-    renderRows({ focusId: line.id });
-    notify();
-    return line;
-  }
-
-  renderRows({ focusId: focusLineId });
-
-  const element = h(
-    'div',
-    { class: 'req-lines-edit' },
-    hint,
-    h(
-      'div',
-      { class: 'req-lines-head', 'aria-hidden': 'true' },
-      h('span', { class: 'req-cell req-cell-n' }, '#'),
-      h('span', { class: 'req-cell req-cell-desc' }, 'Description'),
-      h('span', { class: 'req-cell req-cell-part' }, 'Part #'),
-      h('span', { class: 'req-cell req-cell-qty' }, 'Qty'),
-      h('span', { class: 'req-cell req-cell-unit' }, 'Unit'),
-      h('span', { class: 'req-cell req-cell-price' }, 'Unit price'),
-      h('span', { class: 'req-cell req-cell-total' }, 'Line total'),
-      h('span', { class: 'req-cell req-cell-machine' }, 'Machine'),
-      h('span', { class: 'req-cell req-cell-actions' }, 'Order'),
-    ),
-    listHost,
-    h(
-      'div',
-      { class: 'req-lines-add' },
-      h('button', { class: 'btn btn-small', type: 'button', onclick: () => addLine() }, '+ Add line'),
-    ),
-  );
-
-  return {
-    element,
-    addLine,
-    getRequestLines: () => lines.map(rawRequestLine),
-    requestLineProblems: () => requestLineProblemsFor(lines.map(rawRequestLine)),
-  };
-}
-
-/** "—" for unknown prices, otherwise the computed line total (SPEC-v4.md 2). */
-function requestLineTotalText(line) {
-  const raw = rawRequestLine(line);
-  if (raw.unitPrice === null) return '—';
-  const { lines: computed } = requestTotals({ lines: [raw], hstRate: 0 });
-  return formatMoney(computed[0].lineTotalCents) || '—';
-}
-
 /* ---------- Request form (SPEC-v4.md 3.2) ----------
    Shared by the full-page form (< 1024 px) and the desktop drawer; returns
    the form node and an isDirty() probe for the drawer's discard check. */
@@ -5314,46 +4967,6 @@ function requestFormTitle(existing) {
   return existing ? 'Edit parts request' : 'New parts request';
 }
 
-/** The money footer of the form: subtotal, HST at the typed rate, grand total
- *  and the unpriced-line count (SPEC-v4.md 3.2). */
-function requestTotalsNode(stream) {
-  const box = h('div', { class: 'req-totals' });
-  const paint = (request) => {
-    const totals = requestTotals(request);
-    const rateLabel = requestHstLabel(request.hstRate);
-    box.replaceChildren(
-      h(
-        'div',
-        { class: 'req-total-row' },
-        h('span', {}, 'Subtotal before HST'),
-        h('span', { class: 'req-total-value tabular' }, formatMoney(totals.subtotalCents)),
-      ),
-      h(
-        'div',
-        { class: 'req-total-row' },
-        h('span', {}, rateLabel),
-        h('span', { class: 'req-total-value tabular' }, formatMoney(totals.hstCents)),
-      ),
-      h(
-        'div',
-        { class: 'req-total-row req-total-grand' },
-        h('span', {}, 'Grand total'),
-        h('span', { class: 'req-total-value tabular' }, formatMoney(totals.totalCents)),
-      ),
-      totals.unpricedCount > 0
-        ? h(
-            'div',
-            { class: 'req-total-note muted' },
-            `${totals.unpricedCount} ${totals.unpricedCount === 1 ? 'line has' : 'lines have'} no price`,
-          )
-        : null,
-    );
-  };
-  if (typeof stream === 'function') stream(paint);
-  else paint(stream);
-  return { box, paint };
-}
-
 function requestFormBody({ existing = null } = {}) {
   const base = existing || {
     title: '',
@@ -5372,10 +4985,9 @@ function requestFormBody({ existing = null } = {}) {
 
   const titleInput = h('input', {
     type: 'text',
-    required: true,
     maxlength: '120',
     autocomplete: 'off',
-    placeholder: 'e.g. Juki needles + belts, Nov',
+    placeholder: `e.g. Juki needles + belts (blank = Parts request ${formatDate(todayISO())})`,
     value: base.title || '',
   });
   const supplierInput = h('input', {
@@ -5404,32 +5016,8 @@ function requestFormBody({ existing = null } = {}) {
   });
   const notesInput = h('textarea', { rows: 3, maxlength: '2000', value: base.notes || '' });
 
-  // Lines gathered elsewhere (SPEC-v4.md 3.3) open pre-attached and focused.
+  // Items picked on other pages before the request existed (SPEC-v4.md 3.3).
   const extraLines = consumePendingRequestLines(existing ? existing.id : 'new');
-  const linesEditor = createRequestLinesEditor(
-    [...(base.lines || []), ...extraLines],
-    {
-      onChange: () => footer.paint(shaped()),
-      focusLineId: extraLines.length ? extraLines[0].id : null,
-    },
-  );
-
-  function currentHstRate() {
-    const rate = Number(hstRateInput.value);
-    return Number.isFinite(rate) && rate >= 0 && rate <= 30 ? Math.min(rate, 30) : 13;
-  }
-
-  function shaped() {
-    return {
-      lines: linesEditor.getRequestLines(),
-      hstRate: currentHstRate(),
-    };
-  }
-
-  const footer = requestTotalsNode((paint) => {
-    paint(shaped());
-    hstRateInput.addEventListener('input', () => paint(shaped()));
-  });
 
   const save = h(
     'button',
@@ -5443,9 +5031,9 @@ function requestFormBody({ existing = null } = {}) {
     h('div', { class: 'grid-2' }, field('Supplier', supplierInput), field('Needed by', neededByInput)),
     h('div', { class: 'grid-2' }, field('Requested by', requestedByInput), field('HST %', hstRateInput, 'Ontario HST is 13.')),
     field('Notes', notesInput, 'Printed under the table on the request sheet.'),
-    sectionTitle('Lines'),
-    linesEditor.element,
-    footer.box,
+    extraLines.length > 0
+      ? h('p', { class: 'field-hint' }, `${extraLines.length} item${extraLines.length === 1 ? '' : 's'} you picked will be added.`)
+      : null,
     h(
       'div',
       { class: 'form-actions' },
@@ -5462,9 +5050,8 @@ function requestFormBody({ existing = null } = {}) {
     event.preventDefault();
     errorBox.textContent = '';
     const problems = [];
-    const title = titleInput.value.trim();
-    if (!title) problems.push('Enter a title.');
-    else if (title.length > 120) problems.push('The title is longer than 120 characters.');
+    const title = titleInput.value.trim() || `Parts request ${formatDate(todayISO())}`;
+    if (title.length > 120) problems.push('The title is longer than 120 characters.');
     const rate = Number(hstRateInput.value);
     if (hstRateInput.value !== '' && (!Number.isFinite(rate) || rate < 0 || rate > 30 || Number(rate.toFixed(2)) !== rate)) {
       problems.push('HST % must be between 0 and 30, with at most 2 decimals.');
@@ -5472,9 +5059,10 @@ function requestFormBody({ existing = null } = {}) {
     if (neededByInput.value && !isISODate(neededByInput.value)) {
       problems.push('Needed by is not a valid date.');
     }
-    const lines = linesEditor.getRequestLines();
-    if (lines.length > MAX_REQUEST_LINES) problems.push(`At most ${MAX_REQUEST_LINES} lines.`);
-    problems.push(...linesEditor.requestLineProblems());
+    // Items without a description (from a service order) wait in the add box.
+    const ready = extraLines.map(rawRequestLine).filter((line) => line.description);
+    const waiting = extraLines.filter((line) => !String(line.description || '').trim());
+    const lines = [...(base.lines || []), ...ready].slice(0, MAX_REQUEST_LINES);
     if (problems.length > 0) {
       errorBox.textContent = problems[0];
       return;
@@ -5497,7 +5085,9 @@ function requestFormBody({ existing = null } = {}) {
     try {
       await sync.saveRecord('purchaseRequests', record, existing ? existing.version : null);
       await refreshState();
-      toast(existing ? 'Request saved.' : 'Request created.');
+      if (waiting.length > 0) pendingRequestLines = { forId: record.id, lines: waiting };
+      if (!existing) requestItemRefocus = true;
+      toast(existing ? 'Request saved.' : 'Request created. Add the parts and materials below.');
       navigate(`#/requests/${encodeURIComponent(record.id)}`);
     } catch (error) {
       errorBox.textContent = 'Could not save. Please try again.';
@@ -5652,109 +5242,229 @@ function requestStatusButtons(request) {
 }
 
 /** Read-only lines: a table on desktop, stacked cards on phone. */
-function requestLinesView(request) {
-  const totals = requestTotals(request);
-  const machineNames = new Map(state.machines.map((machine) => [machine.id, machine.name]));
-  const lines = (request.lines || []).filter(Boolean);
+/* ---------- Items (client request 2026-10-22) ----------
+   A plain list to gather parts and materials; the priced table only appears
+   on the sheet after "Generate table". Every add, edit and remove saves the
+   request at once, so a draft can grow over days. */
 
-  const table = h(
-    'div',
-    { class: 'table-wrap req-lines-wrap' },
+// After a save re-renders the page, put the cursor back in "What to buy".
+let requestItemRefocus = false;
+
+async function saveRequestLines(request, lines) {
+  await sync.saveRecord('purchaseRequests', { ...request, lines, updatedAt: nowISO() }, request.version);
+  await refreshState();
+  await render();
+}
+
+function requestItemForm(request) {
+  const listId = `part-options-${++fieldCounter}`;
+  const options = h('datalist', { id: listId });
+  for (const part of state.parts) options.append(h('option', { value: part.name }, part.partNumber || ''));
+  const description = h('input', {
+    type: 'text',
+    list: listId,
+    maxlength: '200',
+    autocomplete: 'off',
+    placeholder: 'Part or material, e.g. Needle DBx1 #14',
+  });
+  const qty = h('input', { type: 'number', min: '0.01', max: '100000', step: 'any', inputmode: 'decimal', value: '1' });
+  const unit = h('input', { type: 'text', maxlength: '20', value: 'pcs' });
+  const price = h('input', { type: 'number', min: '0', step: '0.01', inputmode: 'decimal', placeholder: 'Optional' });
+  const submit = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add');
+  const cancelEdit = h('button', { class: 'btn', type: 'button', hidden: true }, 'Cancel');
+  const errorBox = h('p', { class: 'form-error', role: 'alert' });
+  const contextHint = h('p', { class: 'field-hint' });
+  // Kept from a catalogue part or a service order: partId, partNumber, supplier, machineId, workOrderId.
+  let context = {};
+  let editingId = null;
+
+  function reset() {
+    editingId = null;
+    context = {};
+    description.value = '';
+    qty.value = '1';
+    unit.value = 'pcs';
+    price.value = '';
+    contextHint.textContent = '';
+    submit.textContent = 'Add';
+    cancelEdit.hidden = true;
+    errorBox.textContent = '';
+  }
+
+  description.addEventListener('change', () => {
+    const typed = description.value.trim().toLowerCase();
+    const part = state.parts.find((item) => item.name.trim().toLowerCase() === typed);
+    if (part) {
+      context = { ...context, partId: part.id, partNumber: part.partNumber || '', supplier: part.supplier || '' };
+      unit.value = part.unit || 'pcs';
+      if (!editingId && qty.value === '1') qty.value = String(requestDefaultQty(part));
+    } else {
+      delete context.partId;
+      delete context.partNumber;
+    }
+  });
+
+  const form = h(
+    'form',
+    { class: 'req-add', novalidate: true },
     h(
-      'table',
-      { class: 'data-table req-lines-table' },
-      h(
-        'thead',
-        {},
-        h(
-          'tr',
-          {},
-          h('th', { scope: 'col' }, '#'),
-          h('th', { scope: 'col' }, 'Description'),
-          h('th', { scope: 'col' }, 'Part #'),
-          h('th', { scope: 'col' }, 'Qty'),
-          h('th', { scope: 'col' }, 'Unit'),
-          h('th', { scope: 'col' }, 'Unit price'),
-          h('th', { scope: 'col' }, 'Line total'),
-          h('th', { scope: 'col' }, 'Machine'),
-        ),
-      ),
-      h(
-        'tbody',
-        {},
-        ...lines.map((line, index) => {
-          const priced = line.unitPrice !== null && line.unitPrice !== undefined;
-          const lineTotal = totals.lines[index] ? totals.lines[index].lineTotalCents : null;
-          return h(
-            'tr',
-            {},
-            h('td', { 'data-col': 'n', class: 'tabular' }, String(index + 1)),
-            h('td', { 'data-col': 'description' }, line.description),
-            h('td', { 'data-col': 'part' }, line.partNumber || '—'),
-            h('td', { 'data-col': 'qty', class: 'tabular' }, String(line.qty)),
-            h('td', { 'data-col': 'unit' }, line.unit || 'pcs'),
-            h('td', { 'data-col': 'price', class: 'tabular' }, priced ? formatMoney(dollarsToCents(line.unitPrice)) : '—'),
-            h(
-              'td',
-              { 'data-col': 'total', class: 'tabular' },
-              priced ? formatMoney(lineTotal) : '—',
-            ),
-            h(
-              'td',
-              { 'data-col': 'machine' },
-              line.machineId && machineNames.get(line.machineId)
-                ? h(
-                    'a',
-                    { class: 'inline-link', href: `#/machines/${encodeURIComponent(line.machineId)}` },
-                    machineNames.get(line.machineId),
-                  )
-                : '—',
-            ),
-          );
-        }),
-      ),
+      'div',
+      { class: 'req-add-grid' },
+      h('div', { class: 'req-add-what' }, field('What to buy', description), options),
+      field('Qty', qty),
+      field('Unit', unit),
+      field('Unit price ($)', price),
+      h('div', { class: 'req-add-buttons' }, submit, cancelEdit),
     ),
+    contextHint,
+    errorBox,
   );
 
-  const cards = h(
-    'div',
-    { class: 'list cards-only req-lines-cards' },
+  cancelEdit.addEventListener('click', reset);
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const priceText = price.value.trim();
+    const line = rawRequestLine({
+      ...context,
+      id: editingId || uid(),
+      description: description.value,
+      qty: qty.value,
+      unit: unit.value,
+      unitPrice: priceText === '' ? '' : String(Math.round(Number(priceText) * 100) / 100),
+    });
+    if (!line.description) errorBox.textContent = 'Type what to buy.';
+    else if (!(line.qty > 0) || line.qty > 100000) errorBox.textContent = 'Quantity must be more than 0 (up to 100000).';
+    else if (priceText !== '' && (line.unitPrice === null || line.unitPrice > 1000000)) errorBox.textContent = 'Unit price must be a number up to 1000000.';
+    const lines = request.lines || [];
+    if (!errorBox.textContent && !editingId && lines.length >= MAX_REQUEST_LINES) {
+      errorBox.textContent = `A request holds at most ${MAX_REQUEST_LINES} items.`;
+    }
+    if (errorBox.textContent) return;
+    submit.disabled = true;
+    try {
+      requestItemRefocus = true;
+      await saveRequestLines(request, editingId ? lines.map((item) => (item.id === editingId ? line : item)) : [...lines, line]);
+    } catch (error) {
+      requestItemRefocus = false;
+      console.error(error);
+      errorBox.textContent = 'Could not save. Please try again.';
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  function edit(line) {
+    editingId = line.id;
+    context = {
+      partId: line.partId,
+      partNumber: line.partNumber,
+      supplier: line.supplier,
+      machineId: line.machineId,
+      workOrderId: line.workOrderId,
+      note: line.note,
+    };
+    description.value = line.description || '';
+    qty.value = String(line.qty);
+    unit.value = line.unit || 'pcs';
+    price.value = line.unitPrice === null || line.unitPrice === undefined ? '' : String(line.unitPrice);
+    submit.textContent = 'Save item';
+    cancelEdit.hidden = false;
+    description.focus();
+  }
+
+  // An item started from a service order arrives without a description.
+  const waiting = consumePendingRequestLines(request.id)[0];
+  if (waiting) {
+    context = { machineId: waiting.machineId || undefined, workOrderId: waiting.workOrderId || undefined };
+    const order = waiting.workOrderId ? workOrderById(waiting.workOrderId) : null;
+    const machine = waiting.machineId ? machineById(waiting.machineId) : null;
+    contextHint.textContent = `For ${[order ? formatOrderNumber(order.number) : '', machine ? machine.name : ''].filter(Boolean).join(' · ')}: type what to buy.`;
+  }
+  if (waiting || requestItemRefocus) {
+    requestItemRefocus = false;
+    setTimeout(() => description.focus(), 0);
+  }
+  return { form, edit };
+}
+
+function requestItemsSection(request) {
+  const lines = (request.lines || []).filter(Boolean);
+  const editable = can('purchasing', 'write') && (request.status === 'draft' || request.status === 'sent');
+  const adder = editable ? requestItemForm(request) : null;
+  const machineNames = new Map(state.machines.map((machine) => [machine.id, machine.name]));
+
+  const list = h(
+    'ol',
+    { class: 'req-items' },
     ...lines.map((line, index) => {
       const priced = line.unitPrice !== null && line.unitPrice !== undefined;
-      const lineTotal = totals.lines[index] ? totals.lines[index].lineTotalCents : null;
+      const details = [
+        `${line.qty} ${line.unit || 'pcs'}`,
+        priced ? `${formatMoney(dollarsToCents(line.unitPrice))} each` : 'price to be confirmed',
+        line.partNumber,
+        line.machineId ? machineNames.get(line.machineId) : '',
+      ].filter(Boolean);
       return h(
-        'div',
-        { class: 'req-line-card' },
+        'li',
+        { class: 'req-item' },
+        h('span', { class: 'req-item-no tabular' }, `${index + 1}.`),
         h(
           'div',
-          { class: 'req-line-card-head' },
-          h('span', { class: 'req-line-no tabular' }, String(index + 1)),
-          h('span', { class: 'req-line-card-title' }, line.description),
+          { class: 'req-item-main' },
+          h('div', { class: 'req-item-title' }, line.description),
+          h('div', { class: 'row-sub tabular' }, details.join(' · ')),
         ),
-        h(
-          'div',
-          { class: 'row-sub' },
-          [
-            line.partNumber,
-            line.machineId && machineNames.get(line.machineId)
-              ? machineNames.get(line.machineId)
-              : '',
-          ]
-            .filter(Boolean)
-            .join(' · ') || '—',
-        ),
-        h(
-          'div',
-          { class: 'req-line-card-meta tabular' },
-          priced
-            ? `${line.qty} ${line.unit || 'pcs'} · ${formatMoney(dollarsToCents(line.unitPrice))} · ${formatMoney(lineTotal)}`
-            : `${line.qty} ${line.unit || 'pcs'} · price to be confirmed`,
-        ),
+        editable
+          ? h(
+              'div',
+              { class: 'req-item-actions' },
+              h('button', { class: 'btn btn-small', type: 'button', onclick: () => adder.edit(line) }, 'Edit'),
+              h(
+                'button',
+                {
+                  class: 'btn btn-small btn-ghost',
+                  type: 'button',
+                  'aria-label': `Remove ${line.description}`,
+                  onclick: async () => {
+                    const yes = await showConfirm({
+                      title: 'Remove this item?',
+                      message: `${line.description} (${line.qty} ${line.unit || 'pcs'}) comes off the request.`,
+                      confirmText: 'Remove',
+                      danger: true,
+                    });
+                    if (!yes) return;
+                    try {
+                      await saveRequestLines(request, lines.filter((item) => item.id !== line.id));
+                    } catch (error) {
+                      console.error(error);
+                      toast('Could not remove the item. Please try again.', 'warn');
+                    }
+                  },
+                },
+                'Remove',
+              ),
+            )
+          : null,
       );
     }),
   );
 
-  return h('div', {}, cards, table);
+  return h(
+    'section',
+    { class: 'req-items-section' },
+    sectionTitle(`Items (${lines.length})`),
+    adder ? adder.form : null,
+    lines.length > 0 ? list : h('p', { class: 'muted' }, editable ? 'No items yet. Add the parts and materials you need above.' : 'No items.'),
+    h(
+      'div',
+      { class: 'button-row req-generate' },
+      lines.length > 0
+        ? h('a', { class: 'btn btn-primary', href: `#/requests/${encodeURIComponent(request.id)}/sheet` }, 'Generate table')
+        : h('span', { class: 'field-hint' }, 'Add items, then press Generate table for the priced sheet.'),
+    ),
+  );
 }
 
 function renderRequestDetail(route) {
@@ -5813,18 +5523,16 @@ function renderRequestDetail(route) {
     detailMeta(request),
     conflictBanner('purchaseRequests', request.id),
     requestStatusButtons(request),
-    h(
-      'div',
-      { class: 'button-row', style: { marginTop: '0.75rem' } },
-      canWrite
-        ? h('a', { class: 'btn btn-small', href: `#/requests/${encodeURIComponent(request.id)}/edit` }, 'Edit request')
-        : null,
-      h('a', { class: 'btn btn-small', href: `#/requests/${encodeURIComponent(request.id)}/sheet` }, 'View sheet'),
-    ),
-    h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
-    sectionTitle('Lines'),
-    requestLinesView(request),
-    requestTotalsNode(request).box,
+    requestItemsSection(request),
+    sectionTitle('Details'),
+    h('div', { class: 'card' }, details),
+    canWrite
+      ? h(
+          'div',
+          { class: 'button-row', style: { marginTop: '0.75rem' } },
+          h('a', { class: 'btn btn-small', href: `#/requests/${encodeURIComponent(request.id)}/edit` }, 'Edit details'),
+        )
+      : null,
     request.notes
       ? h('div', { class: 'card pre', style: { marginTop: '0.75rem' } }, request.notes)
       : null,
@@ -5985,10 +5693,10 @@ async function addLinesToRequest(request, lines) {
     return;
   }
   // An empty description is rejected server-side (SPEC-v4.md 2), so those
-  // lines ride along into the form, description focused (SPEC-v4.md 3.3).
+  // lines wait in the request page's add box, description focused (3.3).
   if (clean.some((line) => !String(line.description || '').trim())) {
     pendingRequestLines = { forId: request.id, lines: clean.map(normalizeRequestLine) };
-    navigate(`#/requests/${encodeURIComponent(request.id)}/edit`);
+    navigate(`#/requests/${encodeURIComponent(request.id)}`);
     return;
   }
   if ((request.lines || []).length + clean.length > MAX_REQUEST_LINES) {

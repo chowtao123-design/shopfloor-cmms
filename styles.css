@@ -4456,262 +4456,89 @@ body.logged-out .ai-chat-fab {
   margin-top: 0.15rem;
 }
 
-/* ---------- Request lines editor (SPEC-v4.md 3.2) ---------- */
+/* ---------- Request items: add box and list (client request 2026-10-22) ---------- */
 
-.req-lines-edit {
-  margin-top: 0.25rem;
+.req-items-section {
+  margin-top: 1.1rem;
 }
 
-.req-lines-head,
-.req-line-row {
+.req-add {
+  margin-bottom: 0.9rem;
+  /* The request often sits in the narrow split-view pane, so the add row
+     follows its own width, not the screen's. */
+  container-type: inline-size;
+}
+
+/* Phone: what to buy on its own row, then qty / unit / price, then Add. */
+.req-add-grid {
   display: grid;
-  grid-template-columns:
-    1.5rem minmax(9rem, 2.1fr) minmax(5.5rem, 1fr) 4.4rem 4.2rem 5.2rem 5.6rem minmax(6.5rem, 1.1fr) max-content;
-  gap: 0.4rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
   align-items: end;
 }
 
-.req-lines-head {
-  margin-bottom: 0.35rem;
-  color: var(--muted);
-  font-size: 0.74rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
+.req-add-what,
+.req-add-buttons {
+  grid-column: 1 / -1;
 }
 
-.req-lines {
+.req-add-buttons {
   display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-
-.req-line-row {
-  padding: 0.55rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-
-.req-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 0.12rem;
-  min-width: 0;
-}
-
-.req-cell input,
-.req-cell select {
-  width: 100%;
-  min-width: 0;
-}
-
-.req-cell-label {
-  font-size: 0.72rem;
-  font-weight: 650;
-  color: var(--muted);
-}
-
-.req-cell-n {
-  align-self: start;
-}
-
-.req-line-no {
-  display: inline-grid;
-  place-items: center;
-  min-width: 1.35rem;
-  padding: 0.05rem 0.3rem;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-/* Description cell with the autocomplete list under it. */
-.req-desc-wrap {
-  position: relative;
-}
-
-.req-line-suggest {
-  position: absolute;
-  top: calc(100% + 2px);
-  left: 0;
-  right: 0;
-  z-index: 6;
-  display: flex;
-  flex-direction: column;
-  max-height: 240px;
-  overflow: auto;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  box-shadow: var(--shadow);
-}
-
-.req-line-suggest:empty {
-  display: none;
-}
-
-.req-line-suggest-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
-  width: 100%;
-  padding: 0.45rem 0.6rem;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
 }
 
-.req-line-suggest-item:hover,
-.req-line-suggest-item.is-active {
-  background: var(--surface-2);
+.req-add-buttons .btn {
+  min-height: 48px;
 }
 
-.req-line-suggest-no {
-  color: var(--muted);
-  font-size: 0.78rem;
-  white-space: nowrap;
-}
-
-.req-line-total {
-  text-align: right;
-  font-weight: 600;
-}
-
-.req-cell-actions {
-  display: flex;
-  gap: 0.25rem;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.req-lines-add {
-  margin-top: 0.6rem;
-}
-
-/* Below 560px the editor rows stack with their own visible labels; from
-   560px up the header row labels the columns instead. */
-@media (min-width: 560px) {
-  .req-cell-label {
-    display: none;
-  }
-}
-
-@media (max-width: 559.98px) {
-  .req-lines-head {
-    display: none;
+@container (min-width: 620px) {
+  .req-add-grid {
+    grid-template-columns: minmax(0, 2.4fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1fr) auto;
   }
 
-  .req-line-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.5rem;
-  }
-
-  .req-cell {
-    grid-column: 1 / -1;
-  }
-
-  .req-cell-n {
-    grid-column: 1 / -1;
-    color: var(--muted);
-    font-size: 0.74rem;
-    font-weight: 650;
-  }
-
-  .req-cell-n .req-line-no {
-    background: transparent;
-    padding: 0;
-  }
-
-  .req-cell-n::before {
-    content: 'Line ';
-  }
-
-  .req-cell-qty,
-  .req-cell-unit,
-  .req-cell-price,
-  .req-cell-total,
-  .req-cell-machine {
+  .req-add-what,
+  .req-add-buttons {
     grid-column: auto;
   }
-
-  .req-cell-desc,
-  .req-cell-part,
-  .req-cell-actions {
-    grid-column: 1 / -1;
-  }
-
-  .req-cell-total {
-    align-self: center;
-    justify-content: flex-end;
-    flex-direction: row;
-    gap: 0.4rem;
-  }
 }
 
-/* ---------- Request totals footer (SPEC-v4.md 3.2) ---------- */
-
-.req-totals {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  margin-top: 0.85rem;
-  padding: 0.8rem 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-3);
-}
-
-.req-total-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.req-total-grand,
-.req-total-grand .req-total-value {
-  font-weight: 750;
-}
-
-.req-total-value {
-  font-variant-numeric: tabular-nums;
-}
-
-.req-total-note {
-  margin-top: 0.2rem;
-  font-size: 0.8rem;
-}
-
-/* ---------- Request detail: phone line cards ---------- */
-
-.req-lines-cards .req-line-card {
-  padding: 0.6rem 0.75rem;
+.req-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
 }
 
-.req-line-card-head {
-  display: flex;
-  align-items: baseline;
+.req-item {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
   gap: 0.5rem;
+  align-items: center;
+  padding: 0.6rem 0.75rem;
 }
 
-.req-line-card-title {
-  font-weight: 650;
-  min-width: 0;
+.req-item + .req-item {
+  border-top: 1px solid var(--border);
+}
+
+.req-item-no {
+  color: var(--muted);
+}
+
+.req-item-title {
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
-.req-line-card-meta {
-  margin-top: 0.15rem;
-  font-size: 0.85rem;
+.req-item-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.req-generate {
+  margin-top: 0.9rem;
 }
 
 /* ---------- "Add to parts request" picker (SPEC-v4.md 3.3) ---------- */

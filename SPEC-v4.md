@@ -79,16 +79,17 @@ Rules (server `server/records.js` and client must match; unknown fields rejected
 - Filter chips: Draft (default) · Sent · Received · All. Search on title, number, line text.
 - **New request** button (purchasing write).
 
-### 3.2 Request detail / form (desktop drawer, phone full page)
-- Header fields (title, supplier, needed by, requested by, HST %, notes).
-- **Lines table**, editable inline: #, Description, Part # , Qty, Unit, Unit price, Line total,
-  Machine (optional select), remove button. "Add line" adds an empty row and focuses Description.
-  Typing in Description offers matching catalogue parts (name/part number); picking one fills
-  partId, partNumber, unit, supplier. Up/down buttons reorder lines (Item # follows the order).
-- Footer shows Subtotal before HST, HST (13%), **Grand total**, and "N lines have no price" when
-  `unpricedCount > 0`.
-- Actions by status: Draft → **Mark sent** (asks to confirm when lines have no price); Sent →
-  **Mark received**, **Back to draft**; any → **Cancel request**; always **View sheet**.
+### 3.2 Request page (changed 2026-10-22 at the client's request)
+- **New request** asks only for the details (title optional, default "Parts request <date>"; supplier,
+  needed by, requested by, HST %, notes), then opens the request page. "Edit details" reopens that form.
+- The request page is where items are gathered: an **add box** (What to buy with catalogue suggestions,
+  Qty, Unit, Unit price optional, Add; Enter adds) and a plain numbered **item list** (description, qty,
+  unit, price each, part # and machine) with Edit and Remove (confirm). Every add/edit/remove saves the
+  request at once; the cursor returns to What to buy. Editable while Draft or Sent.
+- **No priced table or totals on this page.** **Generate table** opens the sheet (3.4) with the
+  table, HST and grand total.
+- Status actions by status: Draft → **Mark sent** (asks to confirm when items have no price); Sent →
+  **Mark received**, **Back to draft**; any → **Cancel request**.
 
 ### 3.3 Gather lines from other pages
 One shared action **"Add to parts request"** that opens a small picker: the open draft requests
@@ -96,8 +97,8 @@ One shared action **"Add to parts request"** that opens a small picker: the open
 - Part detail and part rows: line from the part (qty = `max(minQty − qtyOnHand, 1)`).
 - Parts page low-stock filter: **"Add all low-stock to request"** (one line per part, skipping
   parts already on that request by `partId`).
-- Service order detail: "Request parts" → a line with `workOrderId` and `machineId` set and the
-  description empty and focused in the request form.
+- Service order detail: "Request parts" → opens the request page with the add box marked
+  "For SO-0042 · <machine>" and focused; the item keeps `workOrderId` and `machineId`.
 - Free-text lines for materials not in the catalogue are just "Add line".
 
 ### 3.4 Request sheet (print view) `#/requests/:id/sheet`

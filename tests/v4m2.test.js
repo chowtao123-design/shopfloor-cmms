@@ -407,3 +407,12 @@ test('the sheet actions reuse the shared CSV/copy helpers from logic.js', () => 
   assert.ok(appSource.includes('window.print()'));
   assert.ok(appSource.includes('Price to be confirmed'));
 });
+test('request page: gather items in a plain list; the priced table only comes from Generate table', () => {
+  const app = read('app.js');
+  const page = app.slice(app.indexOf('function requestItemsSection('), app.indexOf('function renderRequestDetail('));
+  assert.match(page, /'Generate table'/);
+  assert.match(page, /\/sheet`/);
+  assert.doesNotMatch(page, /requestTotals\(|<table|'table'/, 'no totals or table on the request page');
+  assert.doesNotMatch(app, /createRequestLinesEditor|requestTotalsNode/, 'the inline table editor is gone');
+  assert.match(app, /function requestItemForm\(/);
+});
