@@ -960,5 +960,5 @@ test('pdfText: text inside form XObjects (web-to-PDF manuals) is read; a self-dr
   });
   const result = extractPdfText(pdf);
   assert.equal(result.status, 'ok');
-  assert.equal(result.pages[0], `Downloaded from a manuals site\n${filler}`);
+  assert.equal(result.pages[0], `Downloaded from a manuals site\n${filler.trimEnd()}`);
 });
