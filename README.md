@@ -296,6 +296,46 @@ How it behaves:
 - If the provider is down or times out (60 s), the chat shows a friendly
   error; the server logs the failure without secrets.
 
+## Parts requests with Muse (v4)
+
+Parts requests are normal records, so the Muse agent (an admin-created API
+token user with the *Parts requests* permission) updates the shopping list
+through the existing routes — no dedicated API:
+
+- Read the current requests with `GET /api/changes` (all stores in one
+  call) or `/api/records/purchaseRequests` to find the draft to add to.
+- Add or change lines with `PUT /api/records/purchaseRequests/:id`. The PUT
+  **replaces the whole record**: read it first, then send it back with all
+  the lines (old and new) — a line you leave out is deleted.
+- The request `number` (`PR-0007`) is assigned by the server on first save
+  and ignored on write, just like service order numbers; new requests start
+  as `draft` with the HST rate defaulting to 13.
+- A request that was already sent stays editable (prices often change after
+  the accountant calls the supplier); marking it received is a normal status
+  change and never touches stock quantities.
+
+The OpenAPI document (`GET /api/openapi.json`) describes the whole record
+shape, including every line field.
+
+## Library & AI repair help (v4)
+
+The **Library** page keeps machine manuals (PDF uploads) and your own repair
+methods (symptom → cause → steps), each linked to a machine type, model
+numbers or specific machines. Making a manual readable by the AI:
+
+- Upload a text PDF (up to 50 MB). After the upload the server extracts the
+  text in the background; the badge on the manual then reads **“AI can read ·
+  N pages”** — those pages are what the chat can quote, with page numbers.
+- **Scanned PDFs have no text to extract** (badge “Scanned — AI can’t
+  read”): type the key specs — needle charts, timing marks, settings — into
+  the manual’s *Text for the AI* box; the assistant uses that text instead.
+
+In the chat, name the machine (name, model, serial or a service order
+number) and the assistant builds the answer from the matching repair
+methods, manual excerpts and the machine’s last completed fixes, citing
+where each fact came from. When a fix works, ask it to save the steps: it
+proposes a repair method that you save with one Apply button.
+
 ## Run locally (standalone, single device)
 
 ```

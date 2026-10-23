@@ -378,6 +378,13 @@ function helpLibrary(h) {
       'From a service order: finish the work, then on the completed order press Save as repair method — the form comes pre-filled with the order’s title, the problem as the symptom, the action taken split into steps, the machine and its model, and a link back to the order (“From SO-0042”).',
       'Share what you know: tags like “thread break” or “timing” help the search find the right method months later.',
     ]),
+    h('h3', { class: 'help-question' }, 'AI repair help'),
+    helpSteps(h, [
+      'Ask the chat and name the machine — its name, model (spacing never matters), serial or a service order number all work. The assistant then sees the matching repair methods, the text of the manuals and the last completed fixes for that machine model, and it quotes where each fact came from (repair method, manual page or SO number).',
+      'It checks the simple things first (thread path, needle, threading, tension) before adjustments or disassembly, and it tells you to power off and lock out before any guard comes off.',
+      'When a fix worked, ask the assistant to save it: it proposes a repair method that you save with one Apply button — the method shows AI Assistant as its editor.',
+      'Scanned PDFs stay invisible to the AI (the badge says “Scanned — AI can’t read”); type the key specs into Text for the AI and the assistant will use them.',
+    ]),
     h(
       'p',
       {},

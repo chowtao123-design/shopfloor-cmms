@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { hashPassword } from './auth.js';
 import { ApiError, UUID_RE, putRecord } from './records.js';
 import { addMissingRolePermissions, can, normalizePermissions, storeArea } from './permissions.js';
+import { normalizeModel, relatedLibraryItems } from '../logic.js';
 
 /**
  * AI assistant server parts (SPEC-v3.md section 9): provider
@@ -33,7 +34,13 @@ export const MESSAGE_MAX_CHARS = 2000;
 export const MESSAGE_HISTORY_LIMIT = 10;
 export const MESSAGES_PER_MINUTE = 20;
 export const RATE_WINDOW_MS = 60 * 1000;
-export const CONTEXT_MAX_CHARS = 12000;
+export const CONTEXT_MAX_CHARS = 20000;
+/** Library budget inside the snapshot (SPEC-v4.md section 5, V4-M5). */
+export const LIBRARY_CONTEXT_MAX_CHARS = 7000;
+/** Manual pages are split into chunks of roughly this many characters. */
+export const LIBRARY_CHUNK_MAX_CHARS = 1200;
+/** Prepared manual chunks kept in memory per process, oldest dropped first. */
+export const MANUAL_CHUNK_CACHE_MAX_FILES = 20;
 
 /**
  * Every opencode tool set to false: the agent can only answer in text
@@ -295,14 +302,16 @@ export const SYSTEM_PROMPT = [
   '- Coworkers are internal staff; Outside Contractors are external companies with a trade.',
   '- Users are login accounts; service orders are reported by users or requested by staff.',
   'The data below is a READ-ONLY snapshot of the shop taken for this question. You cannot write anything directly: you can only propose changes that the user applies with one click. Never claim something is saved, created or deleted by you.',
-  'You can propose changes to machines, service orders and preventive maintenance tasks. To propose up to 3 changes, end your answer with fenced JSON blocks exactly like this:',
+  'You can propose changes to machines, service orders, preventive maintenance tasks and repair methods (Library). To propose up to 3 changes, end your answer with fenced JSON blocks exactly like this:',
   '```json',
   '{"proposals": [{"store": "machines", "id": "<record id from the snapshot, or omit for a new record>", "summary": "one short sentence", "fields": {"status": "down", "notes": "..."}}]}',
   '```',
-  'In a proposal, store must be machines, workOrders or pmTasks; fields holds only the fields to change (for a new record, the fields it needs). Use real record ids from the snapshot and never invent one for an existing record. Never propose deletes and never send id, version, number, createdBy or updatedBy as fields. The user must press Apply: nothing is saved until they do, so say that. When you propose a change, do not tell the user to edit the record by hand - tell them to press Apply. Propose only when the user asks for a change or agrees to one.',
+  'In a proposal, store must be machines, workOrders, pmTasks or libraryItems; fields holds only the fields to change (for a new record, the fields it needs). A libraryItems proposal is create-only: give no id and set kind to "method" with title, symptom, cause, steps (an array of {"id", "text"}), toolsParts and safety - typically to save a fix as a repair method after the user confirms the repair worked. Use real record ids from the snapshot and never invent one for an existing record. Never propose deletes and never send id, version, number, createdBy or updatedBy as fields. The user must press Apply: nothing is saved until they do, so say that. When you propose a change, do not tell the user to edit the record by hand - tell them to press Apply. Propose only when the user asks for a change or agrees to one.',
   'Only state facts that appear in the snapshot. Do not guess causes, parts, people, dates or next steps that the records do not contain; if something is not recorded, say "not recorded" and suggest which field to fill in. When you give a reason, quote the record it comes from (service order number, title or problem text).',
   'For every "how many" question use the "Shop totals" lines. The extract under them is capped and incomplete, so never count its rows; a record may legitimately appear once as a machine and again inside a PM task or service order. If a figure is not in the totals, say it is not recorded rather than estimating.',
   'Questions like "what is most of the work", "which type is the majority" or "what do the PM tasks cover" are answered from the breakdown lines in "Shop totals" (machine types, PM task titles, priorities and categories, most common first). Quote those counts; do not answer "not recorded" when a breakdown line covers it.',
+  'For fault and repair questions, build the answer on the "Library" part of the snapshot first: the matching repair methods, the manual excerpts and the past fixes for that machine. Cite the source next to each fact exactly as it is labelled there - for example (Repair method: Thread breaks at high speed), (Manual: Juki DDL-8700 manual, p. 23) or (SO-0042). If the Library part has nothing for that machine, say so plainly and make clear your answer is general knowledge, not from the shop records.',
+  'Give step-by-step checks in the order a technician would do them: simple, non-invasive checks first (thread path, needle condition, threading, tension) before adjustments or disassembly. Always tell the user to power off and lock out the machine before any guard, belt or knife is removed, and say it before the first such step - never after.',
   'Otherwise answer briefly and helpfully in plain text. Use **bold** and "- " bullet lists only; no other Markdown.',
 ].join('\n');
 
@@ -312,6 +321,7 @@ const CONTEXT_AREA_LABELS = [
   ['pm', 'preventive maintenance'],
   ['machines', 'machines'],
   ['parts', 'parts and stock'],
+  ['library', 'the repair library (manuals and repair methods)'],
   ['coworkers', 'coworkers'],
   ['contractors', 'outside contractors'],
 ];
@@ -492,6 +502,439 @@ function questionKeywords(question) {
   return keywords;
 }
 
+// ---------------------------------------------------------------------------
+// Repair library context (SPEC-v4.md section 5, V4-M5): detect the machines
+// a question is about, then fill a Library block (repair methods, manual
+// excerpts with page labels, past fixes) within LIBRARY_CONTEXT_MAX_CHARS.
+// ---------------------------------------------------------------------------
+
+/** Unique content words of a text: lower-cased, punctuation stripped, no stopwords. */
+export function tokenSet(text) {
+  const words = String(text ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const tokens = new Set();
+  for (const word of words) {
+    if (word.length < 3 || KEYWORD_STOPWORDS.has(word)) continue;
+    tokens.add(word);
+  }
+  return tokens;
+}
+
+/**
+ * Model numbers and error codes a question mentions ("E302", "Err-12",
+ * "DDL-8700-7", "ddl 8700-7"): letter-led tokens with digits, reduced with
+ * normalizeModel so spacing and dashes never matter. Each one that also
+ * appears in a chunk scores +3 (SPEC-v4.md section 5).
+ */
+export function specialQuestionTokens(question) {
+  if (typeof question !== 'string' || question.trim() === '') return [];
+  const lower = question.toLowerCase();
+  const tokens = new Set();
+  for (const match of lower.matchAll(/[a-z]{1,8}[\s-]?\d{1,8}(?:[\s-]?\d{1,8}|-[a-z0-9]{1,8})*/g)) {
+    const token = normalizeModel(match[0]);
+    if (token.length >= 4) tokens.add(token);
+  }
+  return [...tokens];
+}
+
+/**
+ * Word-overlap score of one candidate text against the question: +1 per
+ * question keyword present, +3 per model number / error code token present.
+ */
+export function overlapScore(text, questionTokens, specialTokens) {
+  let score = 0;
+  if (questionTokens instanceof Set && questionTokens.size > 0) {
+    const words = tokenSet(text);
+    for (const word of questionTokens) {
+      if (words.has(word)) score += 1;
+    }
+  }
+  if (Array.isArray(specialTokens) && specialTokens.length > 0) {
+    const squashed = normalizeModel(text);
+    for (const token of specialTokens) {
+      if (squashed.includes(token)) score += 3;
+    }
+  }
+  return score;
+}
+
+/**
+ * The machines a question is about (SPEC-v4.md section 5): by machine name,
+ * model number (through normalizeModel, so spacing never matters), serial
+ * number, or the machine of a service order number mentioned in the
+ * question ("SO-0042", "SO 42" or a bare 42 that is a real SO number).
+ * `machinesList` should already hold only machines the user can read.
+ */
+export function detectQuestionMachines(question, machinesList, workOrders) {
+  if (typeof question !== 'string' || question.trim() === '') return [];
+  const q = question.toLowerCase();
+  const squashed = normalizeModel(question);
+  const numbers = new Set();
+  for (const match of q.matchAll(/(?<![a-z0-9])(\d{1,5})(?![a-z0-9])/g)) {
+    numbers.add(Number(match[1]));
+  }
+  const soMachineIds = new Set();
+  for (const record of Array.isArray(workOrders) ? workOrders : []) {
+    const number = Number(record.data?.number);
+    if (Number.isInteger(number) && numbers.has(number) && typeof record.data?.machineId === 'string') {
+      soMachineIds.add(record.data.machineId);
+    }
+  }
+  const matched = [];
+  for (const record of Array.isArray(machinesList) ? machinesList : []) {
+    const data = record.data ?? {};
+    const name = typeof data.name === 'string' ? data.name.trim().toLowerCase() : '';
+    const serial = typeof data.serial === 'string' ? data.serial.trim().toLowerCase() : '';
+    const modelKey = normalizeModel(data.model);
+    if (name !== '' && q.includes(name)) {
+      matched.push(record);
+      continue;
+    }
+    if (serial !== '' && q.includes(serial)) {
+      matched.push(record);
+      continue;
+    }
+    if (modelKey.length >= 3 && squashed.includes(modelKey)) {
+      matched.push(record);
+      continue;
+    }
+    if (soMachineIds.has(record.id)) {
+      matched.push(record);
+    }
+  }
+  return matched;
+}
+
+/** The per-page manualslib watermark (and lines like it) never reach the AI. */
+const MANUALSLIB_WATERMARK = 'downloaded from www.manualslib.com manuals search engine';
+
+/**
+ * Watermark-free page texts (SPEC-v4.md section 5): drop the manualslib
+ * line, and any line that appears on more than half the pages of the file
+ * (per-file boilerplate), before chunking.
+ */
+export function stripWatermarkLines(pages) {
+  const list = (Array.isArray(pages) ? pages : []).map((page) => String(page ?? ''));
+  if (list.length === 0) return [];
+  const appearances = new Map();
+  for (const page of list) {
+    const seen = new Set();
+    for (const line of page.split(/\r?\n/)) {
+      const key = line.trim().toLowerCase();
+      if (key === '' || seen.has(key)) continue;
+      seen.add(key);
+      appearances.set(key, (appearances.get(key) ?? 0) + 1);
+    }
+  }
+  const threshold = list.length / 2;
+  return list.map((page) =>
+    page
+      .split(/\r?\n/)
+      .filter((line) => {
+        const key = line.trim().toLowerCase();
+        if (key === '') return true;
+        if (key === MANUALSLIB_WATERMARK) return false;
+        return (appearances.get(key) ?? 0) <= threshold;
+      })
+      .join('\n'),
+  );
+}
+
+/** Split one page's text into ~target-char chunks on line boundaries. */
+export function splitIntoChunks(text, target = LIBRARY_CHUNK_MAX_CHARS) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const chunks = [];
+  let current = [];
+  let chars = 0;
+  const flush = () => {
+    if (current.length > 0) {
+      chunks.push(current.join('\n'));
+      current = [];
+      chars = 0;
+    }
+  };
+  for (const line of lines) {
+    if (current.length > 0 && chars + line.length + 1 > target) flush();
+    current.push(line);
+    chars += line.length + 1;
+  }
+  flush();
+  return chunks;
+}
+
+/**
+ * Prepared manual chunks per fileId ({page, text}), split once and kept in
+ * memory (at most MANUAL_CHUNK_CACHE_MAX_FILES, oldest dropped) so a
+ * 274-page manual is not re-split on every question.
+ */
+const manualChunkCache = new Map();
+
+function chunkManualPages(pages) {
+  const chunks = [];
+  stripWatermarkLines(pages).forEach((pageText, index) => {
+    for (const text of splitIntoChunks(pageText)) {
+      chunks.push({ page: index + 1, text });
+    }
+  });
+  return chunks;
+}
+
+export function manualChunksFor(fileId, pages) {
+  const key = String(fileId);
+  const cached = manualChunkCache.get(key);
+  if (cached !== undefined) return cached;
+  const chunks = chunkManualPages(pages);
+  manualChunkCache.delete(key);
+  manualChunkCache.set(key, chunks);
+  while (manualChunkCache.size > MANUAL_CHUNK_CACHE_MAX_FILES) {
+    const oldest = manualChunkCache.keys().next().value;
+    manualChunkCache.delete(oldest);
+  }
+  return chunks;
+}
+
+/** Library block headers (SPEC-v4.md section 5). */
+export const LIBRARY_HEADERS = Object.freeze({
+  block: 'Library (repair methods, manual excerpts and past fixes for this question; capped, not a complete list):',
+  methods: 'Repair methods that match (best match first):',
+  manuals: 'Manual excerpts (best matches first; cite them by their bracketed labels):',
+  pastFixes: 'Past fixes (last 5 completed service orders for these machines):',
+  empty: '- Nothing in the library matches this question.',
+});
+
+/** Matched-machine shape for relatedLibraryItems (logic.js): plain fields. */
+function libraryMachine(record) {
+  return { id: record.id, model: record.data.model, type: record.data.type };
+}
+
+/** Where a repair method's searchable text lives (title, models, tags, fields). */
+function methodSearchText(item) {
+  const steps = Array.isArray(item.steps)
+    ? item.steps.map((step) => (step !== null && typeof step === 'object' && typeof step.text === 'string' ? step.text : '')).join(' ')
+    : '';
+  return [
+    typeof item.title === 'string' ? item.title : '',
+    Array.isArray(item.models) ? item.models.join(' ') : '',
+    Array.isArray(item.tags) ? item.tags.join(' ') : '',
+    typeof item.symptom === 'string' ? item.symptom : '',
+    typeof item.cause === 'string' ? item.cause : '',
+    steps,
+    typeof item.toolsParts === 'string' ? item.toolsParts : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** A repair method as compact lines (SPEC-v4.md section 5, a). */
+function methodLines(item) {
+  const models = Array.isArray(item.models) && item.models.length > 0 ? item.models.join(', ') : '';
+  const steps = Array.isArray(item.steps)
+    ? item.steps
+        .map((step, index) => `${index + 1}. ${step !== null && typeof step === 'object' && typeof step.text === 'string' ? step.text : ''}`)
+        .join(' ')
+    : '';
+  return [
+    `- [Repair method: ${typeof item.title === 'string' ? item.title : item.id}]`,
+    ...(models === '' ? [] : [`  models: ${models}`]),
+    ...(typeof item.symptom === 'string' && item.symptom.trim() !== '' ? [`  symptom: ${clip(item.symptom, 500)}`] : []),
+    ...(typeof item.cause === 'string' && item.cause.trim() !== '' ? [`  cause: ${clip(item.cause, 800)}`] : []),
+    ...(steps.trim() !== '' ? [`  steps: ${clip(steps, 1200)}`] : []),
+    ...(typeof item.toolsParts === 'string' && item.toolsParts.trim() !== '' ? [`  tools & parts: ${clip(item.toolsParts, 400)}`] : []),
+    ...(typeof item.safety === 'string' && item.safety.trim() !== '' ? [`  safety: ${clip(item.safety, 400)}`] : []),
+  ];
+}
+
+/** PDF attachments of one record's data (machines and library items). */
+function pdfAttachments(data) {
+  return Array.isArray(data.attachments)
+    ? data.attachments.filter((att) => att !== null && typeof att === 'object' && att.mime === 'application/pdf' && typeof att.fileId === 'string' && att.fileId !== '')
+    : [];
+}
+
+/** One completed service order as a past-fix line (SPEC-v4.md section 5, c). */
+function pastFixLine(record, machineNames, partsById) {
+  const data = record.data;
+  const number = `SO-${String(data.number ?? '?').padStart(4, '0')}`;
+  const machine = machineNames.get(data.machineId) ?? 'a machine';
+  const date = typeof data.completedAt === 'string' && data.completedAt !== '' ? data.completedAt : record.updatedAt;
+  const partsUsed = (Array.isArray(data.partsUsed) ? data.partsUsed : [])
+    .map((used) => {
+      const name = partsById.get(used.partId)?.name ?? used.partId;
+      return `${name} (${used.qty})`;
+    })
+    .join(', ');
+  return `- [Past fix: ${number} · ${machine}${date ? ` · ${date}` : ''}] problem: ${clip(data.problem, 300) ?? 'not recorded'}; action: ${clip(data.actionTaken, 300) ?? 'not recorded'}; parts: ${partsUsed === '' ? 'none recorded' : partsUsed}`;
+}
+
+/**
+ * The Library block (SPEC-v4.md section 5), as lines clipped to
+ * LIBRARY_CONTEXT_MAX_CHARS: repair methods first (best match first), then
+ * manual excerpts with `[Manual: <title or file name>, p. <n>]` labels
+ * (library notes count as one `[Notes: <title>]` chunk), then the last 5
+ * completed service orders of the matched machines and same-model machines.
+ * Callers only invoke this with library Read; the machine list must already
+ * be filtered to readable machines.
+ *
+ * @param {object} store open store handle
+ * @param {string} question the user's message
+ * @param {{machinesList?: array, workOrders?: array, partsList?: array}} data readable records for the machine/SO/part lookups
+ */
+export function buildLibrarySection(store, question, { machinesList = [], workOrders = [], partsList = [] } = {}) {
+  const libraryItems = store.listRecords('libraryItems').map((record) => ({ ...record.data, id: record.id }));
+  const machineNames = new Map(machinesList.map((record) => [record.id, record.data.name ?? record.id]));
+  const partsById = new Map(partsList.map((record) => [record.id, record.data]));
+  const questionTokens = tokenSet(question);
+  const specialTokens = specialQuestionTokens(question);
+  const matched = detectQuestionMachines(question, machinesList, workOrders);
+  const hasMatch = matched.length > 0;
+
+  // (a) Repair methods: every method of the matched machines, best match
+  // first; without a machine match, every scored method in score order.
+  const methods = [];
+  const seenMethods = new Set();
+  if (hasMatch) {
+    for (const record of matched) {
+      for (const item of relatedLibraryItems(libraryMachine(record), libraryItems)) {
+        if (item.kind === 'method' && !seenMethods.has(item.id)) {
+          seenMethods.add(item.id);
+          methods.push(item);
+        }
+      }
+    }
+  } else {
+    for (const item of libraryItems) {
+      if (item.kind === 'method') methods.push(item);
+    }
+  }
+  const rankedMethods = methods
+    .map((item, index) => ({ item, index, score: overlapScore(methodSearchText(item), questionTokens, specialTokens) }))
+    .filter((entry) => entry.score > 0 || hasMatch)
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  // (b) Manual text: PDFs of the matched machines themselves plus the
+  // manuals of the matching library items (all manual items without a
+  // machine match). Notes are one chunk each.
+  const manuals = [];
+  const noteChunks = [];
+  const collectItemManual = (item) => {
+    for (const att of pdfAttachments(item)) {
+      manuals.push({ fileId: att.fileId, label: typeof item.title === 'string' ? item.title : att.name });
+    }
+    if (typeof item.notes === 'string' && item.notes.trim() !== '') {
+      noteChunks.push({ label: item.title, text: item.notes.trim().slice(0, LIBRARY_CHUNK_MAX_CHARS) });
+    }
+  };
+  const seenManualItems = new Set();
+  if (hasMatch) {
+    for (const record of matched) {
+      for (const att of pdfAttachments(record.data)) manuals.push({ fileId: att.fileId, label: att.name });
+      for (const item of relatedLibraryItems(libraryMachine(record), libraryItems)) {
+        if (item.kind !== 'manual' || seenManualItems.has(item.id)) continue;
+        seenManualItems.add(item.id);
+        collectItemManual(item);
+      }
+    }
+  } else {
+    for (const item of libraryItems) {
+      if (item.kind === 'manual' && !seenManualItems.has(item.id)) {
+        seenManualItems.add(item.id);
+        collectItemManual(item);
+      }
+    }
+  }
+  const chunks = noteChunks.map((note) => ({ label: `[Notes: ${note.label}]`, page: 0, text: note.text }));
+  for (const manual of manuals) {
+    const pages = store.getFileTextPages(manual.fileId);
+    if (pages === null) continue;
+    for (const chunk of manualChunksFor(manual.fileId, pages)) {
+      chunks.push({ label: `[Manual: ${manual.label}, p. ${chunk.page}]`, page: chunk.page, text: chunk.text });
+    }
+  }
+  const rankedChunks = chunks
+    .map((chunk) => ({ ...chunk, score: overlapScore(chunk.text, questionTokens, specialTokens) }))
+    .filter((chunk) => chunk.score > 0)
+    .sort((a, b) => b.score - a.score || a.page - b.page || a.label.localeCompare(b.label));
+
+  // (c) The last 5 completed service orders of the matched machines and
+  // same-model machines.
+  let pastFixes = [];
+  if (hasMatch) {
+    const modelKeys = new Set(matched.map((record) => normalizeModel(record.data.model)).filter((key) => key !== ''));
+    const group = matched.slice();
+    for (const record of machinesList) {
+      if (group.includes(record)) continue;
+      if (modelKeys.size > 0 && modelKeys.has(normalizeModel(record.data.model))) group.push(record);
+    }
+    const groupIds = new Set(group.map((record) => record.id));
+    pastFixes = workOrders
+      .filter((record) => record.data.status === 'done' && groupIds.has(record.data.machineId))
+      .sort(
+        (a, b) =>
+          String(b.data.completedAt ?? '').localeCompare(String(a.data.completedAt ?? '')) ||
+          String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')),
+      )
+      .slice(0, 5)
+      .map((record) => pastFixLine(record, machineNames, partsById));
+  }
+
+  // Assemble within LIBRARY_CONTEXT_MAX_CHARS: methods, then chunks while
+  // the budget lasts, then past fixes. Headers are budgeted with their
+  // entries and refunded when nothing under them fits.
+  const lines = [LIBRARY_HEADERS.block];
+  let used = LIBRARY_HEADERS.block.length + 1;
+  const addBlock = (block) => {
+    const cost = block.reduce((sum, line) => sum + line.length + 1, 0);
+    if (used + cost > LIBRARY_CONTEXT_MAX_CHARS) return false;
+    lines.push(...block);
+    used += cost;
+    return true;
+  };
+  let content = 0;
+  if (rankedMethods.length > 0) {
+    const block = [LIBRARY_HEADERS.methods, ...rankedMethods.map((entry) => methodLines(entry.item)).flat()];
+    if (addBlock(block)) content += 1;
+  }
+  if (rankedChunks.length > 0) {
+    const headerCost = LIBRARY_HEADERS.manuals.length + 1;
+    if (used + headerCost <= LIBRARY_CONTEXT_MAX_CHARS) {
+      const block = [LIBRARY_HEADERS.manuals];
+      used += headerCost;
+      for (const chunk of rankedChunks) {
+        const entry = [chunk.label, ...chunk.text.split(/\r?\n/)];
+        const cost = entry.reduce((sum, line) => sum + line.length + 1, 0);
+        if (used + cost > LIBRARY_CONTEXT_MAX_CHARS) break;
+        block.push(...entry);
+        used += cost;
+      }
+      if (block.length > 1) {
+        lines.push(...block);
+        content += 1;
+      } else {
+        used -= headerCost;
+      }
+    }
+  }
+  if (pastFixes.length > 0) {
+    const headerCost = LIBRARY_HEADERS.pastFixes.length + 1;
+    if (used + headerCost <= LIBRARY_CONTEXT_MAX_CHARS) {
+      const block = [LIBRARY_HEADERS.pastFixes];
+      used += headerCost;
+      for (const line of pastFixes) {
+        if (used + line.length + 1 > LIBRARY_CONTEXT_MAX_CHARS) break;
+        block.push(line);
+        used += line.length + 1;
+      }
+      if (block.length > 1) {
+        lines.push(...block);
+        content += 1;
+      } else {
+        used -= headerCost;
+      }
+    }
+  }
+  if (content === 0) lines.push(LIBRARY_HEADERS.empty);
+  return lines;
+}
+
 /** Counts records by a label, most common first: [[label, count], ...]. */
 function countEntries(records, labelFor) {
   const counts = new Map();
@@ -514,7 +957,12 @@ function countEntries(records, labelFor) {
  * storeArea(store), 'read')`); service orders and PM tasks referencing a
  * machine the user cannot read show 'a machine' without its details.
  * Contractor hourlyRate (and any cost) needs `contractorRates` Read.
- * Never reads users, sessions or files. Capped at CONTEXT_MAX_CHARS.
+ * Never reads users, sessions or raw files (manual PDF text comes from the
+ * pre-extracted `file_texts` table). Capped at CONTEXT_MAX_CHARS.
+ *
+ * V4-M5 (SPEC-v4.md section 5): users with library Read also get a Library
+ * block (repair methods, manual excerpts with page labels, past fixes),
+ * second after the shop totals, within LIBRARY_CONTEXT_MAX_CHARS.
  *
  * @param {object} store open store handle
  * @param {{id: string, roleId: string, store?: object}} user the signed-in user
@@ -674,6 +1122,12 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
   if (read('parts')) totals.push(`Parts: ${parts.length} total, ${lowStock.length} low stock.`);
   if (read('coworkers')) totals.push(`Coworkers: ${coworkers.length}.`);
   if (read('contractors')) totals.push(`Contractors: ${contractors.length}.`);
+  // V4-M5 (SPEC-v4.md section 5): the Library block comes right after the
+  // shop totals; users without library Read get no block at all.
+  const libraryLines = read('libraryItems')
+    ? buildLibrarySection(store, question, { machinesList, workOrders, partsList: parts })
+    : [];
+  if (libraryLines.length > 0) lines.unshift(...libraryLines);
   lines.unshift(
     'Shop totals (authoritative counts - never count the extract below to answer "how many"):',
     ...totals.map((line) => `- ${line}`),
@@ -1001,7 +1455,7 @@ export function parseDraftServiceOrder(reply) {
 export const AI_ASSISTANT_USERNAME = 'ai-assistant';
 export const AI_ASSISTANT_DISPLAY_NAME = 'AI Assistant';
 export const AI_ASSISTANT_ROLE_NAME = 'AI Assistant';
-export const AI_EDITABLE_STORES = Object.freeze(['machines', 'workOrders', 'pmTasks']);
+export const AI_EDITABLE_STORES = Object.freeze(['machines', 'workOrders', 'pmTasks', 'libraryItems']);
 export const AI_MAX_PROPOSALS = 3;
 
 /** Fields the model may never set through a proposal. */
@@ -1068,6 +1522,8 @@ function sanitizeProposal(raw) {
   const storeName = typeof raw.store === 'string' ? raw.store : '';
   if (!AI_EDITABLE_STORES.includes(storeName)) return null;
   if (!isPlainObject(raw.fields)) return null;
+  // SPEC-v4.md section 5: repair-method proposals create methods only.
+  if (storeName === 'libraryItems' && raw.fields.kind !== 'method') return null;
   const fields = {};
   let count = 0;
   for (const [key, value] of Object.entries(raw.fields)) {
@@ -1115,7 +1571,9 @@ export function parseProposals(reply) {
  * POST /api/ai/apply: apply one proposal the user approved in the chat.
  * The requester needs Write on the target area, and so does the AI Assistant
  * role. Updates merge the proposed fields onto the current record, so the
- * model never has to send a whole record back.
+ * model never has to send a whole record back. libraryItems proposals are
+ * create-only repair methods (SPEC-v4.md section 5): an id that already
+ * exists is refused before anything is written.
  */
 export async function aiApplyProposal(ctx, req, body) {
   const { store, user } = ctx;
@@ -1132,6 +1590,18 @@ export async function aiApplyProposal(ctx, req, body) {
   const area = storeArea(storeName) ?? storeName;
   if (!can(user, area, 'write')) {
     throw bad(403, 'forbidden', `You need write access to ${area} to approve this change`);
+  }
+  // SPEC-v4.md section 5: libraryItems proposals are create-only and must
+  // be repair methods; an id that already exists is refused (no updates to
+  // existing library items through the chat).
+  if (storeName === 'libraryItems') {
+    if (!isPlainObject(body.fields) || body.fields.kind !== 'method') {
+      throw badRequest('The assistant can only propose new repair methods (kind must be "method")');
+    }
+    const proposedId = typeof body.id === 'string' && body.id !== '' ? body.id : null;
+    if (proposedId !== null && store.getRecord('libraryItems', proposedId) !== null) {
+      throw badRequest('The assistant can only create new repair methods; existing library items cannot be changed from the chat');
+    }
   }
   const proposal = sanitizeProposal(body);
   if (proposal === null) throw badRequest('The proposed fields are empty or not allowed');

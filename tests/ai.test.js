@@ -13,6 +13,7 @@ import { ApiError } from '../server/records.js';
 import { startServer } from '../server/server.js';
 import {
   AI_ASSISTANT_USERNAME,
+  CONTEXT_MAX_CHARS,
   OPENCODE_DISABLED_TOOLS,
   SYSTEM_PROMPT,
   aiSystemPrompt,
@@ -796,7 +797,7 @@ test('buildContext: keyword matches find related records across stores', () => {
   assert.ok(context.includes('Belt DIN 2'));
 });
 
-test('buildContext: capped at 12000 characters even with many records', async () => {
+test('buildContext: capped at CONTEXT_MAX_CHARS even with many records', async () => {
   for (let i = 0; i < 40; i += 1) {
     const { res } = await put(anna, 'machines', crypto.randomUUID(), {
       name: `Filler machine ${String(i)}`,
@@ -808,7 +809,8 @@ test('buildContext: capped at 12000 characters even with many records', async ()
   }
   const context = buildContext(handle.store, techUser(), 'everything about filler machines and more words');
   assert.ok(context.length > 1000, 'cushion: context actually got big before capping');
-  assert.ok(context.length <= 12000, `context must be capped, got ${context.length}`);
+  // V4-M5 (SPEC-v4.md section 5): the cap moved from 12,000 to 20,000.
+  assert.ok(context.length <= CONTEXT_MAX_CHARS, `context must be capped, got ${context.length}`);
 });
 
 // ---------------------------------------------------------------------------

@@ -490,6 +490,7 @@ const PROPOSAL_STORES = {
   machines: { area: 'machines', label: 'Machine' },
   workOrders: { area: 'serviceOrders', label: 'Service order' },
   pmTasks: { area: 'pm', label: 'PM task' },
+  libraryItems: { area: 'library', label: 'Repair method' },
 };
 
 const PROPOSAL_BLOCKED_FIELDS = ['id', 'version', 'number', 'createdBy', 'updatedBy'];
@@ -510,6 +511,8 @@ export function parseProposals(text) {
     const list = isPlainObject(parsed) && Array.isArray(parsed.proposals) ? parsed.proposals : [];
     for (const raw of list) {
       if (!isPlainObject(raw) || !PROPOSAL_STORES[raw.store] || !isPlainObject(raw.fields)) continue;
+      // SPEC-v4.md section 5: repair-method proposals create methods only.
+      if (raw.store === 'libraryItems' && raw.fields.kind !== 'method') continue;
       const fields = {};
       for (const [key, value] of Object.entries(raw.fields)) {
         if (!/^[A-Za-z][A-Za-z0-9]{0,40}$/.test(key)) continue;
