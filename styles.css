@@ -4478,6 +4478,7 @@ body.logged-out .ai-chat-fab {
 }
 
 .req-add-what,
+.req-add-link,
 .req-add-buttons {
   grid-column: 1 / -1;
 }
@@ -4499,6 +4500,11 @@ body.logged-out .ai-chat-fab {
   .req-add-what,
   .req-add-buttons {
     grid-column: auto;
+  }
+
+  /* Wide pane: the link gets its own row under the first four boxes. */
+  .req-add-link {
+    grid-column: 1 / 5;
   }
 }
 
@@ -4525,6 +4531,20 @@ body.logged-out .ai-chat-fab {
 
 .req-item-no {
   color: var(--muted);
+}
+
+.req-item-link {
+  display: inline-block;
+  margin-top: 0.15rem;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.pr-sheet-link {
+  display: block;
+  font-size: 0.82em;
+  overflow-wrap: anywhere;
+  color: inherit;
 }
 
 .req-item-title {

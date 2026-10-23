@@ -818,6 +818,8 @@ export function requestSheetRows(request, totals, { machines = [] } = {}) {
       unitPrice: priced ? formatMoney(priceToCents(line.unitPrice)) :'—',
       totalPrice: priced ? formatMoney(cents) : '—',
       unpriced: !priced,
+      // Where to buy it; the accountant orders from this page.
+      link: typeof line.link === 'string' ? line.link : '',
     };
   });
 }
@@ -846,7 +848,8 @@ export const REQUEST_SHEET_COLUMNS = ['#', 'Description', 'Qty', 'Unit', 'Unit p
 
 /** Cell order used by every text export of the sheet. */
 function requestSheetCells(row) {
-  return [row.number, row.description, row.qty, row.unit, row.unitPrice, row.totalPrice];
+  const description = row.link ? `${row.description} ${row.link}` : row.description;
+  return [row.number, description, row.qty, row.unit, row.unitPrice, row.totalPrice];
 }
 
 /**
@@ -909,8 +912,12 @@ export function requestSheetHTML(request, totals, options = {}) {
   const bodyRows = rows
     .map(
       (row) =>
-        `<tr>${requestSheetCells(row)
-          .map((cell) => `<td>${escapeHtmlText(cell)}</td>`)
+        `<tr>${requestSheetCells({ ...row, link: '' })
+          .map((cell, index) =>
+            index === 1 && row.link
+              ? `<td>${escapeHtmlText(cell)}<br><a href="${escapeHtmlText(row.link)}">${escapeHtmlText(row.link)}</a></td>`
+              : `<td>${escapeHtmlText(cell)}</td>`,
+          )
           .join('')}</tr>`,
     )
     .join('');

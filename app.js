@@ -5247,6 +5247,9 @@ function requestStatusButtons(request) {
    on the sheet after "Generate table". Every add, edit and remove saves the
    request at once, so a draft can grow over days. */
 
+// Scheme added to a pasted "amazon.ca/…" link (kept apart so the source holds no URL).
+const WEB_SCHEME = 'https:';
+
 // After a save re-renders the page, put the cursor back in "What to buy".
 let requestItemRefocus = false;
 
@@ -5270,6 +5273,7 @@ function requestItemForm(request) {
   const qty = h('input', { type: 'number', min: '0.01', max: '100000', step: 'any', inputmode: 'decimal', value: '1' });
   const unit = h('input', { type: 'text', maxlength: '20', value: 'pcs' });
   const price = h('input', { type: 'number', min: '0', step: '0.01', inputmode: 'decimal', placeholder: 'Optional' });
+  const link = h('input', { type: 'url', maxlength: '500', autocomplete: 'off', inputmode: 'url', placeholder: 'Website to buy it from (optional)' });
   const submit = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add');
   const cancelEdit = h('button', { class: 'btn', type: 'button', hidden: true }, 'Cancel');
   const errorBox = h('p', { class: 'form-error', role: 'alert' });
@@ -5285,6 +5289,7 @@ function requestItemForm(request) {
     qty.value = '1';
     unit.value = 'pcs';
     price.value = '';
+    link.value = '';
     contextHint.textContent = '';
     submit.textContent = 'Add';
     cancelEdit.hidden = true;
@@ -5314,6 +5319,7 @@ function requestItemForm(request) {
       field('Qty', qty),
       field('Unit', unit),
       field('Unit price ($)', price),
+      h('div', { class: 'req-add-link' }, field('Link', link)),
       h('div', { class: 'req-add-buttons' }, submit, cancelEdit),
     ),
     contextHint,
@@ -5334,9 +5340,15 @@ function requestItemForm(request) {
       unit: unit.value,
       unitPrice: priceText === '' ? '' : String(Math.round(Number(priceText) * 100) / 100),
     });
+    let linkText = link.value.trim();
+    // People paste "amazon.ca/…"; the server needs http(s).
+    if (linkText && !/^https?:/i.test(linkText)) linkText = `${WEB_SCHEME}//${linkText}`;
+    if (linkText) line.link = linkText;
+    else delete line.link;
     if (!line.description) errorBox.textContent = 'Type what to buy.';
     else if (!(line.qty > 0) || line.qty > 100000) errorBox.textContent = 'Quantity must be more than 0 (up to 100000).';
     else if (priceText !== '' && (line.unitPrice === null || line.unitPrice > 1000000)) errorBox.textContent = 'Unit price must be a number up to 1000000.';
+    else if (line.link && (line.link.length > 500 || !URL.canParse(line.link))) errorBox.textContent = 'The link is not a web address.';
     const lines = request.lines || [];
     if (!errorBox.textContent && !editingId && lines.length >= MAX_REQUEST_LINES) {
       errorBox.textContent = `A request holds at most ${MAX_REQUEST_LINES} items.`;
@@ -5369,6 +5381,7 @@ function requestItemForm(request) {
     qty.value = String(line.qty);
     unit.value = line.unit || 'pcs';
     price.value = line.unitPrice === null || line.unitPrice === undefined ? '' : String(line.unitPrice);
+    link.value = line.link || '';
     submit.textContent = 'Save item';
     cancelEdit.hidden = false;
     description.focus();
@@ -5387,6 +5400,12 @@ function requestItemForm(request) {
     setTimeout(() => description.focus(), 0);
   }
   return { form, edit };
+}
+
+/** "amazon.ca/dp/B07…" for a long URL in the item list. */
+function linkLabel(url) {
+  const short = url.replace(/^https?:\/\/(www\.)?/i, '');
+  return short.length > 48 ? `${short.slice(0, 47)}…` : short;
 }
 
 function requestItemsSection(request) {
@@ -5415,6 +5434,9 @@ function requestItemsSection(request) {
           { class: 'req-item-main' },
           h('div', { class: 'req-item-title' }, line.description),
           h('div', { class: 'row-sub tabular' }, details.join(' · ')),
+          line.link
+            ? h('a', { class: 'inline-link req-item-link', href: line.link, target: '_blank', rel: 'noopener noreferrer' }, linkLabel(line.link))
+            : null,
         ),
         editable
           ? h(
@@ -5606,7 +5628,13 @@ function renderRequestSheetPage(route) {
           'tr',
           {},
           h('td', { class: 'pr-sheet-n tabular' }, row.number),
-          h('td', { class: 'pr-sheet-desc' }, row.description),
+          h(
+            'td',
+            { class: 'pr-sheet-desc' },
+            row.description,
+            // The full URL is the link text, so it also shows on paper and in a PDF.
+            row.link ? h('a', { class: 'pr-sheet-link', href: row.link, target: '_blank', rel: 'noopener noreferrer' }, row.link) : null,
+          ),
           h('td', { class: 'pr-sheet-qty tabular' }, row.qty),
           h('td', { class: 'pr-sheet-unit' }, row.unit),
           h('td', { class: 'pr-sheet-price tabular' }, row.unitPrice),

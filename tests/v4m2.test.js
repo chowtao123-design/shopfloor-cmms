@@ -416,3 +416,13 @@ test('request page: gather items in a plain list; the priced table only comes fr
   assert.doesNotMatch(app, /createRequestLinesEditor|requestTotalsNode/, 'the inline table editor is gone');
   assert.match(app, /function requestItemForm\(/);
 });
+
+test('sheet: an item link stays in the six columns (clickable in the copied table, written out in CSV)', async () => {
+  const { requestSheetHTML, requestSheetCSV, requestSheetRows } = await import('../logic.js');
+  const request = { hstRate: 13, lines: [{ id: 'a', description: 'Needle', qty: 2, unit: 'pcs', unitPrice: 1, link: 'https://shop.example/x?a=1&b="2"' }] };
+  assert.equal(requestSheetRows(request).at(0).link, 'https://shop.example/x?a=1&b="2"');
+  const html = requestSheetHTML(request);
+  assert.match(html, /<td>Needle<br><a href="https:\/\/shop\.example\/x\?a=1&amp;b=&quot;2&quot;">/);
+  assert.equal((html.match(/<th /g) || []).length, 6);
+  assert.match(requestSheetCSV(request), /"Needle https:\/\/shop\.example\/x\?a=1&b=""2"""/);
+});
