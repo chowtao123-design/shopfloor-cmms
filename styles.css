@@ -4927,3 +4927,167 @@ body.logged-out .ai-chat-fab {
     text-decoration: none;
   }
 }
+
+/* ==========================================================================
+   V4-M4 Library (SPEC-v4.md section 4.3): filter grid, chips input, steps
+   editor, AI-readable PDF badges, method view and the safety box.
+   ========================================================================== */
+
+/* Three filters (type / model / tag) on the Library list; one column under. */
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 0.75rem;
+}
+
+@media (max-width: 767.98px) {
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Chips input (models, tags): chips and the typing field share a row. */
+.chips-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.chips-input-field {
+  flex: 1 1 10rem;
+  min-width: 8rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 0.3rem 0.35rem;
+}
+
+.chips-input-field:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 7px;
+}
+
+.chips-input .chip {
+  cursor: default;
+}
+
+/* Repair-method steps editor (checklist editor pattern, numbered). */
+.steps-edit {
+  margin-bottom: 0.5rem;
+}
+
+.step-edit-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 0.5rem;
+  padding: 0.3rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.step-number {
+  font-weight: 750;
+  color: var(--muted);
+  padding-top: 0.45rem;
+  min-width: 1.6rem;
+  text-align: right;
+}
+
+.step-edit-row textarea {
+  resize: vertical;
+}
+
+/* Kind pills on cards and rows. */
+.lib-kind-manual {
+  background: var(--progress-bg);
+  color: var(--progress-fg);
+}
+
+.lib-kind-method {
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+/* AI-readable PDF badges (SPEC-v4.md 4.3), one per PDF on a manual. */
+.lib-badge {
+  flex: none;
+}
+
+.lib-badge-ok {
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+.lib-badge-no_text {
+  background: var(--waiting-bg);
+  color: var(--waiting-fg);
+}
+
+.lib-badge-pending {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+}
+
+.lib-badge-error {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.lib-pdf-item {
+  row-gap: 2px;
+}
+
+.lib-badge-hint {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* Desktop table cells that hold longer text (symptom, applies-to, tags). */
+.cell-wrap {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+/* Method view: numbered steps in a card. */
+.method-steps {
+  margin: 0;
+  padding: 0.9rem 1.4rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.method-step {
+  overflow-wrap: anywhere;
+}
+
+/* Safety in a highlighted box (SPEC-v4.md 4.3). */
+.safety-box {
+  border: 1px solid var(--waiting-fg);
+  border-left: 5px solid var(--waiting-fg);
+  border-radius: var(--radius);
+  background: var(--waiting-bg);
+  padding: 0.75rem 0.9rem;
+}
+
+.safety-box .pre {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.safety-title {
+  display: block;
+  font-weight: 750;
+  color: var(--waiting-fg);
+  margin-bottom: 0.3rem;
+}

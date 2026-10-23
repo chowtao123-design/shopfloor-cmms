@@ -23,8 +23,11 @@ import {
   daysBetween,
   defaultServiceOrderFilters,
   escapeHtmlText,
+  filterLibraryItems,
   filterServiceOrders,
   filterWorkOrders,
+  manualTextBadge,
+  methodDraftFromWorkOrder,
   formatDate,
   formatHours,
   formatMoney,
@@ -47,6 +50,7 @@ import {
   pmPaused,
   pmState,
   priorityValue,
+  relatedLibraryItems,
   requestHstLabel,
   requestSheetCSV,
   requestSheetHTML,
@@ -55,6 +59,7 @@ import {
   requestSheetTSV,
   REQUEST_SHEET_COLUMNS,
   requestTotals,
+  searchLibraryItems,
   searchParts,
   searchPurchaseRequests,
   searchWorkOrders,
@@ -148,6 +153,9 @@ const state = {
   contractors: [],
   // v4 (SPEC-v4.md section 2): parts requests, synced like every record store.
   purchaseRequests: [],
+  // v4 (SPEC-v4.md section 4.1): the repair library (manuals + methods),
+  // synced the same way for the Library page (SPEC-v4.md 4.3).
+  libraryItems: [],
 };
 
 let fieldCounter = 0;
@@ -328,7 +336,7 @@ function setTitle(title) {
 }
 
 async function refreshState() {
-  const [machines, parts, workOrders, pmTasks, coworkers, contractors, purchaseRequests] =
+  const [machines, parts, workOrders, pmTasks, coworkers, contractors, purchaseRequests, libraryItems] =
     await Promise.all([
       db.getAll('machines'),
       db.getAll('parts'),
@@ -338,6 +346,8 @@ async function refreshState() {
       db.getAll('contractors'),
       // v4 (SPEC-v4.md section 2): pulled like the other record stores.
       db.getAll('purchaseRequests'),
+      // v4 (SPEC-v4.md section 4.1): the repair library pulls the same way.
+      db.getAll('libraryItems'),
     ]);
   state.machines = machines;
   state.parts = parts;
@@ -346,6 +356,7 @@ async function refreshState() {
   state.coworkers = coworkers;
   state.contractors = contractors;
   state.purchaseRequests = purchaseRequests;
+  state.libraryItems = libraryItems;
 }
 
 function routeInfo() {
@@ -1082,6 +1093,8 @@ const tableSort = {
   machines: { key: null, dir: 'asc' },
   parts: { key: null, dir: 'asc' },
   requests: { key: null, dir: 'asc' },
+  // v4 (SPEC-v4.md 4.3): the Library list tables.
+  library: { key: null, dir: 'asc' },
   pm: { key: null, dir: 'asc' },
   coworkers: { key: null, dir: 'asc' },
   contractors: { key: null, dir: 'asc' },
@@ -2737,11 +2750,21 @@ function renderJobDetail(route) {
     conflictBanner('workOrders', order.id),
     canEditOrder ? statusButtons : null,
     // v4 (SPEC-v4.md 3.3): request parts for this order into a draft request.
-    can('purchasing', 'write')
+    // v4 (SPEC-v4.md 4.3): a completed order can be saved as a repair method.
+    can('purchasing', 'write') || can('library', 'write')
       ? h(
           'div',
           { class: 'button-row', style: { marginTop: '0.5rem' } },
-          h('button', { class: 'btn btn-small', type: 'button', onclick: () => requestPartsForOrder(order) }, 'Request parts'),
+          can('purchasing', 'write')
+            ? h('button', { class: 'btn btn-small', type: 'button', onclick: () => requestPartsForOrder(order) }, 'Request parts')
+            : null,
+          can('library', 'write') && order.status === 'done'
+            ? h(
+                'a',
+                { class: 'btn btn-small', href: `#/library/new?kind=method&from=${encodeURIComponent(order.id)}` },
+                'Save as repair method',
+              )
+            : null,
         )
       : null,
     h('div', { class: 'card' }, details),
@@ -2805,6 +2828,8 @@ function renderJobDetail(route) {
 
 const FILE_UPLOAD_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 const FILE_UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+// v4 (SPEC-v4.md 4.2): manual PDFs upload up to 50 MB (images stay 15 MB).
+const PDF_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
 const FILE_UPLOAD_MAX_ATTACHMENTS = 20;
 const FILE_UPLOAD_OFFLINE = 'Uploading needs a connection to the server.';
 const IMAGE_UPLOAD_MAX_DIM = 1600;
@@ -2868,8 +2893,11 @@ async function uploadAttachmentFile(file) {
   if (!mime || !FILE_UPLOAD_TYPES.includes(mime)) {
     throw new Error('Unsupported file type. Photos (JPEG, PNG, WebP) and PDFs are allowed.');
   }
-  if (file.size > FILE_UPLOAD_MAX_BYTES) {
-    throw new Error('That file is too large. The maximum is 15 MB.');
+  // v4 (SPEC-v4.md 4.2): the server takes PDFs up to 50 MB, images up to 15.
+  const isPdf = mime === 'application/pdf';
+  const maxBytes = isPdf ? PDF_UPLOAD_MAX_BYTES : FILE_UPLOAD_MAX_BYTES;
+  if (file.size > maxBytes) {
+    throw new Error(`That file is too large. The maximum is ${isPdf ? '50' : '15'} MB.`);
   }
   let body = file;
   let sendMime = mime;
@@ -3413,7 +3441,7 @@ function createAttachmentsEditor(initialAttachments = []) {
           ),
         ]),
     ...(canUpload
-      ? [h('span', { class: 'field-hint' }, 'Images are downscaled before upload; PDFs upload as-is.')]
+      ? [h('span', { class: 'field-hint' }, 'Images are downscaled before upload; PDFs upload as-is (up to 50 MB for manuals).')]
       : []),
   );
   return { element, getAttachments: () => attachments.slice(0, FILE_UPLOAD_MAX_ATTACHMENTS) };
@@ -4118,6 +4146,11 @@ function renderMachineDetail(route) {
     machinePhotosNode(machine),
     sectionTitle('Manuals'),
     machineManualsNode(machine),
+    // v4 (SPEC-v4.md 4.3): the machine's matching library items, repair
+    // methods first, plus "Add repair method" pre-filled with this machine.
+    // The machine-attached manuals above (v3) stay where they are.
+    sectionTitle('Library'),
+    machineLibrarySection(machine),
     sectionTitle('Repair history'),
     history.length
       ? h('div', { class: 'list' }, ...history.map(jobRow))
@@ -6091,6 +6124,1251 @@ function addToRequestButton(part) {
 function requestDefaultQty(part) {
   const need = partRequestLine(part);
   return need ? need.qty : 1;
+}
+
+/* ==========================================================================
+   V4-M4 Library UI (SPEC-v4.md section 4.3): list page with tabs, search
+   and filters; manual and repair-method forms (steps editor reuses the
+   checklist editor pattern); details with AI-readable PDF badges; machine
+   detail Library section; "Save as repair method" on completed orders.
+   ========================================================================== */
+
+const LIBRARY_KIND_LABELS = { manual: 'Manual', method: 'Repair method' };
+const LIBRARY_TABS = [
+  { key: 'methods', label: 'Repair methods', href: '#/library' },
+  { key: 'manuals', label: 'Manuals', href: '#/library?tab=manuals' },
+];
+
+function libraryItemById(id) {
+  return state.libraryItems.find((item) => item && item.id === id);
+}
+
+function sortLibraryNewest(items = []) {
+  return items
+    .filter((item) => item && !item.deleted)
+    .slice()
+    .sort(
+      (a, b) =>
+        String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')) ||
+        String(a.id).localeCompare(String(b.id)),
+    );
+}
+
+/** "Applies to" text: machine type label, models, machine count. */
+function libraryAppliesText(item) {
+  const bits = [];
+  if (item.machineType) bits.push(machineTypeLabel({ type: item.machineType }));
+  const models = (item.models || []).filter(Boolean);
+  if (models.length > 0) bits.push(models.join(', '));
+  const machines = (item.machineIds || []).filter(Boolean);
+  if (machines.length > 0) bits.push(`${machines.length} machine${machines.length === 1 ? '' : 's'}`);
+  return bits.join(' · ');
+}
+
+function libraryTagsNode(item) {
+  const tags = (item.tags || []).filter(Boolean);
+  if (tags.length === 0) return null;
+  return h(
+    'div',
+    { class: 'row-sub' },
+    ...tags.map((tag) => h('span', { class: 'type-badge' }, tag)),
+  );
+}
+
+function libraryKindPill(kind) {
+  return h('span', { class: `pill lib-kind-${kind === 'manual' ? 'manual' : 'method'}` }, LIBRARY_KIND_LABELS[kind] || kind);
+}
+
+/** "Which tab is open" from the route (SPEC-v4.md 4.3: methods default). */
+function libraryTabFrom(route) {
+  return route && route.params && route.params.get('tab') === 'manuals' ? 'manuals' : 'methods';
+}
+
+/** Library list hash keeping the tab and the active filters. */
+function libraryUrl(tab, filters = {}) {
+  const params = new URLSearchParams();
+  if (tab === 'manuals') params.set('tab', 'manuals');
+  for (const key of ['type', 'model', 'tag']) {
+    if (filters[key]) params.set(key, filters[key]);
+  }
+  const query = params.toString();
+  return query ? `#/library?${query}` : '#/library';
+}
+
+function libraryFiltersFrom(route) {
+  return {
+    type: (route && route.params && route.params.get('type')) || '',
+    model: (route && route.params && route.params.get('model')) || '',
+    tag: (route && route.params && route.params.get('tag')) || '',
+  };
+}
+
+/** Machine types offered in the filter: the builtin enum only (SPEC-v4.md
+ *  4.1 stores machineType as MACHINE_TYPES or null, never a custom label). */
+function libraryMachineTypeOptions() {
+  const options = [];
+  const seen = new Set();
+  for (const [value, label] of MACHINE_TYPE_GROUPS.flatMap((entry) => entry.options)) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    options.push({ value, label });
+  }
+  return options;
+}
+
+/** Model numbers offered in the filter: from the library and the machines. */
+function libraryModelOptions() {
+  const models = new Set();
+  for (const item of state.libraryItems) {
+    for (const model of (item && Array.isArray(item.models) ? item.models : []) || []) {
+      if (model) models.add(model);
+    }
+  }
+  for (const machine of state.machines) {
+    if (machine && machine.model) models.add(machine.model);
+  }
+  return [...models].sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+/** Tags offered in the filter: every tag used on a library item. */
+function libraryTagOptions() {
+  const tags = new Set();
+  for (const item of state.libraryItems) {
+    for (const tag of (item && Array.isArray(item.tags) ? item.tags : []) || []) {
+      if (tag) tags.add(tag);
+    }
+  }
+  return [...tags].sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+/** One filter <select> that re-navigates with its value (SPEC-v4.md 4.3). */
+function libraryFilterSelect(labelText, valueOptions, selected, emptyLabel, onPick) {
+  const select = h('select', { 'aria-label': labelText });
+  select.append(h('option', { value: '' }, emptyLabel));
+  for (const option of valueOptions) {
+    const value = typeof option === 'string' ? option : option.value;
+    const label = typeof option === 'string' ? option : option.label;
+    const node = h('option', { value }, label);
+    if (value === selected) node.selected = true;
+    select.append(node);
+  }
+  select.addEventListener('change', () => {
+    onPick(select.value);
+  });
+  return field(labelText, select);
+}
+
+function libraryItemCard(item) {
+  const isManual = item.kind === 'manual';
+  const pdfs = (item.attachments || []).filter((a) => a && a.mime === 'application/pdf').length;
+  const steps = (item.steps || []).filter(Boolean).length;
+  const applies = libraryAppliesText(item);
+  return h(
+    'a',
+    { class: 'row so-card', href: `#/library/${encodeURIComponent(item.id)}` },
+    h(
+      'div',
+      { class: 'row-main' },
+      h('div', { class: 'row-title' }, item.title),
+      h(
+        'div',
+        { class: 'row-sub' },
+        libraryKindPill(item.kind),
+        applies ? ` · ${applies}` : '',
+      ),
+      isManual ? h('div', { class: 'row-sub' }, `${pdfs} PDF${pdfs === 1 ? '' : 's'}`) : null,
+      item.symptom ? h('div', { class: 'row-sub' }, item.symptom) : null,
+      libraryTagsNode(item),
+      editedTag(item),
+    ),
+    h(
+      'div',
+      { class: 'row-side' },
+      isManual ? null : h('span', { class: 'qty' }, `${steps} step${steps === 1 ? '' : 's'}`),
+    ),
+    h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+  );
+}
+
+function libraryAppliesColumn() {
+  return {
+    key: 'applies',
+    label: 'Applies to',
+    value: (item) => libraryAppliesText(item),
+    cell: (item) => {
+      const text = libraryAppliesText(item);
+      return text ? h('span', { class: 'cell-wrap' }, text) : h('span', { class: 'muted' }, '—');
+    },
+  };
+}
+
+function libraryTagsColumn() {
+  return {
+    key: 'tags',
+    label: 'Tags',
+    value: (item) => (item.tags || []).join(', '),
+    cell: (item) => {
+      const tags = (item.tags || []).filter(Boolean);
+      if (tags.length === 0) return h('span', { class: 'muted' }, '—');
+      return h('span', { class: 'cell-wrap' }, ...tags.map((tag) => h('span', { class: 'type-badge' }, tag)));
+    },
+  };
+}
+
+function libraryUpdatedColumn() {
+  return {
+    key: 'updated',
+    label: 'Updated',
+    value: (item) => (item.updatedAt ? formatDate(localDateOf(item.updatedAt)) : null),
+    sortValue: (item) => String(item.updatedAt || item.createdAt || ''),
+  };
+}
+
+function libraryTableColumns(tab) {
+  if (tab === 'manuals') {
+    return [
+      { key: 'title', label: 'Title', value: (item) => item.title },
+      {
+        key: 'pdfs',
+        label: 'PDFs',
+        value: (item) => (item.attachments || []).filter((a) => a && a.mime === 'application/pdf').length,
+        sortValue: (item) => (item.attachments || []).filter((a) => a && a.mime === 'application/pdf').length,
+      },
+      libraryAppliesColumn(),
+      libraryTagsColumn(),
+      libraryUpdatedColumn(),
+      editedByColumn(),
+    ];
+  }
+  return [
+    { key: 'title', label: 'Title', value: (item) => item.title },
+    {
+      key: 'symptom',
+      label: 'Symptom',
+      value: (item) => item.symptom,
+      cell: (item) =>
+        item.symptom ? h('span', { class: 'cell-wrap' }, item.symptom) : h('span', { class: 'muted' }, '—'),
+    },
+    {
+      key: 'steps',
+      label: 'Steps',
+      value: (item) => (item.steps || []).filter(Boolean).length,
+      sortValue: (item) => (item.steps || []).filter(Boolean).length,
+    },
+    libraryAppliesColumn(),
+    libraryTagsColumn(),
+    libraryUpdatedColumn(),
+    editedByColumn(),
+  ];
+}
+
+function renderLibrary(route) {
+  setTitle('Library');
+  const tab = libraryTabFrom(route);
+  const filters = libraryFiltersFrom(route);
+  const kind = tab === 'manuals' ? 'manual' : 'method';
+  const listHost = h('div', { class: 'list' });
+  const tableHost = h('div', { class: 'table-wrap' });
+  let searchQuery = '';
+
+  function update(nextQuery) {
+    if (typeof nextQuery === 'string') searchQuery = nextQuery;
+    let items = sortLibraryNewest(state.libraryItems.filter((item) => item && item.kind === kind));
+    items = filterLibraryItems(items, filters);
+    items = searchLibraryItems(items, searchQuery);
+    if (items.length === 0) {
+      const filtered = Boolean(searchQuery.trim()) || Boolean(filters.type || filters.model || filters.tag);
+      listHost.replaceChildren(
+        emptyState(
+          searchQuery.trim() ? 'No matching library items' : filtered ? 'Nothing with these filters' : tab === 'manuals' ? 'No manuals yet' : 'No repair methods yet',
+          searchQuery.trim()
+            ? 'Try a different search.'
+            : filtered
+              ? 'Clear a filter or pick another tab.'
+              : tab === 'manuals'
+                ? 'Upload machine manuals as PDFs so the AI can read them.'
+                : 'Save a fix as symptom, cause and steps — from hand or straight off a service order.',
+          !searchQuery.trim() && !filtered && can('library', 'write')
+            ? [
+                h(
+                  'a',
+                  {
+                    class: 'btn btn-primary',
+                    href: tab === 'manuals' ? '#/library/new?kind=manual' : '#/library/new?kind=method',
+                  },
+                  tab === 'manuals' ? 'New manual' : 'New repair method',
+                ),
+              ]
+            : [],
+        ),
+      );
+      listHost.classList.remove('cards-only');
+      tableHost.replaceChildren();
+    } else {
+      listHost.replaceChildren(...items.map(libraryItemCard));
+      listHost.classList.add('cards-only');
+      tableHost.replaceChildren(
+        buildDataTable(
+          'library',
+          libraryTableColumns(tab),
+          items,
+          (item) => `#/library/${encodeURIComponent(item.id)}`,
+          update,
+        ),
+      );
+    }
+  }
+
+  update();
+
+  /* Filters re-navigate so the browser Back button and sharing keep them. */
+  const filterBar = h(
+    'div',
+    { class: 'grid-3' },
+    libraryFilterSelect('Machine type', libraryMachineTypeOptions(), filters.type, 'All types', (value) =>
+      navigate(libraryUrl(tab, { ...filters, type: value })),
+    ),
+    libraryFilterSelect('Model', libraryModelOptions(), filters.model, 'All models', (value) =>
+      navigate(libraryUrl(tab, { ...filters, model: value })),
+    ),
+    libraryFilterSelect('Tag', libraryTagOptions(), filters.tag, 'All tags', (value) =>
+      navigate(libraryUrl(tab, { ...filters, tag: value })),
+    ),
+  );
+
+  return page(
+    pageHead(
+      'Library',
+      // Creating items needs library Write (SPEC-v4.md 4.3).
+      headActionFor(
+        'library',
+        h(
+          'a',
+          {
+            class: 'btn btn-primary btn-small',
+            href: tab === 'manuals' ? '#/library/new?kind=manual' : '#/library/new?kind=method',
+          },
+          tab === 'manuals' ? '+ New manual' : '+ New repair method',
+        ),
+      ),
+    ),
+    h(
+      'div',
+      { class: 'chips', role: 'group', 'aria-label': 'Library tabs' },
+      ...LIBRARY_TABS.map((entry) =>
+        h(
+          'a',
+          {
+            class: `chip${tab === entry.key ? ' is-active' : ''}`,
+            href: entry.href,
+            'aria-pressed': tab === entry.key ? 'true' : 'false',
+          },
+          entry.label,
+        ),
+      ),
+    ),
+    searchBox(tab === 'manuals' ? 'Search manuals' : 'Search repair methods', (value) => update(value), true),
+    filterBar,
+    listHost,
+    tableHost,
+  );
+}
+
+/* ---------- Library form editors (SPEC-v4.md 4.3) ---------- */
+
+/**
+ * A chips input for models and tags (SPEC-v4.md 4.3): type a value, press
+ * Enter to add it, × removes one. At most `maxItems` chips of `itemMax`
+ * characters each, de-duplicated. Returns { element, getValues }.
+ */
+function createChipsInput(initialValues = [], { maxItems = 20, itemMax = 60, placeholder = '', label = 'Chips' } = {}) {
+  const values = [];
+  for (const value of Array.isArray(initialValues) ? initialValues : []) {
+    const text = String(value === null || value === undefined ? '' : value).trim();
+    if (text === '' || values.length >= maxItems || values.includes(text)) continue;
+    values.push(text.slice(0, itemMax));
+  }
+  const chipsHost = h('div', { class: 'chips chips-input', role: 'group', 'aria-label': label });
+  const hint = h('p', { class: 'field-hint' });
+  const input = h('input', {
+    type: 'text',
+    class: 'chips-input-field',
+    placeholder,
+    'aria-label': `${label} — type and press Enter`,
+  });
+
+  function syncHint() {
+    if (values.length >= maxItems) hint.textContent = `At most ${maxItems}.`;
+    else hint.textContent = input.value.trim().length > itemMax ? `Each is at most ${itemMax} characters.` : '';
+  }
+
+  function addValue() {
+    const raw = input.value.trim();
+    if (raw === '') return;
+    if (values.length >= maxItems) {
+      syncHint();
+      return;
+    }
+    if (raw.length > itemMax) {
+      syncHint();
+      return;
+    }
+    if (!values.includes(raw)) values.push(raw);
+    input.value = '';
+    syncHint();
+    renderChips();
+  }
+
+  function renderChips() {
+    chipsHost.replaceChildren(
+      ...values.map((value) =>
+        h(
+          'span',
+          { class: 'chip is-active' },
+          value,
+          h(
+            'button',
+            {
+              class: 'filter-chip-x',
+              type: 'button',
+              'aria-label': `Remove ${value}`,
+              onclick: () => {
+                const index = values.indexOf(value);
+                if (index !== -1) values.splice(index, 1);
+                renderChips();
+              },
+            },
+            '×',
+          ),
+        ),
+      ),
+      input,
+    );
+    syncHint();
+  }
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ',') {
+      event.preventDefault();
+      addValue();
+    }
+  });
+  input.addEventListener('input', syncHint);
+
+  renderChips();
+
+  const element = h(
+    'div',
+    { class: 'field' },
+    h('span', { class: 'field-label editor-label' }, label),
+    chipsHost,
+    hint,
+    h('span', { class: 'field-hint' }, 'Press Enter after each one.'),
+  );
+  return { element, getValues: () => values.slice(0, maxItems) };
+}
+
+/**
+ * Repair-method steps editor (SPEC-v4.md 4.3): the checklist editor pattern
+ * (add, remove, reorder up/down) with numbered steps instead of checkboxes.
+ * At most 60 steps of 1000 characters. Returns { element, getSteps }.
+ */
+function createStepsEditor(initialSteps = []) {
+  const items = (Array.isArray(initialSteps) ? initialSteps : [])
+    .filter(Boolean)
+    .map((step) => ({
+      id: typeof step.id === 'string' && step.id !== '' ? step.id : uid(),
+      text: String(step.text || '').trim().slice(0, 1000),
+    }))
+    .filter((step) => step.text !== '');
+  const listHost = h('div', { class: 'checklist-edit steps-edit' });
+  const input = h('textarea', {
+    rows: 2,
+    maxlength: '1000',
+    placeholder: 'New step, e.g. Unthread and remove the needle',
+    'aria-label': 'New step text',
+  });
+  const addButton = h('button', { class: 'btn btn-small', type: 'button' }, 'Add step');
+  const hint = h('p', { class: 'field-hint' });
+
+  const MAX_STEPS = 60;
+
+  function syncHint() {
+    addButton.disabled = items.length >= MAX_STEPS;
+    hint.textContent = items.length >= MAX_STEPS ? 'At most 60 steps.' : input.value.trim().length > 1000 ? 'A step is at most 1000 characters.' : '';
+  }
+
+  function renderRows() {
+    listHost.replaceChildren(
+      ...items.map((item, index) => {
+        const textInput = h('textarea', {
+          rows: 2,
+          maxlength: '1000',
+          'aria-label': `Step ${index + 1}`,
+        });
+        textInput.value = item.text;
+        textInput.addEventListener('input', () => {
+          item.text = textInput.value;
+        });
+        const upButton = h(
+          'button',
+          {
+            class: 'btn btn-ghost btn-small',
+            type: 'button',
+            'aria-label': `Move step ${index + 1} up`,
+            disabled: index === 0,
+            onclick: () => {
+              if (index === 0) return;
+              const [moved] = items.splice(index, 1);
+              items.splice(index - 1, 0, moved);
+              renderRows();
+            },
+          },
+          '↑',
+        );
+        const downButton = h(
+          'button',
+          {
+            class: 'btn btn-ghost btn-small',
+            type: 'button',
+            'aria-label': `Move step ${index + 1} down`,
+            disabled: index === items.length - 1,
+            onclick: () => {
+              if (index === items.length - 1) return;
+              const [moved] = items.splice(index, 1);
+              items.splice(index + 1, 0, moved);
+              renderRows();
+            },
+          },
+          '↓',
+        );
+        const removeButton = h(
+          'button',
+          {
+            class: 'btn btn-ghost btn-small',
+            type: 'button',
+            'aria-label': `Remove step ${index + 1}`,
+            onclick: () => {
+              items.splice(index, 1);
+              renderRows();
+              syncHint();
+            },
+          },
+          '×',
+        );
+        return h(
+          'div',
+          { class: 'step-edit-row' },
+          h('span', { class: 'step-number', 'aria-hidden': 'true' }, `${index + 1}.`),
+          textInput,
+          h('div', { class: 'check-edit-actions' }, upButton, downButton, removeButton),
+        );
+      }),
+    );
+    syncHint();
+  }
+
+  function addStep() {
+    const text = input.value.trim();
+    if (!text || items.length >= MAX_STEPS) {
+      syncHint();
+      return;
+    }
+    items.push({ id: uid(), text: text.slice(0, 1000) });
+    input.value = '';
+    renderRows();
+    input.focus();
+  }
+
+  addButton.addEventListener('click', addStep);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      addStep();
+    }
+  });
+  input.addEventListener('input', syncHint);
+
+  renderRows();
+
+  const element = h(
+    'div',
+    { class: 'field' },
+    h('span', { class: 'field-label editor-label' }, 'Steps'),
+    listHost,
+    h('div', { class: 'check-add' }, input, addButton),
+    hint,
+    h('span', { class: 'field-hint' }, 'Enter adds a step; Shift+Enter makes a new line inside a step.'),
+  );
+  return {
+    element,
+    getSteps: () =>
+      items
+        .filter((item) => item.text.trim() !== '')
+        .map((item) => ({ id: item.id, text: item.text.trim().slice(0, 1000) })),
+  };
+}
+
+/** Machine multi-select for library items (SPEC-v4.md 4.1 machineIds). */
+function createLibraryMachineChecks(initialIds = []) {
+  const machineChecks = h('div', { class: 'check-list' });
+  if (state.machines.length === 0) {
+    machineChecks.append(h('p', { class: 'field-hint' }, 'No machines added yet.'));
+  } else {
+    for (const machine of state.machines
+      .slice()
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }))) {
+      const checkId = `lib-machine-${++fieldCounter}`;
+      const checkbox = h('input', {
+        type: 'checkbox',
+        checked: (initialIds || []).includes(machine.id),
+        value: machine.id,
+      });
+      checkbox.id = checkId;
+      machineChecks.append(
+        h('div', { class: 'check-row' }, checkbox, h('label', { for: checkId }, machine.name)),
+      );
+    }
+  }
+  return {
+    element: h(
+      'fieldset',
+      { class: 'field fieldset' },
+      h('legend', { class: 'field-label' }, 'Specific machines'),
+      machineChecks,
+    ),
+    getMachineIds: () => [...machineChecks.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value),
+  };
+}
+
+/* ---------- Library form (SPEC-v4.md 4.3) ----------
+   Shared by the full-page form (< 1024 px) and the desktop drawer; kind is
+   fixed per form (manual or method; the method-only fields stay off manuals,
+   which the server rejects). Returns { node, isDirty, title }. */
+
+function libraryFormTitle(existing, kind = 'method') {
+  if (existing) return `Edit ${LIBRARY_KIND_LABELS[existing.kind] || existing.kind}`;
+  return kind === 'manual' ? 'New manual' : 'New repair method';
+}
+
+/** Pre-fill from the route (SPEC-v4.md 4.3): ?machine=<id> pre-fills a method
+ *  with that machine and model; ?from=<orderId> builds the method draft. */
+function libraryPrefillFromRoute(route) {
+  const kind = route && route.params && route.params.get('kind') === 'manual' ? 'manual' : 'method';
+  const machineId = route && route.params ? route.params.get('machine') : null;
+  const fromId = route && route.params ? route.params.get('from') : null;
+  if (!machineId && !fromId) return { kind };
+  const prefill = { kind };
+  if (machineId) {
+    const machine = machineById(machineId);
+    if (machine) {
+      prefill.machineIds = [machine.id];
+      if (machine.model) prefill.models = [machine.model];
+    }
+  }
+  if (fromId && kind === 'method') {
+    const order = workOrderById(fromId);
+    if (order) {
+      Object.assign(prefill, methodDraftFromWorkOrder(order, machineById(order.machineId)));
+    }
+  }
+  return prefill;
+}
+
+function libraryFormBase(existing, prefill) {
+  if (existing) return existing;
+  const draft = prefill && prefill.kind ? prefill : { kind: 'method' };
+  return {
+    kind: draft.kind,
+    title: typeof draft.title === 'string' ? draft.title : '',
+    machineType: draft.machineType || null,
+    models: Array.isArray(draft.models) ? draft.models : [],
+    machineIds: Array.isArray(draft.machineIds) ? draft.machineIds : [],
+    tags: Array.isArray(draft.tags) ? draft.tags : [],
+    attachments: [],
+    notes: '',
+    symptom: typeof draft.symptom === 'string' ? draft.symptom : '',
+    cause: typeof draft.cause === 'string' ? draft.cause : '',
+    steps: Array.isArray(draft.steps) ? draft.steps : [],
+    toolsParts: typeof draft.toolsParts === 'string' ? draft.toolsParts : '',
+    safety: typeof draft.safety === 'string' ? draft.safety : '',
+    sourceWorkOrderId: draft.sourceWorkOrderId || null,
+  };
+}
+
+function libraryFormBody({ existing = null, route = null } = {}) {
+  const prefill = existing ? null : libraryPrefillFromRoute(route);
+  const base = libraryFormBase(existing, prefill);
+  const isManual = base.kind === 'manual';
+  const form = h('form', { class: 'form library-form', novalidate: true });
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+
+  const titleInput = h('input', {
+    type: 'text',
+    required: true,
+    maxlength: '160',
+    autocomplete: 'off',
+    placeholder: isManual ? 'e.g. Juki DDL-8700 service manual' : 'e.g. Thread breaks at high speed',
+    value: base.title || '',
+  });
+  // machineType is the builtin enum or null (SPEC-v4.md 4.1/schema) — no
+  // custom "Other" labels here, so the groups select is used without them.
+  const machineTypeSelectValue = base.machineType || '';
+  const typeSelect = machineTypeSelect(machineTypeSelectValue);
+  typeSelect.prepend(h('option', { value: '' }, 'No type — use models or machines below'));
+  if (!machineTypeSelectValue) typeSelect.value = '';
+
+  const modelsEditor = createChipsInput(base.models || [], {
+    maxItems: 20,
+    itemMax: 60,
+    placeholder: 'e.g. DDL-8700-7',
+    label: 'Models',
+  });
+  const machineChecks = createLibraryMachineChecks(base.machineIds || []);
+  const tagsEditor = createChipsInput(base.tags || [], {
+    maxItems: 20,
+    itemMax: 40,
+    placeholder: 'e.g. thread break',
+    label: 'Tags',
+  });
+  const attachmentsEditor = createAttachmentsEditor(base.attachments || []);
+
+  const notesInput = h('textarea', {
+    rows: 4,
+    maxlength: '20000',
+    value: base.notes || '',
+    placeholder: isManual ? 'Key pages/specs the AI should know when the PDF has no readable text' : '',
+  });
+  const symptomInput = h('textarea', { rows: 3, maxlength: '1000', value: base.symptom || '', placeholder: 'What goes wrong, e.g. Thread breaks above 4,000 rpm' });
+  const causeInput = h('textarea', { rows: 3, maxlength: '2000', value: base.cause || '', placeholder: 'What is actually behind it' });
+  const stepsEditor = createStepsEditor(base.steps || []);
+  const toolsPartsInput = h('input', { type: 'text', maxlength: '1000', value: base.toolsParts || '', placeholder: 'e.g. Screwdriver #2, needles DBx1 #14' });
+  const safetyInput = h('textarea', { rows: 3, maxlength: '1000', value: base.safety || '', placeholder: 'Lockout points and hazards before guards come off' });
+
+  const save = h(
+    'button',
+    { class: 'btn btn-primary', type: 'submit' },
+    existing ? 'Save changes' : isManual ? 'Add manual' : 'Add repair method',
+  );
+
+  form.append(
+    errorBox,
+    field('Title', titleInput),
+    field('Machine type', typeSelect, 'Applies to every machine of this type when no models or machines are given.'),
+    modelsEditor.element,
+    machineChecks.element,
+    tagsEditor.element,
+    isManual
+      ? h(
+          'div',
+          { class: 'card', style: { marginTop: '0.75rem' } },
+          h('h3', { class: 'section-title' }, 'PDFs & photos'),
+          h(
+            'p',
+            { class: 'field-hint' },
+            'Upload the manual PDFs here — each one gets an “AI can read” badge once its text is extracted.',
+          ),
+          attachmentsEditor.element,
+        )
+      : null,
+    isManual
+      ? field('Text for the AI', notesInput, 'Typed or pasted key specs; used when a PDF is a scan without readable text.')
+      : null,
+    isManual
+      ? null
+      : h('div', {}, sectionTitle('Symptom'), field('Symptom', symptomInput), sectionTitle('Cause'), field('Cause', causeInput), sectionTitle('Steps'), stepsEditor.element, h('div', { class: 'grid-2', style: { marginTop: '0.75rem' } }, field('Tools & parts', toolsPartsInput), field('Safety', safetyInput, 'Shown in a highlighted box — always mention lockout/power-off.')), sectionTitle('Photos'), attachmentsEditor.element),
+    base.sourceWorkOrderId
+      ? h('p', { class: 'field-hint' }, `From service order ${formatOrderNumber(workOrderById(base.sourceWorkOrderId) ? workOrderById(base.sourceWorkOrderId).number : null)} — kept as its source.`)
+      : null,
+    h(
+      'div',
+      { class: 'form-actions' },
+      save,
+      h(
+        'a',
+        {
+          class: 'btn',
+          href: existing ? `#/library/${encodeURIComponent(existing.id)}` : libraryUrl('methods'),
+        },
+        'Cancel',
+      ),
+    ),
+  );
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const problems = [];
+    const title = titleInput.value.trim();
+    if (!title) problems.push('Enter a title.');
+    else if (title.length > 160) problems.push('The title is longer than 160 characters.');
+    const models = modelsEditor.getValues();
+    if (models.length > 20) problems.push('At most 20 models.');
+    const tags = tagsEditor.getValues();
+    if (tags.length > 20) problems.push('At most 20 tags.');
+    const steps = stepsEditor.getSteps();
+    if (!isManual && steps.length > 60) problems.push('At most 60 steps.');
+    if (problems.length > 0) {
+      errorBox.textContent = problems[0];
+      return;
+    }
+    const now = nowISO();
+    const record = {
+      id: existing ? existing.id : uid(),
+      kind: base.kind,
+      title,
+      machineType: typeSelect.value || null,
+      models,
+      machineIds: machineChecks.getMachineIds(),
+      tags,
+      attachments: attachmentsEditor.getAttachments(),
+      // "Text for the AI" (SPEC-v4.md 4.1) is a plain string, never null.
+      notes: isManual ? notesInput.value.trim() : String(base.notes || ''),
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+    };
+    if (!isManual) {
+      // Method-only fields (SPEC-v4.md 4.1): never sent for a manual.
+      record.symptom = symptomInput.value.trim();
+      record.cause = causeInput.value.trim();
+      record.steps = steps;
+      record.toolsParts = toolsPartsInput.value.trim();
+      record.safety = safetyInput.value.trim();
+      record.sourceWorkOrderId = base.sourceWorkOrderId || null;
+    }
+    save.disabled = true;
+    try {
+      await sync.saveRecord('libraryItems', record, existing ? existing.version : null);
+      await refreshState();
+      toast(existing ? 'Library item saved.' : isManual ? 'Manual added.' : 'Repair method added.');
+      navigate(`#/library/${encodeURIComponent(record.id)}`);
+    } catch (error) {
+      errorBox.textContent = 'Could not save. Please try again.';
+      console.error(error);
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  let dirty = Boolean(prefill && (prefill.title || prefill.symptom || (prefill.steps && prefill.steps.length) || (prefill.machineIds && prefill.machineIds.length) || (prefill.models && prefill.models.length)));
+  form.addEventListener('input', () => {
+    dirty = true;
+  });
+  form.addEventListener('change', () => {
+    dirty = true;
+  });
+
+  return { node: form, isDirty: () => dirty, title: libraryFormTitle(existing, base.kind) };
+}
+
+/** Full-page form route (< 1024 px); desktop opens the drawer instead. */
+function renderLibraryFormPage(route, existing) {
+  const second = route.segments[1];
+  if (second && second !== 'new' && !existing) {
+    setTitle('Library item not found');
+    return page(
+      pageHead('Library item not found'),
+      emptyState('That library item does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/library' }, 'Back to Library'),
+      ]),
+    );
+  }
+  const { node, title } = libraryFormBody({ existing, route });
+  return page(pageHead(title), node);
+}
+
+/* The library form opens in the drawer on desktop (SPEC-v4.md 4.3); phones
+   and tablets keep the full-page form. */
+function maybeOpenLibraryDrawer(route, existing = null) {
+  if (!desktopMedia.matches) return false;
+  if (!can('library', 'write')) return false;
+  const second = route.segments[1];
+  if (second === 'new') {
+    const { node, isDirty, title } = libraryFormBody({ existing: null, route });
+    openDrawer({ title, content: node, isDirty });
+    return true;
+  }
+  if (route.segments[2] !== 'edit' || !existing) return false;
+  const { node, isDirty, title } = libraryFormBody({ existing });
+  openDrawer({ title, content: node, isDirty });
+  return true;
+}
+
+/* ---------- Library detail (SPEC-v4.md 4.3) ----------
+   Manuals list their PDFs with the AI-readable badge from
+   GET /api/files/:id/text-status; pending badges re-check every 5 s while
+   the page is open and stop when you leave it. Offline there is no badge. */
+
+let libraryBadgeTimer = null;
+
+function stopLibraryBadgePolling() {
+  if (libraryBadgeTimer) {
+    clearInterval(libraryBadgeTimer);
+    libraryBadgeTimer = null;
+  }
+}
+
+/** One text-status read; null means "no badge" (offline or unroutable). */
+async function fetchLibraryTextStatus(fileId) {
+  try {
+    const response = await sync.api('GET', `/api/files/${encodeURIComponent(fileId)}/text-status`);
+    if (response && response.ok && response.data && typeof response.data.status === 'string') {
+      return response.data;
+    }
+  } catch (error) {
+    // Offline or the server is down: keep "no badge".
+  }
+  return null;
+}
+
+/**
+ * The PDF list of a manual with its badges (SPEC-v4.md 4.3). Builds the rows
+ * and starts the initial status read; pending PDFs poll every 5 s. Every
+ * node the polling touches is created here; leaving the route stops it
+ * (render() calls stopLibraryBadgePolling before each render).
+ */
+function manualPdfList(item) {
+  const pdfs = (item.attachments || []).filter((a) => a && a.fileId && a.mime === 'application/pdf');
+  const photos = (item.attachments || []).filter((a) => a && a.fileId && typeof a.mime === 'string' && a.mime.startsWith('image/'));
+  const photoGrid = photos.length > 0 ? attachmentsGrid(photos) : null;
+
+  if (pdfs.length === 0) {
+    return {
+      node: h('div', {}, h('p', { class: 'muted' }, 'No PDFs uploaded.'), photoGrid),
+      start: () => {},
+    };
+  }
+
+  // No badges offline (SPEC-v4.md 4.3); the file list itself still shows.
+  const online =
+    Boolean(sync.currentUser()) && !(typeof navigator !== 'undefined' && navigator.onLine === false);
+  const targets = new Map();
+
+  const rows = pdfs.map((attachment) => {
+    const url = `/api/files/${encodeURIComponent(attachment.fileId)}`;
+    const badgeNode = online ? h('span', { class: 'pill lib-badge lib-badge-pending' }, 'Reading…') : null;
+    const hintNode = h('p', { class: 'field-hint lib-badge-hint' });
+    if (badgeNode) {
+      targets.set(attachment.fileId, { badge: badgeNode, hint: hintNode, status: null });
+    }
+    return h(
+      'li',
+      { class: 'manual-item lib-pdf-item' },
+      h('span', { class: 'attach-icon', 'aria-hidden': 'true' }, 'PDF'),
+      h('span', { class: 'manual-name' }, attachment.name || 'PDF'),
+      typeof attachment.size === 'number' ? h('span', { class: 'muted manual-size' }, formatBytes(attachment.size)) : null,
+      h('a', { class: 'inline-link', href: url, target: '_blank', rel: 'noopener' }, 'Open'),
+      badgeNode,
+    );
+  });
+  const list = h('ul', { class: 'manual-list lib-pdf-list' }, ...rows);
+
+  function applyStatus(fileId, data) {
+    const target = targets.get(fileId);
+    if (!target) return;
+    const badge = manualTextBadge(data);
+    if (!badge) {
+      // Unknown status shape: no badge at all (SPEC-v4.md 4.3 offline rule).
+      target.badge.remove();
+      target.hint.remove();
+      targets.delete(fileId);
+      return;
+    }
+    if (!target.badge.isConnected) {
+      targets.delete(fileId);
+      return;
+    }
+    target.status = badge.kind;
+    target.badge.className = `pill lib-badge lib-badge-${badge.kind}`;
+    target.badge.textContent = badge.label;
+    target.hint.textContent = badge.hint || '';
+    if (badge.hint) {
+      // The scanned-PDF hint sits under the row it belongs to.
+      if (!target.hint.isConnected) {
+        const row = target.badge.closest('.lib-pdf-item');
+        if (row) row.append(target.hint);
+      }
+    } else {
+      target.hint.remove();
+    }
+  }
+
+  async function refresh() {
+    // A straggling refresh from an earlier page (an in-flight fetch that
+    // resolved after a re-render) finds its badges detached and returns
+    // without touching the current page's timer.
+    const pending = [...targets.entries()].filter(
+      ([, target]) => (target.status === null || target.status === 'pending') && target.badge.isConnected,
+    );
+    if (pending.length === 0) return;
+    for (const [fileId] of pending) {
+      const target = targets.get(fileId);
+      if (!target || !target.badge.isConnected) return;
+      const data = await fetchLibraryTextStatus(fileId);
+      if (data) applyStatus(fileId, data);
+    }
+    const stillPending = [...targets.values()].some(
+      (target) => (target.status === null || target.status === 'pending') && target.badge.isConnected,
+    );
+    if (stillPending) startTimer();
+  }
+
+  /* The pending-badge timer is owned by this manual page. render() stops the
+     global slot on every route change; the tick below also steps aside if a
+     newer page took the slot, and stops itself when its list is gone. */
+  let ownTimer = null;
+
+  function startTimer() {
+    if (ownTimer !== null) return;
+    if (libraryBadgeTimer !== null) clearInterval(libraryBadgeTimer);
+    ownTimer = setInterval(() => {
+      if (libraryBadgeTimer !== ownTimer) {
+        // A newer page owns the slot now; this tick does nothing.
+        ownTimer = null;
+        return;
+      }
+      if (!list.isConnected) {
+        // The page was left; re-check pending PDFs only while it is open.
+        clearInterval(ownTimer);
+        libraryBadgeTimer = null;
+        ownTimer = null;
+        return;
+      }
+      refresh();
+    }, 5000);
+    libraryBadgeTimer = ownTimer;
+  }
+
+  return {
+    node: h('div', {}, list, photoGrid),
+    start: () => {
+      if (!online) return;
+      refresh();
+    },
+  };
+}
+
+/** "Applies to" card body shared by both detail kinds. */
+function libraryAppliesCard(item) {
+  const machines = (item.machineIds || [])
+    .map((id) => machineById(id))
+    .filter(Boolean)
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return h(
+    'div',
+    { class: 'card', style: { marginTop: '0.75rem' } },
+    h(
+      'dl',
+      { class: 'detail-grid' },
+      h('dt', {}, 'Kind'),
+      h('dd', {}, libraryKindPill(item.kind)),
+      item.machineType
+        ? [h('dt', {}, 'Machine type'), h('dd', {}, machineTypeLabel({ type: item.machineType }))]
+        : null,
+      (item.models || []).length
+        ? [
+            h('dt', {}, 'Models'),
+            h('dd', {}, (item.models || []).join(', ')),
+          ]
+        : null,
+      machines.length
+        ? [
+            h('dt', {}, 'Machines'),
+            h(
+              'dd',
+              {},
+              ...machines.map((machine, index) =>
+                h(
+                  'span',
+                  {},
+                  index > 0 ? ' · ' : null,
+                  h('a', { class: 'inline-link', href: `#/machines/${encodeURIComponent(machine.id)}` }, machine.name),
+                ),
+              ),
+            ),
+          ]
+        : null,
+      (item.tags || []).length ? [h('dt', {}, 'Tags'), h('dd', {}, (item.tags || []).join(', '))] : null,
+    ),
+  );
+}
+
+function libraryDetailActions(item) {
+  const canWrite = can('library', 'write');
+  if (!canWrite) return null;
+  return h(
+    'div',
+    { class: 'button-row', style: { marginTop: '0.75rem' } },
+    h(
+      'a',
+      { class: 'btn btn-primary btn-small', href: `#/library/${encodeURIComponent(item.id)}/edit` },
+      `Edit ${LIBRARY_KIND_LABELS[item.kind] || 'item'}`,
+    ),
+    h('button', { class: 'btn btn-danger btn-small', type: 'button', onclick: () => deleteLibraryItem(item) }, 'Delete'),
+  );
+}
+
+async function deleteLibraryItem(item) {
+  if (!item) return;
+  const yes = await showConfirm({
+    title: 'Delete this library item?',
+    message: `"${item.title}" will be removed from the library. This cannot be undone.`,
+    confirmText: 'Delete',
+    cancelText: 'Cancel',
+    danger: true,
+  });
+  if (!yes) return;
+  try {
+    await sync.deleteRecord('libraryItems', item.id, item.version);
+    await refreshState();
+    toast('Library item deleted.');
+    navigate('#/library');
+  } catch (error) {
+    console.error(error);
+    toast('Could not delete the library item. Please try again.', 'warn');
+  }
+}
+
+/** "From SO-0042" source link on a repair method (SPEC-v4.md 4.3). */
+function librarySourceNode(item) {
+  if (!item.sourceWorkOrderId) return null;
+  const order = workOrderById(item.sourceWorkOrderId);
+  if (order) {
+    return h(
+      'p',
+      { class: 'row-sub' },
+      'Saved from ',
+      h('a', { class: 'inline-link', href: `#/jobs/${encodeURIComponent(order.id)}` }, formatOrderNumber(order.number)),
+    );
+  }
+  return h('p', { class: 'row-sub' }, 'Saved from a service order');
+}
+
+function renderLibraryDetail(route) {
+  const item = libraryItemById(route.segments[1]);
+  setTitle(item ? item.title : 'Library item not found');
+  if (!item) {
+    return page(
+      pageHead('Library item not found'),
+      emptyState('That library item does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/library' }, 'Back to Library'),
+      ]),
+    );
+  }
+
+  const isManual = item.kind === 'manual';
+  const pdfList = isManual ? manualPdfList(item) : null;
+  const photos = (item.attachments || []).filter(
+    (a) => a && a.fileId && typeof a.mime === 'string' && a.mime.startsWith('image/'),
+  );
+  const pdfsOfMethod = !isManual
+    ? (item.attachments || []).filter((a) => a && a.fileId && a.mime === 'application/pdf')
+    : [];
+
+  const head = h(
+    'div',
+    { class: 'detail-head' },
+    h('div', {}, h('h2', {}, item.title), librarySourceNode(item) || h('div', { class: 'row-sub' }, libraryAppliesText(item))),
+    h('div', { class: 'row-sub' }, libraryKindPill(item.kind), isReadOnly('library') ? viewOnlyBadge() : null),
+  );
+
+  if (pdfList) {
+    // The badge reads start once the page is in the DOM (render() attaches
+    // it right after this returns); pending PDFs then re-check every 5 s.
+    requestAnimationFrame(() => pdfList.start());
+  }
+
+  return page(
+    head,
+    detailMeta(item),
+    conflictBanner('libraryItems', item.id),
+    libraryDetailActions(item),
+    libraryAppliesCard(item),
+    isManual
+      ? h('div', { style: { marginTop: '0.75rem' } }, sectionTitle('PDFs'), pdfList.node, sectionTitle('Text for the AI'), item.notes ? h('div', { class: 'card pre' }, item.notes) : h('p', { class: 'muted' }, 'No typed key specs — the AI only reads this manual through its PDF text.'), h('span', { class: 'field-hint' }, 'Typed or pasted specs count as notes for the AI, especially for scans it cannot read.'))
+      : h(
+          'div',
+          { style: { marginTop: '0.75rem' } },
+          sectionTitle('Symptom'),
+          item.symptom ? h('div', { class: 'card pre' }, item.symptom) : h('p', { class: 'muted' }, 'No symptom recorded.'),
+          sectionTitle('Cause'),
+          item.cause ? h('div', { class: 'card pre' }, item.cause) : h('p', { class: 'muted' }, 'No cause recorded.'),
+          sectionTitle('Steps'),
+          (item.steps || []).filter(Boolean).length
+            ? h(
+                'ol',
+                { class: 'method-steps card' },
+                ...(item.steps || [])
+                  .filter(Boolean)
+                  .map((step) => h('li', { class: 'method-step' }, step.text || '')),
+              )
+            : h('p', { class: 'muted' }, 'No steps recorded.'),
+          sectionTitle('Tools & parts'),
+          item.toolsParts ? h('div', { class: 'card pre' }, item.toolsParts) : h('p', { class: 'muted' }, 'No tools or parts listed.'),
+          sectionTitle('Safety'),
+          item.safety
+            ? h(
+                'div',
+                { class: 'safety-box', role: 'note' },
+                h('span', { class: 'safety-title' }, '⚠ Safety'),
+                h('div', { class: 'pre' }, item.safety),
+              )
+            : h('p', { class: 'muted' }, 'No safety notes.'),
+          photos.length
+            ? h('div', {}, sectionTitle('Photos'), attachmentsGrid(photos))
+            : null,
+          pdfsOfMethod.length
+            ? h('div', {}, sectionTitle('PDFs'), attachmentsGrid(pdfsOfMethod))
+            : null,
+        ),
+    historySection('libraryItems', item.id),
+  );
+}
+
+/** The machine detail Library section (SPEC-v4.md 4.3): matching items via
+ *  relatedLibraryItems with the repair methods first, plus "Add repair
+ *  method" pre-filled with this machine's id and model. */
+function machineLibrarySection(machine) {
+  const canRead = can('library');
+  const related = canRead ? sortLibraryNewest(relatedLibraryItems(machine, state.libraryItems)) : [];
+  const methods = related.filter((item) => item.kind !== 'manual');
+  const manuals = related.filter((item) => item.kind === 'manual');
+  const rows = [...methods, ...manuals].map((item) =>
+    h(
+      'a',
+      { class: 'row', href: `#/library/${encodeURIComponent(item.id)}` },
+      h(
+        'div',
+        { class: 'row-main' },
+        h('div', { class: 'row-title' }, item.title),
+        h(
+          'div',
+          { class: 'row-sub' },
+          libraryKindPill(item.kind),
+          libraryAppliesText(item) ? ` · ${libraryAppliesText(item)}` : '',
+        ),
+      ),
+      h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+    ),
+  );
+  return h(
+    'div',
+    {},
+    rows.length
+      ? h('div', { class: 'list' }, ...rows)
+      : h('p', { class: 'muted' }, 'No repair methods or manuals match this machine yet.'),
+    can('library', 'write')
+      ? h(
+          'div',
+          { class: 'button-row', style: { marginTop: '0.5rem' } },
+          h(
+            'a',
+            { class: 'btn btn-small', href: `#/library/new?kind=method&machine=${encodeURIComponent(machine.id)}` },
+            '+ Add repair method',
+          ),
+        )
+      : null,
+  );
 }
 
 /* ---------- People: coworkers (SPEC-v3.md sections 5 and 13) ---------- */
@@ -9843,6 +11121,9 @@ async function render() {
   const route = routeInfo();
   const [root, second, third] = route.segments;
   const tab = root || 'home';
+  // Leaving a manual detail stops its badge polling (SPEC-v4.md 4.3); the
+  // manual page restarts it while it stays on screen.
+  stopLibraryBadgePolling();
   // Hidden areas leave the navigation too (SPEC-v3.md 13.3).
   applyNavPermissions();
   // AI chat button (V3-M8, SPEC-v3.md section 9): visibility follows the
@@ -9855,7 +11136,7 @@ async function render() {
   }
   // The phone "More" button lights up while a sheet page is shown.
   if (moreButton) {
-    if (['parts', 'requests', 'statistics', 'coworkers', 'contractors', 'help', 'settings', 'admin'].includes(tab)) {
+    if (['parts', 'requests', 'library', 'statistics', 'coworkers', 'contractors', 'help', 'settings', 'admin'].includes(tab)) {
       moreButton.setAttribute('aria-current', 'page');
     } else {
       moreButton.removeAttribute('aria-current');
@@ -9976,6 +11257,43 @@ async function render() {
       isDetail = true;
       splitListRoot = 'requests';
     }
+  } else if (root === 'library') {
+    // v4 (SPEC-v4.md section 4.3): the repair library — tabs, search and
+    // filters on the list; forms open in the drawer on desktop (full page
+    // below 1024 px) and details fill the split view.
+    if (!can('library')) {
+      content = noAccessPage('Library', 'Library');
+    } else if (!second) {
+      content = renderLibrary(route);
+    } else if (second === 'new') {
+      if (!can('library', 'write')) {
+        content = noAccessPage('New library item', 'Library');
+      } else {
+        const libraryDrawer = maybeOpenLibraryDrawer(route);
+        if (libraryDrawer) {
+          content = renderLibrary({ segments: ['library'], params: route.params });
+        } else {
+          content = renderLibraryFormPage(route, null);
+        }
+      }
+    } else if (third === 'edit') {
+      if (!can('library', 'write')) {
+        content = noAccessPage('Edit library item', 'Library');
+      } else {
+        const existing = libraryItemById(second);
+        const libraryDrawer = maybeOpenLibraryDrawer(route, existing);
+        if (libraryDrawer) {
+          content = renderLibrary({ segments: ['library'], params: route.params });
+        } else {
+          content = renderLibraryFormPage(route, existing);
+          if (existing) isDetail = true;
+        }
+      }
+    } else {
+      content = renderLibraryDetail(route);
+      isDetail = true;
+      splitListRoot = 'library';
+    }
   } else if (root === 'pm') {
     if (!can('pm')) {
       content = noAccessPage('Preventive Maintenance', 'Preventive Maintenance');
@@ -10090,7 +11408,9 @@ async function render() {
               ? renderContractors(listRoute)
               : splitListRoot === 'requests'
                 ? renderRequests(listRoute)
-                : renderParts(listRoute);
+                : splitListRoot === 'library'
+                  ? renderLibrary(listRoute)
+                  : renderParts(listRoute);
     content = h(
       'div',
       { class: 'split', 'data-split-root': splitListRoot },
@@ -10390,6 +11710,8 @@ const NAV_ICONS = {
     'M9 15.5h4',
   ],
   stats: ['M4 20.5h16', 'M7 20.5v-6', 'M12 20.5V5', 'M17 20.5v-10'],
+  // v4 (SPEC-v4.md section 4.3): the Library entry of the More sheet (book).
+  library: ['M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20'],
   coworkers: [
     'M5.5 8a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0',
     'M3 20c.6-3.4 3-5.2 6-5.2s5.4 1.8 6 5.2',
@@ -10461,6 +11783,9 @@ function openMoreSheet() {
     // v4 (SPEC-v4.md section 1): Parts requests after Parts, only with the
     // purchasing permission (read or more).
     can('purchasing') && { label: 'Parts requests', icon: NAV_ICONS.requests, href: '#/requests' },
+    // v4 (SPEC-v4.md section 1): Library after Machines in the sidebar; on
+    // the phone it sits in the More sheet, only with the library permission.
+    can('library') && { label: 'Library', icon: NAV_ICONS.library, href: '#/library' },
     // Statistics follows its own permission (SPEC-v3.md 13.3).
     can('statistics') && { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
     // People follow the coworkers/contractors permissions (SPEC-v3.md 13.3).
@@ -10755,6 +12080,9 @@ const NAV_TAB_AREAS = {
   // v4 (SPEC-v4.md section 1): Parts requests follows Parts in the sidebar
   // and the More sheet, hidden without the purchasing permission.
   requests: 'purchasing',
+  // v4 (SPEC-v4.md section 1): Library follows Machines in the sidebar;
+  // hidden without the library permission.
+  library: 'library',
   coworkers: 'coworkers',
   contractors: 'contractors',
   statistics: 'statistics',
@@ -11081,6 +12409,7 @@ const AREA_STORES = {
   machines: 'machines',
   parts: 'parts',
   purchasing: 'purchaseRequests',
+  library: 'libraryItems',
   coworkers: 'coworkers',
   contractors: 'contractors',
 };
@@ -11421,6 +12750,9 @@ const LAST_TAB_AREAS = {
   machines: 'machines',
   parts: 'parts',
   requests: 'purchasing',
+  // v4 (SPEC-v4.md 4.3): the Library restores like the other pages, still
+  // behind the library permission.
+  library: 'library',
   pm: 'pm',
   coworkers: 'coworkers',
   contractors: 'contractors',
@@ -11430,7 +12762,7 @@ const LAST_TAB_AREAS = {
 function restoreLastTab() {
   if (location.hash) return;
   const last = storageGet(LAST_TAB_KEY);
-  const allowed = ['home', 'jobs', 'machines', 'parts', 'requests', 'pm', 'coworkers', 'contractors', 'statistics'];
+  const allowed = ['home', 'jobs', 'machines', 'parts', 'requests', 'library', 'pm', 'coworkers', 'contractors', 'statistics'];
   if (last && allowed.includes(last)) {
     const area = LAST_TAB_AREAS[last];
     if (area && !can(area)) return;

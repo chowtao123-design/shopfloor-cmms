@@ -5,6 +5,7 @@ const HELP_SECTIONS = [
   { id: 'help-glossary', title: 'Glossary' },
   { id: 'help-howto', title: 'How to…' },
   { id: 'help-requests', title: 'Parts requests' },
+  { id: 'help-library', title: 'Library' },
   { id: 'help-install', title: 'Install on your phone' },
   { id: 'help-desktop', title: 'Desktop tips' },
   { id: 'help-ai', title: 'AI assistant' },
@@ -333,6 +334,58 @@ function helpRequests(h) {
   );
 }
 
+/* v4 (SPEC-v4.md sections 4.3 and 7): the repair Library — manuals the AI
+   can read and repair methods, on the machine and off service orders. */
+function helpLibrary(h) {
+  return helpSection(
+    h,
+    'help-library',
+    'Library',
+    h(
+      'p',
+      {},
+      'The Library keeps your machine manuals and your own repair methods in one place. It has two tabs — Repair methods and Manuals — with a search across titles, models, tags, symptoms and step text, and filters by machine type, model and tag. Every item can name a machine type (all machines of that type), model numbers (compared ignoring spaces and dashes, so “DDL-8700-7” matches “DDL 8700 7”) and specific machines. Open a machine and the Library section lists everything that applies to it, repair methods first.',
+    ),
+    h('h3', { class: 'help-question' }, 'Manuals the AI can read'),
+    helpList(h, [
+      [
+        'Upload ',
+        'a PDF from the Manuals tab → New manual (up to 50 MB per PDF; photos can ride along too). Give it a title, the machine type or models it covers, and tags so it turns up in searches.',
+      ],
+      [
+        'The badge on each PDF ',
+        'says whether the AI can use it: ',
+        h('strong', {}, 'AI can read · N pages'),
+        ' — the server pulled the text out of the PDF; ',
+        h('strong', {}, 'Scanned — AI can’t read'),
+        ' — the PDF is just pictures, so type the key specs (needle charts, timing marks, settings) into ',
+        h('strong', {}, 'Text for the AI'),
+        ' on the manual; ',
+        h('strong', {}, 'Reading…'),
+        ' — the server is still working, the page re-checks on its own; ',
+        h('strong', {}, 'Couldn’t read'),
+        ' — the file is damaged or encrypted. Offline, no badge shows at all.',
+      ],
+      [
+        'Text for the AI ',
+        'is that box of typed or pasted key specs. A scanned manual is invisible to the AI without it — whatever you put there is what the AI will know about that manual.',
+      ],
+    ]),
+    h('h3', { class: 'help-question' }, 'Repair methods'),
+    helpSteps(h, [
+      'Write the fix as it happens: Symptom (what goes wrong), Cause, numbered Steps (add, remove and reorder them), Tools & parts, and Safety — the safety text always shows in a highlighted box, so put lockout and power-off points there.',
+      'From a machine: open the machine → Library → + Add repair method; the method starts linked to that machine and its model.',
+      'From a service order: finish the work, then on the completed order press Save as repair method — the form comes pre-filled with the order’s title, the problem as the symptom, the action taken split into steps, the machine and its model, and a link back to the order (“From SO-0042”).',
+      'Share what you know: tags like “thread break” or “timing” help the search find the right method months later.',
+    ]),
+    h(
+      'p',
+      {},
+      'Technicians and administrators can add and edit library items; viewers read them. Deleting a library item never touches the machine or the service order it came from.',
+    ),
+  );
+}
+
 function helpShortcutsTable(h) {
   const key = (label) => h('kbd', {}, label);
   const row = (keys, what) =>
@@ -484,7 +537,7 @@ function helpRoles(h) {
     h(
       'p',
       {},
-      'Areas: Service Orders, Preventive Maintenance, Machines, Parts & Stock, Parts requests, Coworkers, Outside Contractors, Contractor rates & costs, Statistics, Photos & files, Backups, AI assistant, Branding & AI settings, and Users & roles.',
+      'Areas: Service Orders, Preventive Maintenance, Machines, Parts & Stock, Parts requests, Library, Coworkers, Outside Contractors, Contractor rates & costs, Statistics, Photos & files, Backups, AI assistant, Branding & AI settings, and Users & roles.',
     ),
   );
 }
@@ -525,6 +578,7 @@ export function renderHelp(h, { isAdmin = false } = {}) {
     helpGlossarySection(h),
     helpHowTo(h),
     helpRequests(h),
+    helpLibrary(h),
     helpInstall(h),
     helpDesktop(h),
     helpAi(h),

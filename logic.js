@@ -1014,6 +1014,123 @@ export function relatedLibraryItems(machine, items) {
   return matches;
 }
 
+/* ---------- Library UI helpers (SPEC-v4.md section 4.3, V4-M4) ---------- */
+
+/**
+ * Free-text search across the Library list (SPEC-v4.md 4.3): title, models,
+ * tags, symptom and step text, case-insensitive. A blank query returns the
+ * input order (null/false entries dropped), like searchPurchaseRequests.
+ */
+export function searchLibraryItems(items, query) {
+  const list = (Array.isArray(items) ? items : []).filter(Boolean);
+  const needle = String(query === null || query === undefined ? '' : query)
+    .trim()
+    .toLowerCase();
+  if (needle === '') return list;
+  return list.filter((item) => {
+    const parts = [
+      typeof item.title === 'string' ? item.title : '',
+      Array.isArray(item.models) ? item.models.join(' ') : '',
+      Array.isArray(item.tags) ? item.tags.join(' ') : '',
+      typeof item.symptom === 'string' ? item.symptom : '',
+      Array.isArray(item.steps)
+        ? item.steps.map((step) => (step && typeof step.text === 'string' ? step.text : '')).join(' ')
+        : '',
+    ];
+    return parts.join(' ').toLowerCase().includes(needle);
+  });
+}
+
+/**
+ * Library list filters (SPEC-v4.md 4.3): machine type, model number and tag.
+ * Every value is optional; null/''/"all" means "no filter". Models compare
+ * through normalizeModel (SPEC-v4.md 4.1) and tags case-insensitively.
+ * Input order is kept.
+ */
+export function filterLibraryItems(items, { machineType = null, model = null, tag = null } = {}) {
+  const list = (Array.isArray(items) ? items : []).filter(Boolean);
+  const typeFilter =
+    machineType === null || machineType === undefined || String(machineType).trim() === ''
+      ? null
+      : String(machineType);
+  const modelKey =
+    model === null || model === undefined ? '' : normalizeModel(String(model));
+  const tagFilter =
+    tag === null || tag === undefined || String(tag).trim() === ''
+      ? null
+      : String(tag).trim().toLowerCase();
+  return list.filter((item) => {
+    if (typeFilter !== null && item.machineType !== typeFilter) return false;
+    if (modelKey !== '') {
+      const models = Array.isArray(item.models) ? item.models : [];
+      if (!models.some((entry) => entry !== null && entry !== undefined && normalizeModel(entry) === modelKey)) {
+        return false;
+      }
+    }
+    if (tagFilter !== null) {
+      const tags = Array.isArray(item.tags) ? item.tags : [];
+      if (!tags.some((entry) => String(entry || '').trim().toLowerCase() === tagFilter)) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * A completed service order becomes a repair-method draft (SPEC-v4.md 4.3):
+ * title from the order, symptom from the problem, one step per non-empty
+ * "action taken" line, the machine's id and model, sourceWorkOrderId set.
+ * The shape matches the libraryItems "method" record (steps get deterministic
+ * ids, texts trimmed and capped at 1000 characters, at most 60 steps).
+ */
+export function methodDraftFromWorkOrder(order, machine) {
+  const source = order === null || order === undefined ? {} : order;
+  const steps = String(source.actionTaken === null || source.actionTaken === undefined ? '' : source.actionTaken)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .slice(0, 60)
+    .map((line, index) => ({ id: `so-${index + 1}`, text: line.slice(0, 1000) }));
+  return {
+    kind: 'method',
+    title: String(source.title === null || source.title === undefined ? '' : source.title).slice(0, 160),
+    symptom: String(source.problem === null || source.problem === undefined ? '' : source.problem).slice(0, 1000),
+    cause: '',
+    steps,
+    toolsParts: '',
+    safety: '',
+    tags: [],
+    machineIds: machine && machine.id ? [machine.id] : [],
+    models: machine && machine.model ? [String(machine.model).slice(0, 60)] : [],
+    sourceWorkOrderId: source.id || null,
+  };
+}
+
+/**
+ * The badge text for one manual PDF from GET /api/files/:id/text-status
+ * (SPEC-v4.md 4.2/4.3): ok with the page count, no_text "Scanned — AI can't
+ * read" plus the hint to type key specs into Text for the AI, pending
+ * "Reading…", error "Couldn't read". Unknown shapes give null (no badge).
+ */
+export function manualTextBadge(statusData) {
+  if (statusData === null || typeof statusData !== 'object') return null;
+  const status = String(statusData.status === null || statusData.status === undefined ? '' : statusData.status);
+  if (status === 'ok') {
+    const pages = Number(statusData.pages);
+    const count = Number.isFinite(pages) && pages > 0 ? Math.floor(pages) : 0;
+    return { kind: 'ok', label: `AI can read · ${count} ${count === 1 ? 'page' : 'pages'}`, hint: null };
+  }
+  if (status === 'no_text') {
+    return {
+      kind: 'no_text',
+      label: "Scanned — AI can't read",
+      hint: 'Type the key specs into Text for the AI',
+    };
+  }
+  if (status === 'pending') return { kind: 'pending', label: 'Reading…', hint: null };
+  if (status === 'error') return { kind: 'error', label: "Couldn't read", hint: null };
+  return null;
+}
+
 /**
  * Due state used by the "due" filter: 'none' (no due date), 'overdue'
  * (before today), 'this-week' (today through the next 7 days) or 'later'.
