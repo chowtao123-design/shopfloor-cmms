@@ -592,6 +592,7 @@ function helpFloor(h) {
     h('h3', { class: 'help-question' }, 'The station panel'),
     helpSteps(h, [
       'Tap a station to open its panel: the code, zone, staff name, Chinese name, employee ID, vacant mark and remark — editable right there if your role allows it; every change saves as soon as you leave the field. Nothing beyond that is kept (no phone numbers, no emergency contacts).',
+      'Text size sets the letter size of every slot in the station’s box: Auto lets each slot fit itself, while A− / A+ fix one size for the whole box (all its slots together), saved right away — the same row appears on a selected box in Edit map, where it saves with Save map.',
       'Link the station to a machine in the same panel: a searchable list of all machines, or Unlink when the seat changes. With a link you see the machine’s status, its open service orders, and + New service order opens the normal form with the machine already filled in.',
       'On a machine or service order page, Show on map jumps straight to that machine’s station, centred and highlighted (when a station links to it).',
       'Stations whose box was removed from the map land in Off-map stations under the map; Place on map moves one back into an empty slot you click. Empty slots themselves offer + Add station, which puts a brand-new station exactly there.',

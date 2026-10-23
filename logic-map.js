@@ -231,6 +231,37 @@ export const FIT_SLOT_PAD = 1.2;
 export const SLOT_TEXT_MAX = 7;
 const ELLIPSIS = '…';
 
+// V5-M5 (client request 2026-10-22): a box can fix the text size of all its
+// slots instead of Auto. One size in drawing units, 1.5-20, at most one
+// decimal; null/absent means Auto. A fixed size overrides SLOT_TEXT_MAX and
+// the toolbar Text scale for that box only, and the store (server/records.js)
+// rejects everything outside this range.
+/** The smallest storable fixed slot text size. */
+export const SLOT_FONT_MIN = 1.5;
+/** The largest storable fixed slot text size. */
+export const SLOT_FONT_MAX = 20;
+/** The A- / A+ step in the Text size controls (drawing units). */
+export const SLOT_FONT_STEP = 0.5;
+
+/**
+ * A box `fontSize` as stored (V5-M5): a finite number inside
+ * SLOT_FONT_MIN…SLOT_FONT_MAX is kept with at most one decimal; everything
+ * else (including absent and junk) becomes null = Auto.
+ * @param {*} value
+ * @returns {number|null}
+ */
+export function boxFontSize(value) {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < SLOT_FONT_MIN ||
+    value > SLOT_FONT_MAX
+  ) {
+    return null;
+  }
+  return Math.round(value * 10) / 10;
+}
+
 /** The longest word of `text` (split on whitespace); 0 for empty text. */
 function longestWord(text) {
   let longest = 0;
@@ -311,6 +342,47 @@ function fitSlotAuto(input, padW, padH, floor) {
 }
 
 /**
+ * The FIXED-size layout of one slot (V5-M5): every row uses exactly `size`
+ * (never shrunk, even above SLOT_TEXT_MAX), rows wrap on whole words to the
+ * slot width (wrapWords hard-slices only a word wider than a whole row, so
+ * nothing is silently lost), rows past the bottom are dropped and the last
+ * kept row ends with an ellipsis — but input line 0 (the code) always keeps
+ * its first row, even in a slot too small for one row.
+ * @param {Array<string>} input non-empty trimmed lines, code first
+ * @param {number} padW slot width minus padding (> 0)
+ * @param {number} padH slot height minus padding (> 0)
+ * @param {number} size the fixed font size (> 0)
+ * @returns {{lines: Array<Array<string>>, fontSize: number}}
+ */
+function fitSlotFixed(input, padW, padH, size) {
+  const maxChars = Math.max(1, Math.floor(padW / (size * FIT_CHAR_WIDTH)));
+  const wrapped = input.map((text) => wrapWords(text, maxChars));
+  const maxRows = Math.max(1, Math.floor(padH / (size * FIT_LINE_HEIGHT) + 1e-9));
+  const out = input.map(() => []);
+  let dropped = false;
+  let left = maxRows;
+  for (const [index, rows] of wrapped.entries()) {
+    // The code (input line 0) always keeps its first row (V5-M5).
+    const keep = index === 0 ? Math.max(left, 1) : left;
+    out[index] = rows.slice(0, Math.max(0, keep));
+    left -= out[index].length;
+    dropped = dropped || out[index].length < rows.length;
+  }
+  if (dropped) {
+    for (let index = out.length - 1; index >= 0; index -= 1) {
+      if (out[index].length > 0) {
+        out[index] = [
+          ...out[index].slice(0, -1),
+          `${out[index][out[index].length - 1].replace(/…$/, '')}${ELLIPSIS}`,
+        ];
+        break;
+      }
+    }
+  }
+  return { lines: out, fontSize: Math.round(size * 10) / 10 };
+}
+
+/**
  * The text layout of ONE station slot (V5-M4): `lines` are the slot's text
  * lines, lines[0] the station code (always kept) and lines[1] the person line
  * "<employee ID> <staff name>" built by personLine(); every returned row uses
@@ -323,15 +395,19 @@ function fitSlotAuto(input, padW, padH, floor) {
  * ellipsis, and lines[0] (the code) is always kept — when not even its first
  * row would fit, the whole slot falls back to its Auto layout.
  *
+ * fixedSize (V5-M5), when a finite number > 0, is the box's explicit choice:
+ * exactly that size for every row (see fitSlotFixed) — it overrides the Auto
+ * fit, the SLOT_TEXT_MAX cap and `scale` for this slot.
+ *
  * @param {Array<string|null>} lines the slot's text lines, code first
  * @param {number} w slot width in drawing units (padding FIT_SLOT_PAD inside)
  * @param {number} h slot height in drawing units (padding FIT_SLOT_PAD inside)
- * @param {{floor?: number, scale?: number}} [options] floor defaults to 1.5,
- *   scale to 1 (Auto)
+ * @param {{floor?: number, scale?: number, fixedSize?: number|null}} [options] floor defaults to 1.5,
+ *   scale to 1 (Auto), fixedSize to null
  * @returns {{lines: Array<Array<string>>, fontSize: number}} fontSize 0 when
  *   there is no text or no room
  */
-export function fitSlotText(lines, w, h, { floor = FIT_FLOOR, scale = 1 } = {}) {
+export function fitSlotText(lines, w, h, { floor = FIT_FLOOR, scale = 1, fixedSize = null } = {}) {
   const input = (Array.isArray(lines) ? lines : [])
     .map((line) => String(line ?? '').trim())
     .filter((line) => line !== '');
@@ -339,6 +415,11 @@ export function fitSlotText(lines, w, h, { floor = FIT_FLOOR, scale = 1 } = {}) 
   const padH = Number(h) - FIT_SLOT_PAD * 2;
   if (input.length === 0 || !(padW > 0) || !(padH > 0)) {
     return { lines: [], fontSize: 0 };
+  }
+  // A box's fixed size (V5-M5): never shrunk, never scaled, Auto untouched.
+  const fixed = Number(fixedSize);
+  if (Number.isFinite(fixed) && fixed > 0) {
+    return fitSlotFixed(input, padW, padH, fixed);
   }
   const minFloor = Number.isFinite(floor) && floor > 0 ? floor : FIT_FLOOR;
   const auto = fitSlotAuto(input, padW, padH, minFloor);
@@ -701,7 +782,7 @@ export function createShapeFromRect(kind, rect, existingIds = []) {
     h: Math.max(SHAPE_MIN_SIZE, clampMapNumber(rect && rect.h)),
   };
   if (kind === 'box') {
-    return { id: newBoxId(existingIds), ...clean, slots: BOX_SLOTS_MIN, fill: null, label: '' };
+    return { id: newBoxId(existingIds), ...clean, slots: BOX_SLOTS_MIN, fill: null, label: '', fontSize: null };
   }
   if (kind === 'corridor') return { ...clean };
   if (kind === 'fill') return { ...clean, color: '#e5e7ec' };
@@ -714,9 +795,10 @@ const SAVE_HEX_RE = /^#[0-9a-f]{6}$/i;
  * The validation pass before Save map (SPEC-v5.md 3 + 1.1): every number
  * rounded to two decimals and inside −10000…20000, box w/h ≥ 2, slots an
  * integer 1–12, colours `#rrggbb` or null, ids/labels trimmed to their
- * limits — and exactly the six stored fields, so nothing the canvas uses
- * internally can ride along. Pure; the record shape it returns is the one
- * sync.sendRecord will put.
+ * limits, a box `fontSize` null or 1.5–20 with one decimal (V5-M5) — and
+ * exactly the stored box fields, so nothing the canvas uses internally can
+ * ride along. Pure; the record shape it returns is the one sync.sendRecord
+ * will put.
  * @param {object} map the working copy
  * @returns {{name: string, width: number, height: number, boxes: Array, corridors: Array, fills: Array}}
  */
@@ -747,6 +829,7 @@ export function sanitizeMapForSave(map) {
       ),
       fill: hex(box.fill),
       label: String(box.label ?? '').slice(0, 60),
+      fontSize: boxFontSize(box.fontSize),
     })),
     corridors: list(source.corridors).map((corridor) => ({
       x: num(corridor.x),

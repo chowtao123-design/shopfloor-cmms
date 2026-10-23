@@ -16,6 +16,7 @@
 
 import {
   BOX_SLOTS_MAX,
+  boxFontSize,
   clampMapNumber,
   createShapeFromRect,
   defaultShapeRect,
@@ -38,6 +39,10 @@ import {
   sanitizeMapForSave,
   searchStations,
   SHAPE_MIN_SIZE,
+  SLOT_FONT_MAX,
+  SLOT_FONT_MIN,
+  SLOT_FONT_STEP,
+  SLOT_TEXT_MAX,
   slotRects,
   snap,
   RESIZE_HANDLES,
@@ -332,22 +337,34 @@ function viewBoxString(view) {
  * picks the largest at which all wrapped rows fit inside the slot
  * (padding FIT_SLOT_PAD, words never split); the Text control multiplies
  * that Auto size for the whole slot, dropping rows that no longer fit (an
- * ellipsis ends the last kept one; the code row always survives). The person
- * rows carry the fm-name class; Show names off hides them via one class on
- * the svg.
+ * ellipsis ends the last kept one; the code row always survives). With
+ * fixedSize (V5-M5) — the box's fontSize — every row uses exactly that size
+ * instead, overriding the Auto fit and the Text scale for this slot; the
+ * person rows carry the fm-name class; Show names off hides them via one
+ * class on the svg.
  * @param {{x: number, y: number, w: number, h: number}} rect the slot
  * @param {{code?: string|null, name?: string|null, empId?: string|null}} station
  * @param {boolean} [showNames] person line in (default: the module's toggle)
  * @param {number} [scale] text scale multiplier (default: the module's)
+ * @param {number|null} [fixedSize] the box's fixed size (default: none)
  * @returns {Array<SVGElement>}
  */
-function slotTextNodes(rect, station, showNames = mapView.names, scale = mapView.textScale) {
+function slotTextNodes(
+  rect,
+  station,
+  showNames = mapView.names,
+  scale = mapView.textScale,
+  fixedSize = null,
+) {
   const defs = [
     { text: String((station && station.code) ?? '').trim(), className: 'fm-code' },
     { text: showNames ? personLine(station) : '', className: 'fm-name' },
   ].filter((entry) => entry.text !== '');
   if (defs.length === 0) return [];
-  const fit = fitSlotText(defs.map((entry) => entry.text), rect.w, rect.h, { scale });
+  const cleanFixed =
+    typeof fixedSize === 'number' && Number.isFinite(fixedSize) && fixedSize > 0 ? fixedSize : null;
+  // V5-M5: cleanFixed (the box's fontSize) overrides the Auto fit and scale.
+  const fit = fitSlotText(defs.map((entry) => entry.text), rect.w, rect.h, { scale, fixedSize: cleanFixed });
   const size = fit.fontSize;
   if (!size) return [];
   const nodes = [];
@@ -548,7 +565,7 @@ export function renderMapPage(ctx, route) {
     for (const rect of slotRects(box)) {
       const station = taken.get(rect.slot);
       if (station) {
-        const node = stationNode(ctx, station, rect, liveFor(station), machines);
+        const node = stationNode(ctx, station, rect, liveFor(station), machines, box);
         slotNodes.push({ station, node });
         layers.append(node);
       } else {
@@ -1287,8 +1304,12 @@ function emptyMapPage(ctx) {
   );
 }
 
-/** One station's slot group: slot rect, code/name lines, badge, PM dot. */
-function stationNode(ctx, station, rect, live, machines) {
+/**
+ * One station's slot group: slot rect, code/name lines, badge, PM dot. `box`
+ * is the station's map box: its fontSize (V5-M5) fixes every row's size for
+ * this slot, Auto boxes stay Auto.
+ */
+function stationNode(ctx, station, rect, live, machines, box = null) {
   const down = live.down === true;
   const group = svgEl('g', {
     class: down ? 'fm-station fm-station-down' : 'fm-station',
@@ -1308,7 +1329,8 @@ function stationNode(ctx, station, rect, live, machines) {
       'stroke-width': down ? '1.1' : '0.6',
     }),
   );
-  for (const text of slotTextNodes(rect, station)) {
+  const fixed = box === null ? null : boxFontSize(box.fontSize);
+  for (const text of slotTextNodes(rect, station, mapView.names, mapView.textScale, fixed)) {
     group.append(text);
   }
   if (live.openOrders > 0) {
@@ -1410,6 +1432,132 @@ let stationSheet = null; // {root, backdrop, previousFocus, ctx}
 
 function stationById(ctx, id) {
   return (ctx.state.floorStations || []).find((entry) => entry && entry.id === id) || null;
+}
+
+// --- Text size of a box (V5-M5, client request 2026-10-22) ------------------
+//
+// Every slot of one box shares ONE text size: Auto (null), each slot fitting
+// itself exactly as before, or a fixed size in drawing units the writer
+// picks from the station pull-out panel and the map editor's selection panel.
+
+/**
+ * The size a station's slot currently renders at when its box is Auto
+ * (V5-M5): the step base for A- / A+. It is the size actually drawn behind
+ * the panel — the Auto fit of that slot's own text, names and Text scale
+ * included, rounded to SLOT_FONT_STEP halves. Nothing measurable (no box, no
+ * text, no rect) steps from the Auto cap SLOT_TEXT_MAX instead.
+ * @param {object|null} box the station's map box
+ * @param {object} station the station holding that slot
+ * @returns {number}
+ */
+function autoSlotFontSize(box, station) {
+  if (box === null || typeof box !== 'object') return SLOT_TEXT_MAX;
+  const slot = Math.max(0, Math.min(BOX_SLOTS_MAX - 1, Number(station && station.slot) || 0));
+  const rect = slotRects(box).find((entry) => entry.slot === slot) || slotRects(box)[0] || null;
+  if (!rect) return SLOT_TEXT_MAX;
+  const defs = [
+    String((station && station.code) ?? '').trim(),
+    mapView.names ? personLine(station) : '',
+  ].filter((text) => text !== '');
+  if (defs.length === 0) return SLOT_TEXT_MAX;
+  const fit = fitSlotText(defs, rect.w, rect.h, { scale: mapView.textScale });
+  return fit.fontSize > 0 ? fit.fontSize : SLOT_TEXT_MAX;
+}
+
+/** `value` rounded to the A- / A+ half steps. */
+const halfStep = (value) => Math.round(value / SLOT_FONT_STEP) * SLOT_FONT_STEP;
+
+/**
+ * The Text size control (V5-M5): A− / value / A+ and Auto for one box (the
+ * station panel) or several boxes (the editor's selection). The value shows
+ * 'Auto' (no box fixed), the number (all boxes agree) or 'Mixed'. A− / A+
+ * step every box by SLOT_FONT_STEP from its own current size — from its
+ * rounded Auto size (stepBaseOf) when it was Auto — and `apply(next)` is
+ * called with one {box, value} entry per box (null = Auto); the caller makes
+ * it true (immediate floorMaps save in the panel, editMutation in the
+ * editor) and re-renders. Built once; `update()` repaints it after a save.
+ * @param {object} ctx the render context (h, field)
+ * @param {{getBoxes: Function, stepBaseOf: Function, apply: Function}} wiring
+ *   getBoxes() -> the live box objects; stepBaseOf(box) -> its Auto base;
+ *   apply(next) applies [{box, value}] (may throw; the builder repaints only
+ *   when it resolves)
+ * @returns {{root: HTMLDivElement, update: Function}}
+ */
+function boxTextSizeControl(ctx, { getBoxes, stepBaseOf, apply }) {
+  const { h } = ctx;
+  const valueLabel = h(
+    'span',
+    { class: 'btn btn-small fm-textsize-value', 'aria-live': 'polite', 'aria-label': 'Text size' },
+    '',
+  );
+  const smaller = h('button', { class: 'btn btn-small', type: 'button', 'aria-label': 'Smaller text' }, 'A−');
+  const bigger = h('button', { class: 'btn btn-small', type: 'button', 'aria-label': 'Larger text' }, 'A+');
+  const auto = h('button', { class: 'btn btn-small', type: 'button' }, 'Auto');
+  const current = () => {
+    const boxes = [];
+    for (const box of (Array.isArray(getBoxes()) ? getBoxes() : [])) {
+      if (box && typeof box === 'object') boxes.push(box);
+    }
+    return { boxes, values: boxes.map((box) => boxFontSize(box.fontSize)) };
+  };
+  const stepTarget = (box, value, delta) => {
+    const base = value == null ? halfStep(stepBaseOf(box)) : value;
+    return Math.min(SLOT_FONT_MAX, Math.max(SLOT_FONT_MIN, base + delta));
+  };
+  const run = async (next) => {
+    try {
+      await apply(next);
+    } catch (error) {
+      // The caller's apply reports its own failure; the store kept the old
+      // size, so only repaint.
+      console.error(error);
+    }
+    update();
+  };
+  smaller.addEventListener('click', () => {
+    const { boxes, values } = current();
+    run(boxes.map((box, index) => ({ box, value: stepTarget(box, values[index], -SLOT_FONT_STEP) })));
+  });
+  bigger.addEventListener('click', () => {
+    const { boxes, values } = current();
+    run(boxes.map((box, index) => ({ box, value: stepTarget(box, values[index], SLOT_FONT_STEP) })));
+  });
+  auto.addEventListener('click', () => {
+    const { boxes } = current();
+    run(boxes.map((box) => ({ box, value: null })));
+  });
+
+  /** Repaint the value and the button states from the live boxes. */
+  function update() {
+    const { boxes, values } = current();
+    const fixed = values.filter((value) => value != null);
+    valueLabel.textContent =
+      fixed.length === 0
+        ? 'Auto'
+        : fixed.every((value) => value === fixed[0])
+          ? String(fixed[0])
+          : 'Mixed';
+    const moves = (delta) =>
+      boxes.some((box, index) => {
+        const target = stepTarget(box, values[index], delta);
+        return target !== values[index];
+      });
+    // Auto always starts a step (a fixed size appears); fixed sizes sit at
+    // the clamp bound when they cannot move further.
+    smaller.disabled = !moves(-SLOT_FONT_STEP);
+    bigger.disabled = !moves(SLOT_FONT_STEP);
+    auto.disabled = fixed.length === 0;
+  }
+  update();
+  const root = h(
+    'div',
+    { class: 'fm-zoom fm-textsize', role: 'group', 'aria-label': 'Text size' },
+    smaller,
+    valueLabel,
+    bigger,
+    auto,
+  );
+  return { root, update };
 }
 
 function closeStationSheet({ refocus = false } = {}) {
@@ -1683,6 +1831,75 @@ function stationPanelBody(ctx, station) {
     }
   });
   fieldsHost.append(ctx.field('Remark', remarkInput));
+
+  // --- text size of this station's box (V5-M5) ------------------------------
+  // All slots of the box share one size. Writers set it here; each change
+  // saves the whole floorMaps record at once and re-renders the map behind
+  // the open panel. Read-only roles see the value without buttons.
+  const mapOfStation = () =>
+    (ctx.state.floorMaps || []).find((entry) => entry && entry.id === current.mapId) || null;
+  let mapLive = mapOfStation();
+  const boxLive = () => {
+    mapLive = mapOfStation() || mapLive;
+    if (!mapLive || !current.boxId) return null;
+    return (mapLive.boxes || []).find((box) => box && box.id === current.boxId) || null;
+  };
+  const panelBox = boxLive();
+  const boxSlots = (box) =>
+    Math.max(
+      1,
+      Math.min(BOX_SLOTS_MAX, Number.isInteger(box && box.slots) ? box.slots : 1),
+    );
+  const boxHint = (slots) =>
+    slots > 1 ? `All ${slots} slots in this box share this text size.` : null;
+  if (panelBox !== null && canWrite) {
+    const control = boxTextSizeControl(ctx, {
+      getBoxes: () => [boxLive()],
+      stepBaseOf: (box) => autoSlotFontSize(box, current),
+      apply: async (next) => {
+        const map = mapLive;
+        const box = boxLive();
+        if (!map || !box) return; // the box went off-map; nothing to size
+        const byId = new Map(next.map((item) => [item.box ? item.box.id : null, item.value]));
+        const data = {
+          name: map.name,
+          width: map.width,
+          height: map.height,
+          boxes: (map.boxes || []).map((entry) =>
+            entry && byId.has(entry.id) ? { ...entry, fontSize: byId.get(entry.id) } : entry,
+          ),
+          corridors: map.corridors || [],
+          fills: map.fills || [],
+          id: map.id,
+          updatedAt: ctx.nowISO(),
+        };
+        try {
+          await sync.saveRecord('floorMaps', data, map.version);
+          await ctx.refreshState();
+          mapLive = mapOfStation() || mapLive;
+          ctx.toast('Text size saved.');
+        } catch (error) {
+          console.error(error);
+          await ctx.refreshState();
+          mapLive = mapOfStation() || mapLive;
+          ctx.toast('Could not save the text size. Please try again.', 'warn');
+          return;
+        }
+        // The map re-renders behind the panel (the panel itself stays open).
+        ctx.render();
+      },
+    });
+    fieldsHost.append(ctx.field('Text size', control.root, boxHint(boxSlots(panelBox))));
+  } else if (panelBox !== null) {
+    const fixed = boxFontSize(panelBox.fontSize);
+    fieldsHost.append(
+      ctx.field(
+        'Text size',
+        h('span', { class: 'btn btn-small fm-textsize-value' }, fixed == null ? 'Auto' : String(fixed)),
+        boxHint(boxSlots(panelBox)),
+      ),
+    );
+  }
 
   // --- machine link --------------------------------------------------------
   const machineHost = h('div', { class: 'fm-panel-machine' });
@@ -2403,10 +2620,11 @@ function renderMapEditor(ctx, mapRecord) {
     );
     entry.label.setAttribute('font-size', round2(labelFit.fontSize));
     const texts = [];
+    const fixed = boxFontSize(obj.fontSize);
     for (const slot of slotRects(obj)) {
       const station = entry.occupants.get(slot.slot);
       if (station && slot.slot < count) {
-        texts.push(...slotTextNodes(slot, station, mapView.names));
+        texts.push(...slotTextNodes(slot, station, mapView.names, mapView.textScale, fixed));
       }
     }
     entry.dim.replaceChildren(...texts);
@@ -2556,6 +2774,30 @@ function renderMapEditor(ctx, mapRecord) {
     return 'Floor patch';
   }
 
+  /**
+   * The Text size control for selected boxes (V5-M5): the same row as the
+   * station panel's, but the change lands on the working COPY through
+   * editMutation — so it joins the undo stack and the normal Save map, and
+   * one step applies to every selected box at once.
+   */
+  const editFontSizeControl = (boxes) =>
+    boxTextSizeControl(ctx, {
+      getBoxes: () => boxes,
+      stepBaseOf: (box) => {
+        // The Auto base of the box: its top slot's station, the same size the
+        // canvas draws behind the panel.
+        const occupants = occupantsByBox.get(box.id);
+        return autoSlotFontSize(box, (occupants && occupants.get(0)) || null);
+      },
+      apply: (next) => {
+        editMutation(() => {
+          for (const { box, value } of next) {
+            if (box && typeof box === 'object') box.fontSize = value;
+          }
+        });
+      },
+    });
+
   function buildPanelNodes() {
     for (const key of ['x', 'y', 'w', 'h']) panelInputs[key] = null;
     const sel = resolveEditSelection();
@@ -2584,15 +2826,28 @@ function renderMapEditor(ctx, mapRecord) {
       ),
     );
     if (sel.length > 1) {
-      return [
+      const boxes = sel.filter((ref) => ref.kind === 'box').map((ref) => ref.obj);
+      const multi = [
         h('h4', { class: 'fm-panel-subhead' }, `${sel.length} shapes selected`),
         actions,
+      ];
+      if (boxes.length > 0) {
+        multi.push(
+          ctx.field(
+            'Text size',
+            editFontSizeControl(boxes).root,
+            boxes.length > 1 ? 'Applies to every selected box.' : null,
+          ),
+        );
+      }
+      multi.push(
         h(
           'p',
           { class: 'field-hint' },
           'Select a single shape to edit its numbers, colour and label.',
         ),
-      ];
+      );
+      return multi;
     }
     const { kind, obj } = sel[0];
     const nodes = [h('h4', { class: 'fm-panel-subhead' }, kindTitle(kind, obj))];
@@ -2667,6 +2922,22 @@ function renderMapEditor(ctx, mapRecord) {
         });
       });
       nodes.push(ctx.field('Label', labelInput));
+
+      // Text size (V5-M5): one size for every slot of this box; Auto keeps
+      // each slot fitting itself. Part of the undo stack and Save map.
+      const boxSlotsCount = Math.min(
+        BOX_SLOTS_MAX,
+        Math.max(1, Number.isInteger(obj.slots) ? obj.slots : 1),
+      );
+      nodes.push(
+        ctx.field(
+          'Text size',
+          editFontSizeControl([obj]).root,
+          boxSlotsCount > 1
+            ? `All ${boxSlotsCount} slots in this box share this text size.`
+            : 'Saved with Save map.',
+        ),
+      );
     } else if (kind === 'fill') {
       const colorSelect = h(
         'select',

@@ -131,10 +131,16 @@ test('personLine: ID first, then the name — "123 Doe, Jo Jo"', () => {
 test('map.js: slot text is laid out by fitSlotText in the view AND the editor', () => {
   const src = read('map.js');
   assert.match(src, /from '\.\/logic-map\.js'/);
-  assert.match(src, /fitSlotText\(defs\.map\(\(entry\) => entry\.text\), rect\.w, rect\.h, \{ scale \}\)/);
-  // Both render paths build their rows through slotTextNodes with the station.
-  assert.match(src, /slotTextNodes\(rect, station\)/);
-  assert.match(src, /slotTextNodes\(slot, station, mapView\.names\)/);
+  // V5-M5 added fixedSize (the box's fontSize) to the same single call.
+  assert.match(
+    src,
+    /fitSlotText\(defs\.map\(\(entry\) => entry\.text\), rect\.w, rect\.h, \{ scale, fixedSize: cleanFixed \}\)/,
+  );
+  // Both render paths build their rows through slotTextNodes with the station
+  // and the box's fixed size (V5-M5): the view via stationNode, the editor
+  // via syncEntry.
+  assert.match(src, /slotTextNodes\(rect, station, mapView\.names, mapView\.textScale, fixed\)/);
+  assert.match(src, /slotTextNodes\(slot, station, mapView\.names, mapView\.textScale, fixed\)/);
   // The person line comes from the pure helper (never string-built ad hoc).
   assert.match(src, /text: showNames \? personLine\(station\) : ''/);
   // Toggling Show names re-renders: the person line changes the shared size.

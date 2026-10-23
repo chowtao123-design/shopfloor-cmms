@@ -178,6 +178,12 @@ export function openApiSpec(version = '2.0.0') {
             },
             fill: { type: ['string', 'null'], description: '#rrggbb or null.' },
             label: { type: 'string', maxLength: 60, default: '' },
+            fontSize: {
+              type: ['number', 'null'],
+              minimum: 1.5,
+              maximum: 20,
+              description: 'Text size for every slot in the box (drawing units), or null for Auto.',
+            },
           },
           required: ['id', 'x', 'y', 'w', 'h'],
         },

@@ -324,6 +324,7 @@ test('floorMaps: a good record validates, with the spec defaults', () => {
     slots: 4,
     fill: '#ffffff',
     label: 'SP row',
+    fontSize: null,
   });
   assert.deepEqual(data.boxes[1], {
     id: 'b-2',
@@ -334,7 +335,8 @@ test('floorMaps: a good record validates, with the spec defaults', () => {
     slots: 1,
     fill: null,
     label: '',
-  }, 'slots defaults to 1, fill to null, label to empty');
+    fontSize: null,
+  }, 'slots defaults to 1, fill to null, label to empty, fontSize to Auto (V5-M5)');
   assert.deepEqual(data.corridors, [{ x: 10, y: 100, w: 1170, h: 60 }]);
   assert.deepEqual(data.fills, [{ x: 500, y: 20, w: 100, h: 50, color: '#d9d9d9' }]);
 
@@ -952,10 +954,10 @@ test('import-floor-map: geometry and roster import, lines ignored, extras droppe
       assert.deepEqual(
         map.data.boxes,
         [
-          { id: 'b-sp', x: 40.5, y: 200, w: 90, h: 56, slots: 2, fill: '#ffffff', label: '' },
-          { id: 'b-pac', x: 200, y: 200, w: 45.25, h: 28, slots: 1, fill: null, label: '' },
+          { id: 'b-sp', x: 40.5, y: 200, w: 90, h: 56, slots: 2, fill: '#ffffff', label: '', fontSize: null },
+          { id: 'b-pac', x: 200, y: 200, w: 45.25, h: 28, slots: 1, fill: null, label: '', fontSize: null },
         ],
-        'slots come from box.slots.length; lines never reach the record',
+        'slots come from box.slots.length; lines never reach the record; boxes stay Auto unless set',
       );
       assert.deepEqual(map.data.corridors, [{ x: 10, y: 100, w: 1170.55, h: 60.25 }]);
       assert.deepEqual(map.data.fills, [{ x: 500, y: 20, w: 100, h: 50, color: '#d9d9d9' }]);

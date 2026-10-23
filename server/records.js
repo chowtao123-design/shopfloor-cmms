@@ -109,7 +109,7 @@ const METHOD_ONLY_KEYS = ['symptom', 'cause', 'steps', 'toolsParts', 'safety'];
 // PDF points); colours are #rrggbb.
 const MAP_NUMBER_MIN = -10000;
 const MAP_NUMBER_MAX = 20000;
-const MAP_BOX_KEYS = ['id', 'x', 'y', 'w', 'h', 'slots', 'fill', 'label'];
+const MAP_BOX_KEYS = ['id', 'x', 'y', 'w', 'h', 'slots', 'fill', 'label', 'fontSize'];
 const MAP_RECT_KEYS = ['x', 'y', 'w', 'h'];
 const MAP_FILL_KEYS = ['x', 'y', 'w', 'h', 'color'];
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
@@ -399,6 +399,24 @@ function expectHexColor(store, where, value) {
   return value.toLowerCase();
 }
 
+/**
+ * A box's text size (V5-M5): null for Auto, or a number 1.5–20 in drawing
+ * units with at most one decimal. Anything else is rejected with one clear
+ * message so a bad button value never wipes the whole map record.
+ */
+function expectBoxFontSize(store, where, value) {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < 1.5 ||
+    value > 20 ||
+    Math.abs(value * 10 - Math.round(value * 10)) > 1e-6
+  ) {
+    throw bad(`${store}.${where}.fontSize must be a number 1.5-20 with at most one decimal, or null`);
+  }
+  return value;
+}
+
 /** The x/y/w/h values of a rect item; the size rules are the caller's. */
 function mapRectValues(store, where, item) {
   return {
@@ -418,7 +436,8 @@ function expectMapRect(store, where, item) {
 /**
  * Boxes hold `slots` stations stacked top to bottom in equal parts: at most
  * 1500 per map, unknown fields rejected, `slots` an integer 1-12 (default 1),
- * `fill` #rrggbb or null, `label` at most 60 characters.
+ * `fill` #rrggbb or null, `label` at most 60 characters, `fontSize` null
+ * (Auto) or 1.5-20 with one decimal (V5-M5).
  */
 function expectMapBoxes(store, key, value) {
   if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of boxes`);
@@ -444,6 +463,10 @@ function expectMapBoxes(store, key, value) {
         item.label === undefined
           ? ''
           : expectString(store, `${where}.label`, item.label, { maxLength: 60 }),
+      fontSize:
+        item.fontSize === undefined || item.fontSize === null
+          ? null
+          : expectBoxFontSize(store, where, item.fontSize),
     };
   });
 }
