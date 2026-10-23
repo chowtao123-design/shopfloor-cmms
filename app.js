@@ -5311,7 +5311,7 @@ function requestTotalsNode(stream) {
         ? h(
             'div',
             { class: 'req-total-note muted' },
-            `${totals.unpricedCount} line${totals.unpricedCount === 1 ? '' : 's'} have no price`,
+            `${totals.unpricedCount} ${totals.unpricedCount === 1 ? 'line has' : 'lines have'} no price`,
           )
         : null,
     );
@@ -5918,7 +5918,7 @@ function renderRequestSheetPage(route) {
       { class: 'pr-sheet-meta' },
       metaRow('Title:', request.title),
       metaRow('Requested by:', request.requestedBy),
-      metaRow('Date:', request.createdAt ? formatDate(String(request.createdAt).slice(0, 10)) : ''),
+      metaRow('Date:', request.createdAt ? formatDate(localDateOf(request.createdAt)) : ''),
       metaRow('Needed by:', request.neededBy ? formatDate(request.neededBy) : ''),
       metaRow('Supplier:', request.supplier),
     ),
