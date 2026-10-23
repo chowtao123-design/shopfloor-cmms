@@ -414,8 +414,9 @@ function activeMap(maps, route) {
 export function renderMapPage(ctx, route) {
   const { h } = ctx;
   ctx.setTitle('Floor map');
-  // V5-M4: this render decides whether the map view (and its Ctrl+P hook) is
-  // on screen at all; the view restarts the hook once its svg exists.
+  // V5-M4b: this render decides whether the map view (and its print-only
+  // copy) is on screen; once the svg exists the view rebuilds both, and this
+  // also removes the last render's @page <style> from <head>.
   stopMapPrint();
   const maps = (ctx.state.floorMaps || [])
     .slice()
@@ -1050,16 +1051,20 @@ export function renderMapPage(ctx, route) {
   applyHighlight();
   attachMiddlePan(svg, applyView, (view) => clampViewBox(view, map.width, map.height));
 
-  // V5-M4: the print hook follows the shown page (Ctrl+P works too).
-  startPrintHook(svg, map);
-  const svgWrap = h('div', { class: 'fm-svg-wrap fm-print-area' }, svg);
+  // V5-M4b: the print-only copy of this svg and the @page <style> for it are
+  // part of the rendered view — rebuilt whenever it re-renders (data, names,
+  // text size), never on zoom/pan. Ctrl+P while the map page is shown prints
+  // the same whole layout.
+  const printOnly = buildPrintCopy(svg, map);
+  setPrintPageStyle(map);
+  const svgWrap = h('div', { class: 'fm-svg-wrap' }, svg, printOnly);
   const printButton = h(
     'button',
     {
       class: 'btn btn-small',
       type: 'button',
       title: 'The whole layout auto-fitted on one Letter page (6 mm margin, no header text). Choose “Save as PDF” as the printer for a PDF',
-      onclick: () => printMap(svg, map),
+      onclick: () => window.print(),
     },
     'Print / PDF',
   );
@@ -1163,70 +1168,95 @@ function attachMiddlePan(svg, applyView, clamp) {
   svg.addEventListener('pointercancel', end);
 }
 
-// --- Print / PDF (V5-M4, client feedback 2026-10-22) -------------------------
+// --- Print / PDF (V5-M4b, PM browser check of V5-M4) -----------------------
 //
-// Exactly the client's original tool: the WHOLE layout auto-fitted on one
-// Letter page (portrait or landscape, whichever suits the drawing), a 6 mm
-// margin, no header text, and none of the current zoom or pan. It runs from
-// window beforeprint/afterprint listeners registered while the map view is
-// shown, so Ctrl+P works too — stopMapPrint() removes them when the page is
-// left (route change) or another render takes over.
+// Still exactly the client's original tool: the WHOLE layout auto-fitted on
+// one Letter page (portrait or landscape, whichever suits the drawing), a
+// 6 mm margin, no header text, and none of the current zoom or pan. Chrome
+// fires 'afterprint' BEFORE it renders the PDF (Page.printToPDF does, and the
+// print preview may too), so M4's beforeprint/afterprint switch was undone
+// before the picture was taken — the PDF showed the zoomed map AND the app
+// page. Printing is now independent of those events: whenever the map view
+// renders, it puts a print-only COPY of the svg in the page (hidden on
+// screen) and a <style id="fm-page-style"> with the @page setup in <head>;
+// zoom and pan never rebuild it. The Print / PDF button just calls
+// window.print() — the print CSS in styles.css shows only the copy.
 
-let printHook = null; // {svg, map, beforeprint, afterprint, style, savedViewBox}
+/** Id of the @page <style> the map view keeps in <head> while it is shown. */
+const PRINT_STYLE_ID = 'fm-page-style';
 
-function endPrintSession() {
-  if (!printHook || !printHook.style) return;
-  printHook.style.remove();
-  printHook.style = null;
-  document.body.classList.remove('fm-printing');
-  if (printHook.savedViewBox) printHook.svg.setAttribute('viewBox', printHook.savedViewBox);
-  printHook.savedViewBox = null;
+/** Screen-only state on the svg, stripped from the print copy. */
+const PRINT_STRIP_CLASSES = [
+  'fm-hit', // search highlight
+  'fm-dim', // chip-filter dimming
+  'fm-selected', // the ?station= highlight
+  'fm-slot-pick', // the "Place on map" picking affordance
+  'fm-slot-add', // the "+ Add station" affordance
+  'fm-picking',
+  'fm-panning',
+];
+
+/** The drawing rectangle that goes on paper: the whole layout, never the
+ *  screen zoom (and the empty paper margins of the imported plan stay off). */
+function printBounds(map) {
+  return drawingBounds(map) || fitViewBox(map);
 }
 
-/** Register the print listeners for this map view svg; replaces any old hook. */
-function startPrintHook(svg, map) {
+/**
+ * The print-only copy of the map svg, built when the view renders (never at
+ * print time): a deep clone that meet-fits the WHOLE layout
+ * (viewBox printBounds), with the screen-only marks stripped — search and
+ * selection highlights, chip dimming, the "+ Add station" text and its
+ * affordances, and any id that would duplicate — so the paper shows the plan
+ * itself. On screen the holder is display: none (styles.css); printing shows
+ * only it. The clone carries no listeners (cloneNode never copies them).
+ * @param {SVGElement} svg the rendered map svg, highlights already applied
+ * @param {object} map the floorMaps record
+ * @returns {HTMLDivElement} div.fm-print-only wrapping the copy svg
+ */
+function buildPrintCopy(svg, map) {
+  const copy = svg.cloneNode(true);
+  for (const node of [copy, ...copy.querySelectorAll('*')]) {
+    node.classList.remove(...PRINT_STRIP_CLASSES);
+  }
+  for (const node of copy.querySelectorAll('.fm-slot-add-text')) node.remove();
+  for (const node of copy.querySelectorAll('[id]')) node.removeAttribute('id');
+  const bounds = printBounds(map);
+  copy.setAttribute('viewBox', viewBoxString(bounds));
+  copy.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  copy.setAttribute('class', 'fm-print-svg');
+  const holder = document.createElement('div');
+  holder.className = 'fm-print-only';
+  holder.append(copy);
+  return holder;
+}
+
+/**
+ * The paper setup for the print copy: Letter, portrait or landscape by the
+ * drawing's shape, a 6 mm margin. One <style> in <head>, written at render
+ * time like the copy itself; stopMapPrint() removes it (every render of this
+ * page, and app.js whenever the #/map tab is left).
+ * @param {object} map the floorMaps record
+ */
+function setPrintPageStyle(map) {
+  const bounds = printBounds(map);
+  // Exactly one @page <style> in <head>, whatever the last render left.
   stopMapPrint();
-  const hook = {
-    svg,
-    map,
-    style: null,
-    savedViewBox: null,
-    beforeprint() {
-      // A stale svg (the page re-rendered behind the dialog) prints nothing.
-      if (printHook !== hook || hook.style || !svg.isConnected) return;
-      const bounds = drawingBounds(map) || fitViewBox(map);
-      hook.savedViewBox = svg.getAttribute('viewBox');
-      svg.setAttribute('viewBox', viewBoxString(bounds));
-      // The whole layout on Letter paper, 6 mm margin, nothing else written.
-      const style = document.createElement('style');
-      style.textContent = `@page { size: letter ${bounds.w > bounds.h ? 'landscape' : 'portrait'}; margin: 6mm; }`;
-      document.head.append(style);
-      hook.style = style;
-      document.body.classList.add('fm-printing');
-    },
-    afterprint() {
-      if (printHook !== hook) return;
-      endPrintSession();
-    },
-  };
-  window.addEventListener('beforeprint', hook.beforeprint);
-  window.addEventListener('afterprint', hook.afterprint);
-  printHook = hook;
+  const style = document.createElement('style');
+  style.id = PRINT_STYLE_ID;
+  style.textContent = `@page { size: letter ${bounds.w > bounds.h ? 'landscape' : 'portrait'}; margin: 6mm; }`;
+  document.head.append(style);
 }
 
-/** Remove the print listeners (and undo any active print layout). */
+/**
+ * Cleanup for every render of this page and for app.js leaving the #/map tab:
+ * removes the @page <style> from <head> so other pages print with their own
+ * setup. The print copy itself lives inside the page DOM and is discarded
+ * with it (app.js replaceChildren's the whole page each render).
+ */
 export function stopMapPrint() {
-  if (!printHook) return;
-  window.removeEventListener('beforeprint', printHook.beforeprint);
-  window.removeEventListener('afterprint', printHook.afterprint);
-  endPrintSession();
-  printHook = null;
-}
-
-/** The Print / PDF button: the listeners do the layout, this just prints. */
-function printMap(svg, map) {
-  startPrintHook(svg, map);
-  window.print();
+  const style = document.getElementById(PRINT_STYLE_ID);
+  if (style) style.remove();
 }
 
 function legendItem(h, swatchClass, label, count) {

@@ -209,14 +209,26 @@ export function fitText(text, w, h) {
 //
 // Every line in a slot — the station code and the person line — shares ONE
 // font size, so codes are no longer much bigger than names. The size is the
-// largest at which all wrapped rows fit inside the slot with FIT_SLOT_PAD
-// breathing room, and words are never split while any size >= the floor fits
-// with whole words: only a single word wider than the slot at the floor size
-// may be hard-sliced (which is why fitSlotText("Ribbon cutting", 22.1, 28.3)
-// wraps to "Ribbon" / "cutting", never "Ribb" / "on c").
+// largest (capped at SLOT_TEXT_MAX, V5-M4b) at which all wrapped rows fit
+// inside the slot with FIT_SLOT_PAD breathing room, and words are never split
+// while any size >= the floor fits with whole words: only a single word wider
+// than the slot at the floor size may be hard-sliced (which is why
+// fitSlotText("Ribbon cutting", 22.1, 28.3) wraps to "Ribbon" / "cutting",
+// never "Ribb" / "on c").
 
 /** Padding kept around the text inside a slot, in drawing units. */
 export const FIT_SLOT_PAD = 1.2;
+
+/**
+ * The Auto (default-fit) slot text size never exceeds this, in drawing units
+ * (V5-M4b, PM browser check of V5-M4 2026-10-22): a code alone in a big cell
+ * would otherwise reach FIT_MAX_SIZE and tower over its neighbours ("SN 41"
+ * drawn ~12 units next to "End QC 1" at 7). With the cap every cell reads at a
+ * similar size; smaller cells still shrink to fit exactly as before. A Text
+ * control step multiplies the capped Auto size — an explicit choice may
+ * still go above it.
+ */
+export const SLOT_TEXT_MAX = 7;
 const ELLIPSIS = '…';
 
 /** The longest word of `text` (split on whitespace); 0 for empty text. */
@@ -258,19 +270,21 @@ function wrapFitWords(text, maxChars) {
 }
 
 /**
- * The Auto fit for one slot: the largest size (14 down, half steps above 4,
- * quarter steps below) at which EVERY input line wraps into whole words that
- * fit the width and all rows together fit the height. When no size >= floor
- * manages that, wrapWords hard-slices at the floor width and only the rows
- * that fit are kept (mirroring fitText), the first line (the code) first.
+ * The Auto fit for one slot: the largest size (SLOT_TEXT_MAX down, half steps
+ * above 4, quarter steps below) at which EVERY input line wraps into whole
+ * words that fit the width and all rows together fit the height. When no size
+ * >= floor manages that, wrapWords hard-slices at the floor width and only the
+ * rows that fit are kept (mirroring fitText), the first line (the code) first.
  * @param {Array<string>} input non-empty trimmed lines, code first
  * @param {number} padW slot width minus padding (> 0)
  * @param {number} padH slot height minus padding (> 0)
- * @param {number} floor the minimum font size
+ * @param {number} floor the minimum font size (capped at SLOT_TEXT_MAX)
  * @returns {{lines: Array<Array<string>>, fontSize: number}}
  */
 function fitSlotAuto(input, padW, padH, floor) {
-  let fontSize = FIT_MAX_SIZE;
+  // Auto never starts above the cap (V5-M4b): a lone code in a big cell must
+  // read at the same size as its neighbours, not fill the whole box.
+  let fontSize = Math.min(FIT_MAX_SIZE, SLOT_TEXT_MAX);
   while (fontSize >= floor - 1e-9) {
     const maxChars = Math.max(1, Math.floor(padW / (fontSize * FIT_CHAR_WIDTH)));
     if (input.every((text) => longestWord(text) <= maxChars)) {
@@ -283,7 +297,7 @@ function fitSlotAuto(input, padW, padH, floor) {
     fontSize -= fontSize > FIT_MIN_SIZE ? FIT_STEP : FIT_STEP / 2;
   }
   const maxChars = Math.max(1, Math.floor(padW / (floor * FIT_CHAR_WIDTH)));
-  const size = Math.min(floor, padH / FIT_LINE_HEIGHT);
+  const size = Math.min(floor, padH / FIT_LINE_HEIGHT, SLOT_TEXT_MAX);
   const maxRows = Math.max(1, Math.floor(padH / (size * FIT_LINE_HEIGHT) + 1e-9));
   const lines = input.map(() => []);
   let left = maxRows;
@@ -302,9 +316,9 @@ function fitSlotAuto(input, padW, padH, floor) {
  * "<employee ID> <staff name>" built by personLine(); every returned row uses
  * the SAME fontSize. `lines[i]` holds the wrapped rows of input line i.
  *
- * scale 1 (Auto, the default) picks the largest size at which all rows fit
- * with whole words (see fitSlotAuto). Other steps multiply the Auto size for
- * the whole slot: the lines re-wrap at the multiplied size, rows that no
+ * scale 1 (Auto, the default) picks the largest size — capped at
+ * SLOT_TEXT_MAX (V5-M4b) — at which all rows fit with whole words (see
+ * fitSlotAuto). Other steps multiply the Auto size for the whole slot: the lines re-wrap at the multiplied size, rows that no
  * longer fit are dropped from the bottom and the last kept row ends with an
  * ellipsis, and lines[0] (the code) is always kept — when not even its first
  * row would fit, the whole slot falls back to its Auto layout.

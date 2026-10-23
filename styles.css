@@ -5479,54 +5479,50 @@ body.logged-out .ai-chat-fab {
   }
 }
 
+/* ---------- Floor map print/PDF (V5-M4b): a print-only copy ----------
+   The map view keeps a hidden clone of the svg in the page (div.fm-print-only,
+   built by map.js whenever the view renders) and a #fm-page-style <style> with
+   the @page setup. While that copy exists in the page, printing shows ONLY it
+   — the whole layout fitted on one Letter page — never the app chrome or the
+   current zoom. No beforeprint/afterprint switching: Chrome runs afterprint
+   before it renders the PDF. */
+
+/* Off the screen; print-only (see the @media print block below). */
+.fm-print-only {
+  display: none;
+}
+
 @media print {
-  /* V5-M4: exactly the client's original tool — the whole layout auto-fitted
-     on one Letter page (portrait or landscape is picked by the injected
-     @page style in map.js), a 6 mm margin, no header text. */
-  body.fm-printing * {
+  /* With the copy in the page, everything else stays off the paper… */
+  body:has(.fm-print-only) * {
     visibility: hidden;
   }
 
-  body.fm-printing .fm-print-area,
-  body.fm-printing .fm-print-area * {
-    visibility: visible;
+  /* …and the copy itself, with everything in it, goes back on. The visible
+     pair must beat `body:has(.fm-print-only) *` above — that selector is
+     (0,1,1)-specific, a plain `.fm-print-only *` only (0,1,0) — so the
+     important flag carries it. */
+  .fm-print-only,
+  .fm-print-only * {
+    visibility: visible !important;
   }
 
-  /* The fixed print area IS the page inside its 6 mm margin; the svg fills
-     it (width 100%, page height) and meet-fits the whole drawing — the
-     viewBox the beforeprint hook sets — whatever the screen zoom was. */
-  body.fm-printing .fm-print-area {
+  /* The copy IS the page inside its 6 mm margin; the svg fills it
+     (width/height 100%) and meet-fits the whole drawing — the viewBox map.js
+     put on it — whatever the screen zoom or pan was. */
+  .fm-print-only {
+    display: block;
     position: fixed;
     inset: 0;
     background: #fff;
-    border: 0;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
 
-  body.fm-printing .fm-print-area .fm-svg {
+  .fm-print-svg {
     display: block;
     width: 100%;
-    height: calc(100vh - 0px);
-  }
-
-  /* "+ Add" on empty slots is an editing aid, not part of the plan. */
-  body.fm-printing .fm-slot-add-text,
-  body.fm-printing .fm-slot-add .fm-slot-empty-rect {
-    display: none;
-  }
-
-  /* Neither are the screen-only search highlight and station selection. */
-  body.fm-printing .fm-svg .fm-hit .fm-slot-rect,
-  body.fm-printing .fm-svg .fm-selected .fm-slot-rect {
-    stroke: #c9cedb;
-    stroke-width: 0.6;
-  }
-
-  /* A down machine keeps its red border on paper. */
-  body.fm-printing .fm-svg .fm-station-down .fm-slot-rect {
-    stroke: #bb2d3f;
-    stroke-width: 1.1;
+    height: 100%;
   }
 }
 
