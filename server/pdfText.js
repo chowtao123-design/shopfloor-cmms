@@ -653,6 +653,12 @@ function runContentStreams(strings, fonts) {
   // A line break is pending until the next text shows it: several position
   // changes between two strings still break the line only once.
   let pendingBreak = false;
+  // Many PDFs (LaTeX, Word) draw no space glyphs: words are separated by a big
+  // TJ gap or a jump along the same line, so those become one space.
+  let pendingSpace = false;
+  // Some writers (Chrome) place every glyph with its own move and draw real
+  // spaces; a move only means a word gap after a run longer than one glyph.
+  let lastRunLength = 0;
   const breakLine = () => {
     if (inText) pendingBreak = true;
   };
@@ -660,11 +666,16 @@ function runContentStreams(strings, fonts) {
     if (pendingBreak) {
       out += '\n';
       pendingBreak = false;
+    } else if (pendingSpace && out !== '' && !/\s$/.test(out)) {
+      out += ' ';
     }
+    pendingSpace = false;
     // Text shown before any positioning op sits on the implicit baseline 0,
     // so the next Td/Tm y-change is detected as a new line.
     if (lineY === null) lineY = 0;
-    out += decodeStringBytes(font, bytes);
+    const text = decodeStringBytes(font, bytes);
+    lastRunLength = text.length;
+    out += text;
   };
   for (const s of strings) {
     const n = s.length;
@@ -728,6 +739,7 @@ function runContentStreams(strings, fonts) {
           inText = true;
           lineY = null;
           pendingBreak = false;
+          pendingSpace = true;
           break;
         case 'ET':
           inText = false;
@@ -746,9 +758,10 @@ function runContentStreams(strings, fonts) {
         case 'TJ': {
           const operand = stack[stack.length - 1];
           if (inText && Array.isArray(operand)) {
-            // Kerning numbers are spacing adjustments, not separators.
+            // Small numbers are kerning; a gap of a fifth of an em or more is a word space.
             for (const element of operand) {
-              if (element !== null && element !== undefined && element.bytes) show(element.bytes);
+              if (typeof element === 'number' && element <= -200) pendingSpace = true;
+              else if (element !== null && element !== undefined && element.bytes) show(element.bytes);
             }
           }
           break;
@@ -765,9 +778,11 @@ function runContentStreams(strings, fonts) {
         case 'Td':
         case 'TD': {
           const ty = stack[stack.length - 1];
+          const tx = stack[stack.length - 2];
           if (inText && typeof ty === 'number') {
             const next = (lineY === null ? 0 : lineY) + ty;
             if (lineY !== null && next !== lineY) breakLine();
+            else if (typeof tx === 'number' && tx !== 0 && lastRunLength > 1) pendingSpace = true;
             lineY = next;
           }
           break;
@@ -779,6 +794,7 @@ function runContentStreams(strings, fonts) {
           const fy = stack[stack.length - 1];
           if (inText && typeof fy === 'number') {
             if (lineY !== null && fy !== lineY) breakLine();
+            else if (lastRunLength > 1) pendingSpace = true;
             lineY = fy;
           }
           break;

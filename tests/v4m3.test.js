@@ -919,3 +919,28 @@ test('HTTP: backups include the file_texts rows', async () => {
     fs.rmSync(backupPath, { force: true });
   }
 });
+test('pdfText: word gaps drawn without space glyphs become spaces; per-glyph placement does not', () => {
+  const content =
+    'BT\n/F1 12 Tf\n72 720 Td\n' +
+    // LaTeX style: a big TJ gap is a word space, a small one is kerning.
+    '[(Needle) -333 (bar) -20 (height) -400 (12.5mm)] TJ\n' +
+    // Word-by-word placement on the same line.
+    '0 -14 Td\n(Check) Tj\n30 0 Td\n(hook) Tj\n25 0 Td\n(timing) Tj\n' +
+    // Chrome style: each glyph moved on its own, real space glyphs drawn.
+    '0 -14 Td\n(O) Tj\n7 0 Td\n(i) Tj\n3 0 Td\n(l) Tj\n3 0 Td\n( ) Tj\n3 0 Td\n(d) Tj\n7 0 Td\n(a) Tj\n7 0 Td\n(i) Tj\n3 0 Td\n(l) Tj\n3 0 Td\n(y) Tj\n' +
+    'ET\nBT\n/F1 12 Tf\n1 0 0 1 300 692 Tm\n(before use) Tj\nET\n' +
+    `BT\n(${escapeLiteral('x'.repeat(200))}) Tj\nET\n`;
+  const pdf = buildPdf({
+    1: '<< /Type /Catalog /Pages 2 0 R >>',
+    2: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    3: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    4: `<< /Length ${content.length} >>\nstream\n${content}endstream`,
+    5: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+  });
+  const result = extractPdfText(pdf);
+  assert.equal(result.status, 'ok');
+  const lines = result.pages[0].split('\n');
+  assert.equal(lines[0], 'Needle barheight 12.5mm');
+  assert.equal(lines[1], 'Check hook timing');
+  assert.ok(lines[2].startsWith('Oil daily before use '), lines[2].slice(0, 40));
+});
