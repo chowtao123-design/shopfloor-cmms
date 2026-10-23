@@ -5489,6 +5489,27 @@ function requestItemsSection(request) {
   );
 }
 
+/** Removes the request for good (unlike Cancel, which keeps it in the list). */
+async function deleteRequest(request) {
+  const yes = await showConfirm({
+    title: 'Delete this request forever?',
+    message: `${formatRequestNumber(request.number)} "${request.title}" and its ${(request.lines || []).length} item(s) will be removed. This cannot be undone. To keep a record, use Cancel request instead.`,
+    confirmText: 'Delete forever',
+    cancelText: 'Keep it',
+    danger: true,
+  });
+  if (!yes) return;
+  try {
+    await sync.deleteRecord('purchaseRequests', request.id, request.version);
+    await refreshState();
+    toast('Request deleted.');
+    navigate('#/requests');
+  } catch (error) {
+    console.error(error);
+    toast('Could not delete the request. Please try again.', 'warn');
+  }
+}
+
 function renderRequestDetail(route) {
   const request = requestById(route.segments[1]);
   setTitle(request ? request.title : 'Request not found');
@@ -5553,6 +5574,7 @@ function renderRequestDetail(route) {
           'div',
           { class: 'button-row', style: { marginTop: '0.75rem' } },
           h('a', { class: 'btn btn-small', href: `#/requests/${encodeURIComponent(request.id)}/edit` }, 'Edit details'),
+          h('button', { class: 'btn btn-danger btn-small', type: 'button', onclick: () => deleteRequest(request) }, 'Delete request'),
         )
       : null,
     request.notes
