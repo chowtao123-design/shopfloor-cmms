@@ -46,7 +46,7 @@ Add two areas to `AREAS` (after `parts`):
 
 | Field | Type | Notes |
 |---|---|---|
-| `number` | integer | server-assigned like service orders (same transaction pattern, own sequence), shown **`PR-0001`**; "PR-pending" before first sync; clients cannot set it |
+| `number` | integer | server-assigned like service orders (same transaction pattern, own sequence), shown **`PR-261022-1`** (changed 2026-10-22: stored as yymmdd × 1000 + that day's count, server-local day, max 999/day; service orders use the same scheme, `SO-261022-1`; older records keep `SO-0001`/`PR-0001`); "PR-pending" before first sync; clients cannot set it |
 | `title` | string 1–120, required | e.g. "Juki needles + belts, Nov" |
 | `status` | enum | `draft` (default), `sent`, `received`, `cancelled` |
 | `supplier` | string ≤ 120 | default supplier for the whole request (optional) |

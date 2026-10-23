@@ -307,7 +307,7 @@ through the existing routes — no dedicated API:
 - Add or change lines with `PUT /api/records/purchaseRequests/:id`. The PUT
   **replaces the whole record**: read it first, then send it back with all
   the lines (old and new) — a line you leave out is deleted.
-- The request `number` (`PR-0007`) is assigned by the server on first save
+- The request `number` (`261022001`, shown `PR-261022-1`: day + that day's count) is assigned by the server on first save
   and ignored on write, just like service order numbers; new requests start
   as `draft` with the HST rate defaulting to 13.
 - A request that was already sent stays editable (prices often change after

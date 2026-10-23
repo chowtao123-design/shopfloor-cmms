@@ -15,7 +15,10 @@ import { startServer } from '../server/server.js';
 import { ensureAgentUser } from '../server/apiTokens.js';
 import { ensureAiAssistantUser } from '../server/ai.js';
 import { putRecord, validateRecordData } from '../server/records.js';
-import { formatMoney, formatRequestNumber, requestTotals } from '../logic.js';
+import { dailyNumberBase, formatMoney, formatOrderNumber, formatRequestNumber, requestTotals } from '../logic.js';
+
+// Numbers are today's yymmdd × 1000 + that day's count (e.g. 261022001 = PR-261022-1).
+const TODAY = dailyNumberBase();
 
 /**
  * V4-M1 (SPEC-v4.md sections 1, 2, 3.5): the purchaseRequests store with PR
@@ -458,8 +461,8 @@ test('numbering: assigned on first save, kept on updates, the client cannot set 
         body: { data: { title: 'First request', number: 77 } },
         user,
       });
-      assert.equal(first.record.data.number, 1, 'the first request is PR-0001');
-      assert.equal(formatRequestNumber(first.record.data.number), 'PR-0001');
+      assert.equal(first.record.data.number, TODAY + 1, 'the first request of the day');
+      assert.equal(formatRequestNumber(first.record.data.number), `PR-${TODAY / 1000}-1`);
 
       const update = putRecord(store, {
         storeName: 'purchaseRequests',
@@ -470,7 +473,7 @@ test('numbering: assigned on first save, kept on updates, the client cannot set 
         },
         user,
       });
-      assert.equal(update.record.data.number, 1, 'updates keep the assigned number');
+      assert.equal(update.record.data.number, TODAY + 1, 'updates keep the assigned number');
       assert.equal(update.record.version, 2);
       assert.equal(update.conflict, null);
 
@@ -480,7 +483,7 @@ test('numbering: assigned on first save, kept on updates, the client cannot set 
         body: { data: { title: 'Second request' } },
         user,
       });
-      assert.equal(second.record.data.number, 2, 'the sequence continues');
+      assert.equal(second.record.data.number, TODAY + 2, 'the sequence continues');
 
       // The counter is its own sequence, apart from workOrderNumber.
       const order = putRecord(store, {
@@ -489,14 +492,14 @@ test('numbering: assigned on first save, kept on updates, the client cannot set 
         body: { data: { title: 'Unrelated order', machineId: uuid() } },
         user,
       });
-      assert.equal(order.record.data.number, 1, 'work orders keep their own sequence');
+      assert.equal(order.record.data.number, TODAY + 1, 'work orders keep their own sequence');
       const third = putRecord(store, {
         storeName: 'purchaseRequests',
         id: uuid(),
         body: { data: { title: 'Third request' } },
         user,
       });
-      assert.equal(third.record.data.number, 3);
+      assert.equal(third.record.data.number, TODAY + 3);
 
       // History is written per save with the acting user's display name.
       const history = store.historyList('purchaseRequests', first.record.id);
@@ -733,7 +736,7 @@ test('HTTP: a signed-in admin creates and reads purchaseRequests through the gen
   });
   assert.equal(created.res.status, 200, JSON.stringify(created.body));
   assert.equal(created.body.record.store, 'purchaseRequests');
-  assert.equal(created.body.record.data.number, 1);
+  assert.equal(created.body.record.data.number, TODAY + 1);
   assert.equal(created.body.record.data.status, 'draft');
   assert.equal(created.body.record.data.lines[0].unit, 'pcs');
 
@@ -781,7 +784,7 @@ test('Muse: a write token creates then updates a request; history says Muse Agen
     },
   });
   assert.equal(created.res.status, 200, JSON.stringify(created.body));
-  assert.equal(created.body.record.data.number, 2, 'the PR sequence continues');
+  assert.equal(created.body.record.data.number, TODAY + 2, 'the PR sequence continues');
   assert.equal(created.body.record.data.hstRate, 13);
 
   // Read it back from the changes feed like a real agent would…
@@ -809,7 +812,7 @@ test('Muse: a write token creates then updates a request; history says Muse Agen
   assert.equal(updated.res.status, 200, JSON.stringify(updated.body));
   assert.equal(updated.body.record.version, 2);
   assert.equal(updated.body.record.data.lines.length, 2);
-  assert.equal(updated.body.record.data.number, 2, 'the number is kept');
+  assert.equal(updated.body.record.data.number, TODAY + 2, 'the number is kept');
   assert.equal(updated.body.record.data.status, 'sent');
 
   const history = await bearer(write.token, `/api/history/purchaseRequests/${id}`);
@@ -863,8 +866,32 @@ test('HTTP: two concurrent creates get distinct PR numbers', async () => {
   assert.equal(new Set(numbers).size, 2, `distinct numbers, got ${numbers.join(', ')}`);
   assert.deepEqual(
     numbers.slice().sort((a, b) => a - b),
-    [3, 4],
+    [TODAY + 3, TODAY + 4],
     'the sequence continues after the earlier requests'
   );
   assert.ok(numbers.every((number) => Number.isInteger(number)));
+});
+test('numbers: day + count format, old plain numbers still read, the count restarts each day', () => {
+  assert.equal(dailyNumberBase(new Date(2026, 9, 22, 23, 59)), 261022000);
+  assert.equal(dailyNumberBase(new Date(2027, 0, 5, 0, 1)), 270105000);
+  assert.equal(formatOrderNumber(261022001), 'SO-261022-1');
+  assert.equal(formatRequestNumber(261022015), 'PR-261022-15');
+  assert.equal(formatOrderNumber(42), 'SO-0042', 'records numbered before the change keep their look');
+  assert.equal(formatOrderNumber(null), 'SO-pending');
+  const dataDir = fs.mkdtempSync(path.join(TMP, 'v4m1-daily-'));
+  try {
+    const store = openStore(dataDir);
+    try {
+      const day1 = new Date(2026, 9, 22, 9);
+      const day2 = new Date(2026, 9, 23, 7);
+      assert.deepEqual(
+        [store.nextWorkOrderNumber(day1), store.nextWorkOrderNumber(day1), store.nextPurchaseRequestNumber(day1), store.nextWorkOrderNumber(day2)],
+        [261022001, 261022002, 261022001, 261023001],
+      );
+    } finally {
+      store.close();
+    }
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
 });

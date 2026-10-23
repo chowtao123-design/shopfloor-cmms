@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { hashPassword } from './auth.js';
 import { ApiError, UUID_RE, putRecord } from './records.js';
 import { addMissingRolePermissions, can, normalizePermissions, storeArea } from './permissions.js';
-import { normalizeModel, relatedLibraryItems } from '../logic.js';
+import { formatOrderNumber, normalizeModel, relatedLibraryItems } from '../logic.js';
 
 /**
  * AI assistant server parts (SPEC-v3.md section 9): provider
@@ -295,7 +295,7 @@ function validateOpenAISection(section) {
 export const SYSTEM_PROMPT = [
   'You are the assistant inside Shopfloor CMMS, a maintenance log app for a garment workshop.',
   'App vocabulary:',
-  '- Service Orders (the "workOrders" store) are the work tickets. Kinds: breakdown, pm, facility, install or other. Statuses: open, in-progress, waiting-parts, waiting-tech, done. Priorities: none, low, medium, high, urgent. Categories: mechanical, electrical, pneumatic, facility, safety, cleaning, other. Numbers look like "SO-0001" and are assigned by the app.',
+  '- Service Orders (the "workOrders" store) are the work tickets. Kinds: breakdown, pm, facility, install or other. Statuses: open, in-progress, waiting-parts, waiting-tech, done. Priorities: none, low, medium, high, urgent. Categories: mechanical, electrical, pneumatic, facility, safety, cleaning, other. Numbers look like "SO-261022-1" (the day it was opened, then that day\'s count; older ones look like "SO-0001") and are assigned by the app.',
   '- Preventive Maintenance ("pmTasks") are recurring tasks per machine with an interval in days. The next due date is lastDoneAt + intervalDays; a task with no lastDoneAt is due today.',
   '- Machines are the workshop devices (machine types include single-needle, double-needle, overlock-5/4/3, coverstitch, bartack, buttonhole, button-sew, snap-attach, feed-off-arm, blindstitch, cutter, pressing). Statuses: running, down, in-storage, retired.',
   '- Parts is the spare-part inventory; a part is low stock when qtyOnHand is below its minQty.',
@@ -310,7 +310,7 @@ export const SYSTEM_PROMPT = [
   'Only state facts that appear in the snapshot. Do not guess causes, parts, people, dates or next steps that the records do not contain; if something is not recorded, say "not recorded" and suggest which field to fill in. When you give a reason, quote the record it comes from (service order number, title or problem text).',
   'For every "how many" question use the "Shop totals" lines. The extract under them is capped and incomplete, so never count its rows; a record may legitimately appear once as a machine and again inside a PM task or service order. If a figure is not in the totals, say it is not recorded rather than estimating.',
   'Questions like "what is most of the work", "which type is the majority" or "what do the PM tasks cover" are answered from the breakdown lines in "Shop totals" (machine types, PM task titles, priorities and categories, most common first). Quote those counts; do not answer "not recorded" when a breakdown line covers it.',
-  'For fault and repair questions, build the answer on the "Library" part of the snapshot first: the matching repair methods, the manual excerpts and the past fixes for that machine. Cite the source next to each fact exactly as it is labelled there - for example (Repair method: Thread breaks at high speed), (Manual: Juki DDL-8700 manual, p. 23) or (SO-0042). If the Library part has nothing for that machine, say so plainly and make clear your answer is general knowledge, not from the shop records.',
+  'For fault and repair questions, build the answer on the "Library" part of the snapshot first: the matching repair methods, the manual excerpts and the past fixes for that machine. Cite the source next to each fact exactly as it is labelled there - for example (Repair method: Thread breaks at high speed), (Manual: Juki DDL-8700 manual, p. 23) or (SO-261022-1). If the Library part has nothing for that machine, say so plainly and make clear your answer is general knowledge, not from the shop records.',
   'Give step-by-step checks in the order a technician would do them: simple, non-invasive checks first (thread path, needle condition, threading, tension) before adjustments or disassembly. Always tell the user to power off and lock out the machine before any guard, belt or knife is removed, and say it before the first such step - never after.',
   'Otherwise answer briefly and helpfully in plain text. Use **bold** and "- " bullet lists only; no other Markdown.',
 ].join('\n');
@@ -561,7 +561,7 @@ export function overlapScore(text, questionTokens, specialTokens) {
  * The machines a question is about (SPEC-v4.md section 5): by machine name,
  * model number (through normalizeModel, so spacing never matters), serial
  * number, or the machine of a service order number mentioned in the
- * question ("SO-0042", "SO 42" or a bare 42 that is a real SO number).
+ * question ("SO-261022-1" / "261022-1", the older "SO-0042" / "SO 42", or a bare 42 that is a real SO number).
  * `machinesList` should already hold only machines the user can read.
  */
 export function detectQuestionMachines(question, machinesList, workOrders) {
@@ -571,6 +571,10 @@ export function detectQuestionMachines(question, machinesList, workOrders) {
   const numbers = new Set();
   for (const match of q.matchAll(/(?<![a-z0-9])(\d{1,5})(?![a-z0-9])/g)) {
     numbers.add(Number(match[1]));
+  }
+  // Daily numbers: "SO-261022-1" or "261022-1" is stored as 261022001.
+  for (const match of q.matchAll(/(?<![a-z0-9])(\d{6})-(\d{1,3})(?![a-z0-9])/g)) {
+    numbers.add(Number(match[1]) * 1000 + Number(match[2]));
   }
   const soMachineIds = new Set();
   for (const record of Array.isArray(workOrders) ? workOrders : []) {
@@ -753,7 +757,7 @@ function pdfAttachments(data) {
 /** One completed service order as a past-fix line (SPEC-v4.md section 5, c). */
 function pastFixLine(record, machineNames, partsById) {
   const data = record.data;
-  const number = `SO-${String(data.number ?? '?').padStart(4, '0')}`;
+  const number = formatOrderNumber(data.number);
   const machine = machineNames.get(data.machineId) ?? 'a machine';
   const date = typeof data.completedAt === 'string' && data.completedAt !== '' ? data.completedAt : record.updatedAt;
   const partsUsed = (Array.isArray(data.partsUsed) ? data.partsUsed : [])

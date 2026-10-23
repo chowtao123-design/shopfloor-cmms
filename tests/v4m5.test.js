@@ -2,6 +2,7 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { formatOrderNumber } from '../logic.js';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -197,7 +198,7 @@ const adminUser = () => contextUser('ada');
 
 const soNumber = (id) => {
   const record = handle.store.listRecords('workOrders').find((row) => row.id === id);
-  return `SO-${String(record.data.number).padStart(4, '0')}`;
+  return formatOrderNumber(record.data.number);
 };
 
 async function createFixtures() {

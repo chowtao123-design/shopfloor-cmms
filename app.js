@@ -11616,8 +11616,8 @@ function globalSearchMatches(query) {
       matched += 1;
       results.push({
         kind: 'Service order',
-        title: title || labelText || 'Untitled',
-        sub: labelText,
+        title: title || label || 'Untitled',
+        sub: label || '',
         href: `#/jobs/${encodeURIComponent(order.id)}`,
       });
     }

@@ -625,12 +625,31 @@ export function sortWorkOrdersNewest(workOrders) {
  * "SO-0001" for a server-assigned order number, "SO-pending" for an
  * offline-created order that has not been synced yet (SPEC-v3.md section 2).
  */
-export function formatOrderNumber(number) {
+/*
+ * Service order and parts request numbers are server-assigned integers. Since
+ * 2026-10-22 they hold the day and that day's count: 261022001 is 22 Oct 2026,
+ * number 1, shown "SO-261022-1". Older records keep plain counters (SO-0042).
+ */
+const DAILY_NUMBER_MIN = 100000000;
+
+/** yymmdd × 1000 for a local date: the first number of that day is this + 1. */
+export function dailyNumberBase(date = new Date()) {
+  const yy = date.getFullYear() % 100;
+  return (yy * 10000 + (date.getMonth() + 1) * 100 + date.getDate()) * 1000;
+}
+
+function formatRecordNumber(prefix, number) {
   const value = Number(number);
   if (number === null || number === undefined || number === '' || !Number.isFinite(value)) {
-    return 'SO-pending';
+    return `${prefix}-pending`;
   }
-  return `SO-${String(Math.floor(Math.abs(value))).padStart(4, '0')}`;
+  const n = Math.floor(Math.abs(value));
+  if (n >= DAILY_NUMBER_MIN) return `${prefix}-${String(Math.floor(n / 1000)).padStart(6, '0')}-${n % 1000}`;
+  return `${prefix}-${String(n).padStart(4, '0')}`;
+}
+
+export function formatOrderNumber(number) {
+  return formatRecordNumber('SO', number);
 }
 
 /** Total labour hours: entries + the legacy minutesSpent / 60 (SPEC-v3.md 3). */
@@ -674,11 +693,7 @@ export function formatMoney(cents) {
  * first sync (SPEC-v4.md section 2).
  */
 export function formatRequestNumber(number) {
-  const value = Number(number);
-  if (number === null || number === undefined || number === '' || !Number.isFinite(value)) {
-    return 'PR-pending';
-  }
-  return `PR-${String(Math.floor(Math.abs(value))).padStart(4, '0')}`;
+  return formatRecordNumber('PR', number);
 }
 
 /**

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { BUILTIN_ROLE_BY_NAME, BUILTIN_ROLES, mergeMissingPermissions } from './permissions.js';
+import { dailyNumberBase } from '../logic.js';
 
 /**
  * SQLite store for the Shop Maintenance Log team server.
@@ -234,6 +235,25 @@ function snapshotOrNull(row) {
  * an admin already set are never touched. Idempotent, runs on every startup,
  * and records a `roles` history row for each actual change.
  */
+/**
+ * Today's next number, e.g. 261022003 = the third of 22 Oct 2026 ("SO-261022-3",
+ * logic.js formatOrderNumber). One counter row per kind and server-local day.
+ */
+function nextDailyNumber(db, kind, now) {
+  const base = dailyNumberBase(now);
+  const row = db
+    .prepare(
+      `INSERT INTO counters (name, value) VALUES (?, 1)
+       ON CONFLICT(name) DO UPDATE SET value = value + 1
+       RETURNING value`
+    )
+    .get(`${kind}:${base / 1000}`);
+  const count = Number(row.value);
+  // shortcut: three digits per day; a shop never opens 1,000 in one day, widen the format if it ever does.
+  if (count > 999) throw new Error(`More than 999 ${kind} numbers today`);
+  return base + count;
+}
+
 function upgradeBuiltinRolePermissions(db) {
   const rows = db.prepare('SELECT * FROM roles WHERE builtin = 1').all();
   for (const row of rows) {
@@ -414,30 +434,16 @@ export function openStore(dataDir) {
      * called inside the same transaction as the record write so concurrent
      * creates get distinct numbers.
      */
-    nextWorkOrderNumber() {
-      const row = db
-        .prepare(
-          `INSERT INTO counters (name, value) VALUES ('workOrderNumber', 1)
-           ON CONFLICT(name) DO UPDATE SET value = value + 1
-           RETURNING value`
-        )
-        .get();
-      return Number(row.value);
+    nextWorkOrderNumber(now = new Date()) {
+      return nextDailyNumber(db, 'workOrderNumber', now);
     },
     /**
      * Next sequential parts request number (SPEC-v4.md section 2), own
      * `PR-0001` sequence. Same transaction rule as nextWorkOrderNumber:
      * called inside the record write so concurrent creates stay distinct.
      */
-    nextPurchaseRequestNumber() {
-      const row = db
-        .prepare(
-          `INSERT INTO counters (name, value) VALUES ('purchaseRequestNumber', 1)
-           ON CONFLICT(name) DO UPDATE SET value = value + 1
-           RETURNING value`
-        )
-        .get();
-      return Number(row.value);
+    nextPurchaseRequestNumber(now = new Date()) {
+      return nextDailyNumber(db, 'purchaseRequestNumber', now);
     },
     /**
      * Create an API token for an agent user. Returns the raw token once; only

@@ -130,7 +130,7 @@ test('app.js: global search matches service orders by number and title', () => {
   assert.match(src, /function serviceOrderLabel\(order\)/);
   // The SO-number formatting lives in the pure helper logic.js:formatOrderNumber.
   assert.match(src, /formatOrderNumber\(number\)/);
-  assert.match(read('logic.js'), /`SO-\$\{String\(Math\.floor\(Math\.abs\(value\)\)\)\.padStart\(4, '0'\)\}`/);
+  assert.match(read('logic.js'), /export function formatOrderNumber\(number\)/);
   assert.match(src, /searchBox\('Search service orders'/);
   // Keyboard navigation: ArrowUp/ArrowDown/Enter on the results dropdown.
   assert.match(src, /event\.key === 'ArrowDown' \|\| event\.key === 'ArrowUp'/);

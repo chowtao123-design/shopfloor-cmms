@@ -153,7 +153,7 @@ function helpGlossarySection(h) {
     'Glossary',
     helpGlossary(h, [
       ['Work order / job', 'One repair or task, from the moment it is logged until it is marked Done. The app now calls these service orders; “job” and “work order” mean the same thing here.'],
-      ['Service order number', 'Each service order gets a sequential number from the server, shown as SO-0001, SO-0002 and so on. A new order written offline says SO-pending until the next sync gives it its number.'],
+      ['Service order number', 'Each service order gets a number from the server made of the day it was opened and that day\'s count: SO-261022-1 is the first order of 22 Oct 2026, SO-261022-2 the second, and the count starts again at 1 the next day. Orders from before this change keep their old numbers (SO-0001…). A new order written offline says SO-pending until the next sync gives it its number.'],
       ['Breakdown', 'A repair logged because a machine stopped working. The app offers to mark that machine Down while the service order is open, and Running again after.'],
       ['Priority', 'How urgent a service order is: None, Low, Medium (the default), High or Urgent. Urgent service orders also appear in “Needs attention” on Home. Old records with the previous “Normal” value are shown as Medium.'],
       ['Category', 'What kind of work it is: Mechanical, Electrical, Pneumatic, Facility, Safety, Cleaning or Other.'],
@@ -301,7 +301,7 @@ function helpRequests(h) {
     h(
       'p',
       {},
-      'A parts request gathers everything you need to buy into one numbered price table (PR-0001, PR-0002…). It starts as a Draft and stays one for days while you add lines from anywhere; when it is complete, Mark sent turns it into a clean sheet you can print, save as PDF, paste into an email or hand to the accountant. Mark received closes it — stock quantities are not changed by that; record what actually arrived with the usual stock buttons or a service order.',
+      'A parts request gathers everything you need to buy into one numbered price table (PR-261022-1 = the first request of 22 Oct 2026). It starts as a Draft and stays one for days while you add lines from anywhere; when it is complete, Mark sent turns it into a clean sheet you can print, save as PDF, paste into an email or hand to the accountant. Mark received closes it — stock quantities are not changed by that; record what actually arrived with the usual stock buttons or a service order.',
     ),
     h('h3', { class: 'help-question' }, 'Gathering lines'),
     helpSteps(h, [
@@ -375,7 +375,7 @@ function helpLibrary(h) {
     helpSteps(h, [
       'Write the fix as it happens: Symptom (what goes wrong), Cause, numbered Steps (add, remove and reorder them), Tools & parts, and Safety — the safety text always shows in a highlighted box, so put lockout and power-off points there.',
       'From a machine: open the machine → Library → + Add repair method; the method starts linked to that machine and its model.',
-      'From a service order: finish the work, then on the completed order press Save as repair method — the form comes pre-filled with the order’s title, the problem as the symptom, the action taken split into steps, the machine and its model, and a link back to the order (“From SO-0042”).',
+      'From a service order: finish the work, then on the completed order press Save as repair method — the form comes pre-filled with the order’s title, the problem as the symptom, the action taken split into steps, the machine and its model, and a link back to the order (“From SO-261022-1”).',
       'Share what you know: tags like “thread break” or “timing” help the search find the right method months later.',
     ]),
     h('h3', { class: 'help-question' }, 'AI repair help'),

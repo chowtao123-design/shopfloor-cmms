@@ -82,9 +82,9 @@ export function openApiSpec(version = '2.0.0') {
           type: 'object',
           description:
             'A parts request (SPEC-v4.md section 2). `number` is assigned by the server on the first save ' +
-            '(shown as PR-0001); totals are calculated from the lines, never stored. Unknown fields are rejected.',
+            '(shown as PR-261022-1: the day it was made, then that day\'s count); totals are calculated from the lines, never stored. Unknown fields are rejected.',
           properties: {
-            number: { type: 'integer', description: 'Server-assigned sequence (PR-0001); ignored in request bodies.' },
+            number: { type: 'integer', description: 'Server-assigned: yymmdd × 1000 + the day\'s count, e.g. 261022001 = PR-261022-1 (older requests: plain 1, 2…); ignored in request bodies.' },
             title: { type: 'string', minLength: 1, maxLength: 120 },
             status: { type: 'string', enum: ['draft', 'sent', 'received', 'cancelled'], default: 'draft' },
             supplier: { type: 'string', maxLength: 120, description: 'Default supplier for the whole request (optional).' },
