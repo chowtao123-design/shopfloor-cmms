@@ -716,6 +716,249 @@ export function requestTotals(request) {
   };
 }
 
+/* ---------- Parts request UI helpers (SPEC-v4.md section 3) ---------- */
+
+/** Whole dollars → integer cents for sheet price cells (formatMoney input). */
+function priceToCents(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.round(number * 100);
+}
+
+/**
+ * A starting line for a catalogue part (SPEC-v4.md 3.3): enough quantity to
+ * reach the minimum level again, at least 1; the price stays unknown (null)
+ * until the supplier quotes it. partId/partNumber/supplier carry over.
+ */
+export function partRequestLine(part) {
+  if (!part) return null;
+  const onHand = Number(part.qtyOnHand);
+  const min = Number(part.minQty);
+  const need =
+    Number.isFinite(onHand) && Number.isFinite(min) ? Math.max(Math.ceil(min - onHand), 1) : 1;
+  const line = {
+    description: String(part.name || '').slice(0, 200),
+    qty: Math.min(need, 100000),
+    unit: part.unit || 'pcs',
+    unitPrice: null,
+  };
+  if (part.id) line.partId = String(part.id);
+  if (part.partNumber) line.partNumber = String(part.partNumber).slice(0, 60);
+  if (part.supplier) line.supplier = String(part.supplier).slice(0, 120);
+  return line;
+}
+
+/**
+ * Lines for "Add all low-stock to request" (SPEC-v4.md 3.3): one per
+ * low-stock part, skipping parts already on the request by partId so the
+ * button never duplicates a line.
+ */
+export function buildLowStockRequestLines(parts, lines = []) {
+  const already = new Set(
+    (Array.isArray(lines) ? lines : [])
+      .map((line) => (line && line.partId) || null)
+      .filter(Boolean),
+  );
+  const out = [];
+  for (const part of Array.isArray(parts) ? parts : []) {
+    if (!part || already.has(part.id) || !isLowStock(part)) continue;
+    const line = partRequestLine(part);
+    if (line) out.push(line);
+  }
+  return out;
+}
+
+/**
+ * Reorder one line in the request form (SPEC-v4.md 3.2): direction 'up' or
+ * 'down', ignored at the ends. Pure: returns a new array.
+ */
+export function moveRequestLine(lines, index, direction) {
+  const list = Array.isArray(lines) ? lines : [];
+  const from = Math.trunc(Number(index));
+  if (!Number.isFinite(from) || from < 0 || from >= list.length) return list.slice();
+  const to = direction === 'down' ? from + 1 : direction === 'up' ? from - 1 : from;
+  if (to < 0 || to >= list.length) return list.slice();
+  const next = list.slice();
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+/**
+ * Sheet description cell (SPEC-v4.md 3.4): the line description with the part
+ * number and machine in parentheses behind it, e.g. "Needles (#129 · Juki)".
+ */
+export function requestLineDescription(line, machineNames = new Map()) {
+  const names = machineNames instanceof Map ? machineNames : new Map(machineNames || []);
+  const machineName = line && line.machineId ? names.get(line.machineId) : '';
+  const context = [line && line.partNumber, machineName]
+    .filter((value) => value !== null && value !== undefined && value !== '')
+    .map((value) => String(value));
+  const text = String((line && line.description) || '');
+  if (context.length === 0) return text;
+  return text ? `${text} (${context.join(' / ')})` : context.join(' / ');
+}
+
+/** Sheet cell objects shared by the screen table, clipboard and CSV (SPEC-v4.md 3.4). */
+export function requestSheetRows(request, totals, { machines = [] } = {}) {
+  const names = new Map(
+    (Array.isArray(machines) ? machines : []).map((machine) => [machine.id, machine.name]),
+  );
+  const computed = requestTotals(request);
+  const t = totals || computed;
+  const lines = Array.isArray(request && request.lines) ? request.lines.filter(Boolean) : [];
+  return lines.map((line, index) => {
+    const priced = line.unitPrice !== null && line.unitPrice !== undefined;
+    const cents = t.lines[index] ? t.lines[index].lineTotalCents : 0;
+    return {
+      number: String(index + 1),
+      description: requestLineDescription(line, names),
+      qty: String(line.qty),
+      unit: line.unit || 'pcs',
+      unitPrice: priced ? formatMoney(priceToCents(line.unitPrice)) :'—',
+      totalPrice: priced ? formatMoney(cents) : '—',
+      unpriced: !priced,
+    };
+  });
+}
+
+/** HST label keeps one decimal at most ("HST (13%)" / "HST (13.5%)"). */
+export function requestHstLabel(hstRate) {
+  const rate = Number(hstRate);
+  const value = Number.isFinite(rate) && rate >= 0 ? rate : 13;
+  const text = Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
+  return `HST (${text}%)`;
+}
+
+/** The three footer figures (SPEC-v4.md 3.4 drawing). */
+export function requestSheetTotals(request, totals) {
+  const t = totals || requestTotals(request);
+  return {
+    beforeHst: { label: 'Total before HST', value: formatMoney(t.subtotalCents) },
+    hst: { label: requestHstLabel(request && request.hstRate), value: formatMoney(t.hstCents) },
+    grand: { label: 'Total grand amount', value: formatMoney(t.totalCents) },
+    unpricedCount: t.unpricedCount,
+  };
+}
+
+/** Sheet column headers, shared by the table, clipboard and CSV (SPEC-v4.md 3.4). */
+export const REQUEST_SHEET_COLUMNS = ['#', 'Description', 'Qty', 'Unit', 'Unit price', 'Total price'];
+
+/** Cell order used by every text export of the sheet. */
+function requestSheetCells(row) {
+  return [row.number, row.description, row.qty, row.unit, row.unitPrice, row.totalPrice];
+}
+
+/**
+ * CSV text for the request sheet (SPEC-v4.md 3.4): the sheet columns plus the
+ * three total rows, comma-quoted where needed, UTF-8 with BOM so Excel opens
+ * it directly. CRLF row ends for Excel friendliness.
+ */
+export function requestSheetCSV(request, totals, options = {}) {
+  const rows = requestSheetRows(request, totals, options);
+  const footer = requestSheetTotals(request, totals);
+  const lines = [REQUEST_SHEET_COLUMNS.map(csvEscape).join(',')];
+  for (const row of rows) lines.push(requestSheetCells(row).map(csvEscape).join(','));
+  for (const { label, value } of [footer.beforeHst, footer.hst, footer.grand]) {
+    lines.push(['', label, '', '', '', value].map(csvEscape).join(','));
+  }
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
+}
+
+/** One TSV cell: tabs and line breaks would break the column grid. */
+function tsvCell(value) {
+  return String(value === null || value === undefined ? '' : value).replace(/[\t\r\n]+/g, ' ');
+}
+
+/**
+ * Tab-separated text for the clipboard (SPEC-v4.md 3.4 "Copy table"): the
+ * paste-as-table payload for plain-text targets.
+ */
+export function requestSheetTSV(request, totals, options = {}) {
+  const rows = requestSheetRows(request, totals, options);
+  const footer = requestSheetTotals(request, totals);
+  const lines = [REQUEST_SHEET_COLUMNS.map(tsvCell).join('\t')];
+  for (const row of rows) lines.push(requestSheetCells(row).map(tsvCell).join('\t'));
+  for (const { label, value } of [footer.beforeHst, footer.hst, footer.grand]) {
+    lines.push(['', label, '', '', '', value].map(tsvCell).join('\t'));
+  }
+  return lines.join('\n');
+}
+
+/** HTML escaping for clipboard payloads (never innerHTML with user text). */
+export function escapeHtmlText(value) {
+  return String(value === null || value === undefined ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * The clipboard `text/html` payload (SPEC-v4.md 3.4): a real <table> so the
+ * copy pastes as a table into Outlook/Gmail/Excel. A border attribute keeps
+ * the grid visible in clients that drop <style>.
+ */
+export function requestSheetHTML(request, totals, options = {}) {
+  const rows = requestSheetRows(request, totals, options);
+  const footer = requestSheetTotals(request, totals);
+  const headRow = `<tr>${REQUEST_SHEET_COLUMNS.map(
+    (label) => `<th scope="col">${escapeHtmlText(label)}</th>`,
+  ).join('')}</tr>`;
+  const bodyRows = rows
+    .map(
+      (row) =>
+        `<tr>${requestSheetCells(row)
+          .map((cell) => `<td>${escapeHtmlText(cell)}</td>`)
+          .join('')}</tr>`,
+    )
+    .join('');
+  const footRows = [footer.beforeHst, footer.hst, footer.grand]
+    .map(
+      ({ label, value }) =>
+        `<tr><td colspan="5">${escapeHtmlText(label)}</td><td>${escapeHtmlText(
+          value,
+        )}</td></tr>`,
+    )
+    .join('');
+  const caption =
+    request && (request.title || request.number)
+      ? `<caption>Purchase request ${escapeHtmlText(
+          formatRequestNumber(request && request.number),
+        )}${request.title ? ` — ${escapeHtmlText(request.title)}` : ''}</caption>`
+      : '';
+  return `<table border="1" cellpadding="4" cellspacing="0">${caption}<thead>${headRow}</thead><tbody>${bodyRows}</tbody><tfoot>${footRows}</tfoot></table>`;
+}
+
+/**
+ * Search parts requests (SPEC-v4.md 3.1): case-insensitive match on the
+ * title, the PR number (PR-0007 / 7 / partial) and any line text. Empty
+ * query returns everything, like searchParts.
+ */
+export function searchPurchaseRequests(requests, query) {
+  const list = Array.isArray(requests) ? requests.filter((record) => record && !record.deleted) : [];
+  const needle = normalizeText(query).trim();
+  if (!needle) return list.slice();
+  const digits = /^\d+$/.test(needle) ? Number(needle) : null;
+  return list.filter((request) => {
+    const rawNumber = request.number;
+    const number = Number(rawNumber);
+    const hasNumber =
+      rawNumber !== null && rawNumber !== undefined && rawNumber !== '' && Number.isFinite(number);
+    const numberText = hasNumber ? normalizeText(formatRequestNumber(number)) : '';
+    if (numberText && numberText.includes(needle)) return true;
+    if (hasNumber && digits !== null && digits === number) return true;
+    if (normalizeText(request.title).includes(needle)) return true;
+    return (Array.isArray(request.lines) ? request.lines : []).some((line) => {
+      if (!line) return false;
+      return [line.description, line.partNumber, line.note, line.supplier].some((value) =>
+        normalizeText(value).includes(needle),
+      );
+    });
+  });
+}
+
 /**
  * Due state used by the "due" filter: 'none' (no due date), 'overdue'
  * (before today), 'this-week' (today through the next 7 days) or 'later'.

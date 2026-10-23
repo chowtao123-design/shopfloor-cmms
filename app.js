@@ -15,12 +15,14 @@ import {
   applyWorkOrderSave,
   applyWorkOrderStatus,
   buildPMCompletionOrder,
+  buildLowStockRequestLines,
   contactSearch,
   customTypeOptions,
   compactSyncLabel,
   dashboardCounts,
   daysBetween,
   defaultServiceOrderFilters,
+  escapeHtmlText,
   filterServiceOrders,
   filterWorkOrders,
   formatDate,
@@ -28,6 +30,7 @@ import {
   formatMoney,
   formatOrderNumber,
   formatPartsUsed,
+  formatRequestNumber,
   groupPMTasks,
   initialsOf,
   isISODate,
@@ -35,14 +38,25 @@ import {
   isRecentDone,
   labourTotal,
   machineTypeLabel,
+  moveRequestLine,
   needsAttention,
   openBreakdownCount,
   openJobCount,
+  partRequestLine,
   pmDueDate,
   pmPaused,
   pmState,
   priorityValue,
+  requestHstLabel,
+  requestSheetCSV,
+  requestSheetHTML,
+  requestSheetRows,
+  requestSheetTotals,
+  requestSheetTSV,
+  REQUEST_SHEET_COLUMNS,
+  requestTotals,
   searchParts,
+  searchPurchaseRequests,
   searchWorkOrders,
   serviceOrderDueState,
   shouldOfferMachineDown,
@@ -132,6 +146,8 @@ const state = {
   // v3 people stores (SPEC-v3.md section 5; synced since M3 for the form).
   coworkers: [],
   contractors: [],
+  // v4 (SPEC-v4.md section 2): parts requests, synced like every record store.
+  purchaseRequests: [],
 };
 
 let fieldCounter = 0;
@@ -312,20 +328,24 @@ function setTitle(title) {
 }
 
 async function refreshState() {
-  const [machines, parts, workOrders, pmTasks, coworkers, contractors] = await Promise.all([
-    db.getAll('machines'),
-    db.getAll('parts'),
-    db.getAll('workOrders'),
-    db.getAll('pmTasks'),
-    db.getAll('coworkers'),
-    db.getAll('contractors'),
-  ]);
+  const [machines, parts, workOrders, pmTasks, coworkers, contractors, purchaseRequests] =
+    await Promise.all([
+      db.getAll('machines'),
+      db.getAll('parts'),
+      db.getAll('workOrders'),
+      db.getAll('pmTasks'),
+      db.getAll('coworkers'),
+      db.getAll('contractors'),
+      // v4 (SPEC-v4.md section 2): pulled like the other record stores.
+      db.getAll('purchaseRequests'),
+    ]);
   state.machines = machines;
   state.parts = parts;
   state.workOrders = workOrders;
   state.pmTasks = pmTasks;
   state.coworkers = coworkers;
   state.contractors = contractors;
+  state.purchaseRequests = purchaseRequests;
 }
 
 function routeInfo() {
@@ -355,6 +375,10 @@ function machineById(id) {
 
 function partById(id) {
   return state.parts.find((part) => part.id === id);
+}
+
+function requestById(id) {
+  return state.purchaseRequests.find((request) => request.id === id);
 }
 
 function workOrderById(id) {
@@ -1057,6 +1081,7 @@ const tableSort = {
   jobs: { key: null, dir: 'asc' },
   machines: { key: null, dir: 'asc' },
   parts: { key: null, dir: 'asc' },
+  requests: { key: null, dir: 'asc' },
   pm: { key: null, dir: 'asc' },
   coworkers: { key: null, dir: 'asc' },
   contractors: { key: null, dir: 'asc' },
@@ -1291,7 +1316,16 @@ function partsTableColumns() {
     { key: 'location', label: 'Location', value: (part) => part.location },
     { key: 'supplier', label: 'Supplier', value: (part) => part.supplier },
     editedByColumn(),
-  ];
+    // v4 (SPEC-v4.md 3.3): row action, only for roles that may write requests.
+    can('purchasing', 'write')
+      ? {
+          key: 'request',
+          label: 'Request',
+          value: () => '',
+          cell: (part) => addToRequestButton(part),
+        }
+      : null,
+  ].filter(Boolean);
 }
 
 /* ---------- Service order filters (SPEC-v3.md section 3 item 2) ----------
@@ -2702,6 +2736,14 @@ function renderJobDetail(route) {
     detailMeta(order),
     conflictBanner('workOrders', order.id),
     canEditOrder ? statusButtons : null,
+    // v4 (SPEC-v4.md 3.3): request parts for this order into a draft request.
+    can('purchasing', 'write')
+      ? h(
+          'div',
+          { class: 'button-row', style: { marginTop: '0.5rem' } },
+          h('button', { class: 'btn btn-small', type: 'button', onclick: () => requestPartsForOrder(order) }, 'Request parts'),
+        )
+      : null,
     h('div', { class: 'card' }, details),
     sectionTitle('Assigned to'),
     assignees.length
@@ -4172,6 +4214,8 @@ function partRow(part) {
         `${toInteger(part.qtyOnHand)} ${unit}`,
       ),
       low ? h('span', { class: 'pill status-low' }, 'Low stock') : null,
+      // Row action (SPEC-v4.md 3.3): add this part to a draft request.
+      can('purchasing', 'write') ? addToRequestButton(part) : null,
     ),
     h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
   );
@@ -4183,6 +4227,9 @@ function renderParts(route) {
   const listHost = h('div', { class: 'list' });
   const tableHost = h('div', { class: 'table-wrap' });
   let searchQuery = '';
+  // Kept current so the low-stock bulk action (SPEC-v4.md 3.3) gathers what
+  // the list is actually showing.
+  let shownParts = [];
 
   function update(nextQuery) {
     if (typeof nextQuery === 'string') searchQuery = nextQuery;
@@ -4191,6 +4238,7 @@ function renderParts(route) {
     parts = parts
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    shownParts = parts;
     if (parts.length === 0) {
       listHost.replaceChildren(
         emptyState(
@@ -4240,6 +4288,29 @@ function renderParts(route) {
         },
         'Low stock only',
       ),
+      // v4 (SPEC-v4.md 3.3): one line per low-stock part on the request,
+      // skipping the parts it already lists.
+      lowOnly && can('purchasing', 'write')
+        ? h(
+            'button',
+            {
+              class: 'btn btn-small',
+              type: 'button',
+              onclick: () => {
+                if (shownParts.length === 0) {
+                  toast('No low-stock parts to add.', 'warn');
+                  return;
+                }
+                openAddToRequestPicker({
+                  label: 'One line per low-stock part — parts already on the request are skipped.',
+                  buildLines: (request) =>
+                    buildLowStockRequestLines(shownParts, request ? request.lines : []),
+                });
+              },
+            },
+            'Add all low-stock to request',
+          )
+        : null,
     ),
     listHost,
     tableHost,
@@ -4380,6 +4451,22 @@ function renderPartDetail(route) {
       'div',
       { class: 'button-row', style: { marginTop: '0.75rem' } },
       can('parts', 'write') ? h('a', { class: 'btn btn-small', href: `#/parts/${encodeURIComponent(part.id)}/edit` }, 'Edit part') : null,
+      // v4 (SPEC-v4.md 3.3): gather this part into a draft request.
+      can('purchasing', 'write')
+        ? h(
+            'button',
+            {
+              class: 'btn btn-small',
+              type: 'button',
+              onclick: () =>
+                openAddToRequestPicker({
+                  label: `"${part.name}" joins a draft request at ${requestDefaultQty(part)} ${part.unit || 'pcs'}.`,
+                  buildLines: () => [partRequestLine(part)],
+                }),
+            },
+            'Add to parts request',
+          )
+        : null,
     ),
     h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
     sectionTitle('Used on service orders'),
@@ -4579,6 +4666,1431 @@ function renderPartForm(route) {
   });
 
   return page(pageHead(editing ? 'Edit part' : 'Add part'), form);
+}
+
+/* ---------- Parts requests (SPEC-v4.md sections 2 and 3) ----------
+   A request stays a Draft while lines are gathered from parts, low stock,
+   service orders or free text; Send turns it into a clean numbered price
+   table. Totals are always computed (requestTotals), never stored. */
+
+const REQUEST_STATUS_LABELS = {
+  draft: 'Draft',
+  sent: 'Sent',
+  received: 'Received',
+  cancelled: 'Cancelled',
+};
+
+const REQUEST_FILTERS = ['draft', 'sent', 'received', 'all'];
+
+/** Drafts and requests newest first (updatedAt, id as the tiebreaker). */
+function sortRequestsNewest(requests = []) {
+  return requests
+    .filter((request) => request && !request.deleted)
+    .slice()
+    .sort(
+      (a, b) =>
+        String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')) ||
+        String(a.id).localeCompare(String(b.id)),
+    );
+}
+
+function requestStatusPill(status) {
+  return h('span', { class: `pill req-status-${status}` }, REQUEST_STATUS_LABELS[status] || status);
+}
+
+/** Filter chip value from the route (SPEC-v4.md 3.1: Draft by default). */
+function requestFilterFrom(route) {
+  const value = route.params.get('filter') || route.params.get('status') || 'draft';
+  return REQUEST_FILTERS.includes(value) ? value : 'draft';
+}
+
+function requestTotalText(request) {
+  return (request.lines || []).length ? formatMoney(requestTotals(request).totalCents) : null;
+}
+
+function requestPhoneCard(request) {
+  const lines = (request.lines || []).length;
+  return h(
+    'a',
+    { class: 'row so-card', href: `#/requests/${encodeURIComponent(request.id)}` },
+    h(
+      'div',
+      { class: 'row-main' },
+      h('div', { class: 'row-title' }, request.title),
+      h(
+        'div',
+        { class: 'row-sub' },
+        h('span', { class: 'so-number' }, formatRequestNumber(request.number)),
+        ` · ${lines} line${lines === 1 ? '' : 's'}`,
+        request.neededBy ? ` · needed ${formatDate(request.neededBy)}` : '',
+      ),
+      editedTag(request),
+    ),
+    h(
+      'div',
+      { class: 'row-side' },
+      requestStatusPill(request.status),
+      requestTotalText(request) ? h('span', { class: 'qty' }, requestTotalText(request)) : null,
+    ),
+    h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+  );
+}
+
+function requestsTableColumns() {
+  return [
+    {
+      key: 'number',
+      label: 'Number',
+      value: (request) => formatRequestNumber(request.number),
+      sortValue: (request) => {
+        const value = Number(request.number);
+        return Number.isFinite(value) ? Math.floor(value) : null;
+      },
+      cell: (request) => h('span', { class: 'so-number' }, formatRequestNumber(request.number)),
+    },
+    { key: 'title', label: 'Title', value: (request) => request.title },
+    {
+      key: 'status',
+      label: 'Status',
+      value: (request) => REQUEST_STATUS_LABELS[request.status] || request.status,
+      cell: (request) => requestStatusPill(request.status),
+    },
+    {
+      key: 'lines',
+      label: 'Lines',
+      value: (request) => (request.lines || []).length,
+      sortValue: (request) => (request.lines || []).length,
+    },
+    {
+      key: 'total',
+      label: 'Total',
+      value: (request) => requestTotalText(request),
+      sortValue: (request) => requestTotals(request).totalCents,
+    },
+    {
+      key: 'neededBy',
+      label: 'Needed by',
+      value: (request) => (request.neededBy ? formatDate(request.neededBy) : null),
+    },
+    editedByColumn(),
+  ];
+}
+
+function renderRequests(route) {
+  setTitle('Parts requests');
+  // Reaching the list means the gather flow is over (SPEC-v4.md 3.3): any
+  // lines waiting for a form are dropped. The form routes consume pending
+  // lines before this renders behind the drawer.
+  pendingRequestLines = null;
+  const filter = requestFilterFrom(route);
+  const listHost = h('div', { class: 'list' });
+  const tableHost = h('div', { class: 'table-wrap' });
+  let searchQuery = '';
+
+  function update(nextQuery) {
+    if (typeof nextQuery === 'string') searchQuery = nextQuery;
+    let requests = searchPurchaseRequests(state.purchaseRequests, searchQuery);
+    // "All" keeps cancelled requests visible; the other chips are statuses.
+    requests = sortRequestsNewest(filter === 'all' ? requests : requests.filter((request) => request.status === filter));
+    if (requests.length === 0) {
+      const filtered = Boolean(searchQuery.trim()) || filter !== 'draft';
+      listHost.replaceChildren(
+        emptyState(
+          searchQuery.trim() ? 'No matching requests' : filtered ? `No ${filter === 'all' ? '' : REQUEST_STATUS_LABELS[filter].toLowerCase() + ' '}requests` : 'No parts requests yet',
+          searchQuery.trim()
+            ? 'Try a different search.'
+            : filter === 'draft'
+              ? 'Gather parts you need to buy into a draft request, then send it.'
+              : 'Requests you mark with that status show up here.',
+          searchQuery.trim() || filter !== 'draft'
+            ? []
+            : can('purchasing', 'write')
+              ? [h('a', { class: 'btn btn-primary', href: '#/requests/new' }, 'New request')]
+              : [],
+        ),
+      );
+      listHost.classList.remove('cards-only');
+      tableHost.replaceChildren();
+    } else {
+      listHost.replaceChildren(...requests.map(requestPhoneCard));
+      listHost.classList.add('cards-only');
+      tableHost.replaceChildren(
+        buildDataTable(
+          'requests',
+          requestsTableColumns(),
+          requests,
+          (request) => `#/requests/${encodeURIComponent(request.id)}`,
+          update,
+        ),
+      );
+    }
+  }
+
+  update();
+  return page(
+    pageHead(
+      'Parts requests',
+      // New request needs purchasing Write (SPEC-v4.md 3.1).
+      headActionFor(
+        'purchasing',
+        h('a', { class: 'btn btn-primary btn-small', href: '#/requests/new' }, '+ New request'),
+      ),
+    ),
+    searchBox('Search parts requests', (value) => update(value), true),
+    h(
+      'div',
+      { class: 'chips', role: 'group', 'aria-label': 'Filter parts requests' },
+      ...REQUEST_FILTERS.map((value) =>
+        h(
+          'a',
+          {
+            class: `chip${filter === value ? ' is-active' : ''}`,
+            href: value === 'draft' ? '#/requests' : `#/requests?filter=${value}`,
+            'aria-pressed': filter === value ? 'true' : 'false',
+          },
+          value === 'all' ? 'All' : REQUEST_STATUS_LABELS[value],
+        ),
+      ),
+    ),
+    listHost,
+    tableHost,
+  );
+}
+
+/* ---------- Request lines editor (SPEC-v4.md 3.2) ----------
+   Editable inline rows: #, Description (with catalogue autocomplete),
+   Part #, Qty, Unit, Unit price (blank = price unknown), Line total, Machine
+   (optional), remove; up/down reorders. Item # follows the order. */
+
+const MAX_REQUEST_LINES = 100;
+
+/** Editor line state: input strings; rawRequestLine() makes it server-safe. */
+function normalizeRequestLine(line) {
+  const price =
+    line && line.unitPrice !== null && line.unitPrice !== undefined ? String(line.unitPrice) : '';
+  return {
+    id: (line && line.id) || uid(),
+    description: String((line && line.description) || ''),
+    qty: line && line.qty !== null && line.qty !== undefined ? String(line.qty) : '1',
+    unit: String((line && line.unit) || 'pcs'),
+    unitPrice: price === '0' ? '0' : price,
+    partId: (line && line.partId) || '',
+    partNumber: String((line && line.partNumber) || ''),
+    supplier: String((line && line.supplier) || ''),
+    machineId: (line && line.machineId) || '',
+    workOrderId: (line && line.workOrderId) || '',
+    note: String((line && line.note) || ''),
+  };
+}
+
+/** Server-safe line from the editor state (SPEC-v4.md section 2 shape). */
+function rawRequestLine(line) {
+  const qty = Number(line.qty);
+  const priceText = String(line.unitPrice ?? '').trim();
+  const price = priceText === '' ? null : Number(priceText);
+  const out = {
+    id: line.id,
+    description: String(line.description || '').trim().slice(0, 200),
+    qty: Number.isFinite(qty) && qty > 0 ? Number(qty.toFixed(2)) : 0,
+    unit: String(line.unit || '').trim().slice(0, 20) || 'pcs',
+    unitPrice: price !== null && Number.isFinite(price) ? Math.max(0, price) : null,
+  };
+  if (line.partId) out.partId = line.partId;
+  if (String(line.partNumber || '').trim()) out.partNumber = line.partNumber.trim().slice(0, 60);
+  if (String(line.supplier || '').trim()) out.supplier = line.supplier.trim().slice(0, 120);
+  if (line.machineId) out.machineId = line.machineId;
+  if (line.workOrderId) out.workOrderId = line.workOrderId;
+  if (String(line.note || '').trim()) out.note = line.note.trim().slice(0, 200);
+  return out;
+}
+
+/** Problems with the current editor lines, shown in the form error box. */
+function requestLineProblemsFor(lines) {
+  const problems = [];
+  (Array.isArray(lines) ? lines : []).forEach((raw, index) => {
+    const label = `Line ${index + 1}`;
+    if (!String(raw.description || '').trim()) problems.push(`${label} needs a description.`);
+    else if (String(raw.description).length > 200) {
+      problems.push(`${label} description is longer than 200 characters.`);
+    }
+    const qty = Number(raw.qty);
+    if (!Number.isFinite(qty) || qty <= 0) problems.push(`${label} needs a quantity above 0.`);
+    else if (qty > 100000) problems.push(`${label} quantity is above 100000.`);
+    if (raw.unit && String(raw.unit).length > 20) problems.push(`${label} unit is longer than 20 characters.`);
+    if (raw.unitPrice !== null && raw.unitPrice !== undefined) {
+      const price = Number(raw.unitPrice);
+      if (!Number.isFinite(price)) problems.push(`${label} price is not a number.`);
+      else if (price > 1000000) problems.push(`${label} price is above 1000000.`);
+    }
+    if (raw.partNumber && String(raw.partNumber).length > 60) {
+      problems.push(`${label} part number is longer than 60 characters.`);
+    }
+  });
+  return problems;
+}
+
+function createRequestLinesEditor(initialLines = [], { onChange = null, focusLineId = null } = {}) {
+  const lines = (initialLines || []).filter(Boolean).map(normalizeRequestLine);
+  const listHost = h('div', { class: 'req-lines' });
+  const hint = h('p', { class: 'field-hint', role: 'status' });
+
+  function notify() {
+    hint.textContent = lines.length >= MAX_REQUEST_LINES ? 'At most 100 lines.' : '';
+    if (typeof onChange === 'function') onChange();
+  }
+
+/** Editor cell: visible label on phone, header row labels it on wider screens. */
+function reqCell(labelText, control, className) {
+  return h(
+    'div',
+    { class: `req-cell ${className}` },
+    labelText ? h('span', { class: 'req-cell-label', 'aria-hidden': 'true' }, labelText) : null,
+    control,
+  );
+}
+
+/** One editable row (SPEC-v4.md 3.2): inputs update the line in place. */
+function requestLineRow(line, index) {
+  const descriptionInput = h('input', {
+    type: 'text',
+    maxlength: '200',
+    value: line.description,
+    placeholder: 'What to buy',
+    autocomplete: 'off',
+    'aria-label': `Line ${index + 1} description`,
+    dataset: { lineId: line.id },
+  });
+  const suggestions = h('div', {
+    class: 'req-line-suggest',
+    role: 'listbox',
+    'aria-label': 'Matching catalogue parts',
+  });
+
+    function matches() {
+      const needle = descriptionInput.value.trim();
+      if (!needle) return [];
+      return searchParts(state.parts, needle).slice(0, 8);
+    }
+
+    function fillFromPart(part) {
+      line.description = part.name || line.description;
+      line.partId = part.id || '';
+      line.partNumber = part.partNumber || '';
+      line.unit = part.unit || 'pcs';
+      line.supplier = part.supplier || '';
+      // One fitting machine pre-selects itself; more leave the choice open.
+      if (!line.machineId && (part.machineIds || []).length === 1) line.machineId = part.machineIds[0];
+      suggestions.replaceChildren();
+      descriptionInput.value = line.description;
+      renderRows();
+      descriptionInput.focus();
+    }
+
+    function showSuggestions() {
+      suggestions.replaceChildren();
+      // Typing past a picked part breaks the link; emptying the description
+      // drops it, picking a suggestion sets it fresh.
+      if (!descriptionInput.value.trim()) line.partId = '';
+      const parts = matches();
+      let active = -1;
+      const options = parts.map((part) =>
+        h(
+          'button',
+          { type: 'button', class: 'req-line-suggest-item', role: 'option' },
+          h('span', {}, part.name),
+          part.partNumber ? h('span', { class: 'req-line-suggest-no' }, part.partNumber) : null,
+        ),
+      );
+      options.forEach((option, optionIndex) => {
+        option.addEventListener('mousedown', (event) => {
+          // Before the blur handler clears the list.
+          event.preventDefault();
+          fillFromPart(parts[optionIndex]);
+        });
+        suggestions.append(option);
+      });
+      descriptionInput.setAttribute('aria-expanded', String(options.length > 0));
+      descriptionInput.addEventListener('keydown', (event) => {
+        if (suggestions.childElementCount === 0) return;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          active += event.key === 'ArrowDown' ? 1 : -1;
+          if (active < 0) active = options.length - 1;
+          if (active >= options.length) active = 0;
+          options.forEach((option, optionIndex) => {
+            option.classList.toggle('is-active', optionIndex === active);
+          });
+        } else if (event.key === 'Enter' && active >= 0) {
+          event.preventDefault();
+          fillFromPart(parts[active]);
+        } else if (event.key === 'Escape') {
+          // Only close the suggestion list; the drawer stays open.
+          event.stopPropagation();
+          event.preventDefault();
+          suggestions.replaceChildren();
+        }
+      });
+    }
+
+    descriptionInput.addEventListener('input', () => {
+      line.description = descriptionInput.value;
+      showSuggestions();
+      notify();
+    });
+    descriptionInput.addEventListener('blur', () => {
+      line.partId = '';
+      // Buttons pick with mousedown, so a plain blur just closes the list.
+      setTimeout(() => suggestions.replaceChildren(), 120);
+    });
+
+    const partNumberInput = h('input', {
+      type: 'text',
+      maxlength: '60',
+      value: line.partNumber,
+      'aria-label': `Line ${index + 1} part number`,
+      placeholder: 'Catalogue #',
+    });
+    partNumberInput.addEventListener('input', () => {
+      line.partNumber = partNumberInput.value;
+      notify();
+    });
+
+    const qtyInput = h('input', {
+      type: 'number',
+      min: '0',
+      max: '100000',
+      step: '0.01',
+      value: line.qty,
+      'aria-label': `Line ${index + 1} quantity`,
+    });
+    qtyInput.addEventListener('input', () => {
+      line.qty = qtyInput.value;
+      totalText.textContent = requestLineTotalText(line);
+      notify();
+    });
+
+    const unitInput = h('input', {
+      type: 'text',
+      maxlength: '20',
+      value: line.unit,
+      'aria-label': `Line ${index + 1} unit`,
+    });
+    unitInput.addEventListener('input', () => {
+      line.unit = unitInput.value;
+      notify();
+    });
+
+    const priceInput = h('input', {
+      type: 'number',
+      min: '0',
+      max: '1000000',
+      step: '0.01',
+      value: line.unitPrice,
+      placeholder: 'Unknown',
+      'aria-label': `Line ${index + 1} unit price (leave blank when unknown)`,
+    });
+    priceInput.addEventListener('input', () => {
+      line.unitPrice = priceInput.value;
+      totalText.textContent = requestLineTotalText(line);
+      notify();
+    });
+
+    const machineSelect = h('select', { 'aria-label': `Line ${index + 1} machine (optional)` },
+      h('option', { value: '' }, '—'),
+      ...orderedMachines().map((machine) =>
+        machine.id === line.machineId
+          ? h('option', { value: machine.id, selected: true }, machine.name)
+          : h('option', { value: machine.id }, machine.name),
+      ),
+    );
+    machineSelect.addEventListener('change', () => {
+      line.machineId = machineSelect.value;
+      notify();
+    });
+
+    const totalText = h('span', { class: 'req-line-total tabular' }, requestLineTotalText(line));
+
+    const upButton = h(
+      'button',
+      {
+        class: 'btn btn-ghost btn-small',
+        type: 'button',
+        'aria-label': `Move line ${index + 1} up`,
+        disabled: index === 0,
+        onclick: () => moveLine(index, 'up'),
+      },
+      '↑',
+    );
+    const downButton = h(
+      'button',
+      {
+        class: 'btn btn-ghost btn-small',
+        type: 'button',
+        'aria-label': `Move line ${index + 1} down`,
+        disabled: index === lines.length - 1,
+        onclick: () => moveLine(index, 'down'),
+      },
+      '↓',
+    );
+    const removeButton = h(
+      'button',
+      {
+        class: 'btn btn-ghost btn-small',
+        type: 'button',
+        'aria-label': `Remove line ${index + 1}`,
+        onclick: () => {
+          lines.splice(index, 1);
+          renderRows();
+          notify();
+        },
+      },
+      '×',
+    );
+
+    return h(
+      'div',
+      { class: 'req-line-row', dataset: { lineId: line.id } },
+      h(
+        'div',
+        { class: 'req-cell req-cell-n' },
+        h('span', { class: 'req-line-no tabular', 'aria-hidden': 'true' }, String(index + 1)),
+      ),
+      reqCell('Description', h('div', { class: 'req-desc-wrap' }, descriptionInput, suggestions), 'req-cell-desc'),
+      reqCell('Part #', partNumberInput, 'req-cell-part'),
+      reqCell('Qty', qtyInput, 'req-cell-qty'),
+      reqCell('Unit', unitInput, 'req-cell-unit'),
+      reqCell('Unit price', priceInput, 'req-cell-price'),
+      h(
+        'div',
+        { class: 'req-cell req-cell-total' },
+        h('span', { class: 'req-cell-label', 'aria-hidden': 'true' }, 'Line total'),
+        totalText,
+      ),
+      reqCell('Machine', machineSelect, 'req-cell-machine'),
+      h(
+        'div',
+        { class: 'req-cell req-cell-actions' },
+        h('span', { class: 'req-cell-label', 'aria-hidden': 'true' }, 'Order'),
+        upButton,
+        downButton,
+        removeButton,
+      ),
+    );
+  }
+
+  function renderRows({ focusId = null } = {}) {
+    const focusIndex = focusId ? lines.findIndex((line) => line.id === focusId) : -1;
+    listHost.replaceChildren(...lines.map((line, index) => requestLineRow(line, index)));
+    if (focusIndex >= 0) {
+      const row = listHost.children[focusIndex];
+      const input = row ? row.querySelector('input') : null;
+      if (input) {
+        // A frame later, so the drawer's own focus-after-open does not win.
+        requestAnimationFrame(() => {
+          input.focus();
+          if (typeof input.select === 'function') input.select();
+        });
+      }
+    }
+  }
+
+  function moveLine(index, direction) {
+    const to = direction === 'down' ? index + 1 : index - 1;
+    if (to < 0 || to >= lines.length) return;
+    const next = moveRequestLine(lines, index, direction);
+    lines.length = 0;
+    lines.push(...next);
+    renderRows();
+    notify();
+  }
+
+  function addLine() {
+    if (lines.length >= MAX_REQUEST_LINES) return null;
+    const line = normalizeRequestLine({ id: uid(), qty: 1, unit: 'pcs' });
+    lines.push(line);
+    renderRows({ focusId: line.id });
+    notify();
+    return line;
+  }
+
+  renderRows({ focusId: focusLineId });
+
+  const element = h(
+    'div',
+    { class: 'req-lines-edit' },
+    hint,
+    h(
+      'div',
+      { class: 'req-lines-head', 'aria-hidden': 'true' },
+      h('span', { class: 'req-cell req-cell-n' }, '#'),
+      h('span', { class: 'req-cell req-cell-desc' }, 'Description'),
+      h('span', { class: 'req-cell req-cell-part' }, 'Part #'),
+      h('span', { class: 'req-cell req-cell-qty' }, 'Qty'),
+      h('span', { class: 'req-cell req-cell-unit' }, 'Unit'),
+      h('span', { class: 'req-cell req-cell-price' }, 'Unit price'),
+      h('span', { class: 'req-cell req-cell-total' }, 'Line total'),
+      h('span', { class: 'req-cell req-cell-machine' }, 'Machine'),
+      h('span', { class: 'req-cell req-cell-actions' }, 'Order'),
+    ),
+    listHost,
+    h(
+      'div',
+      { class: 'req-lines-add' },
+      h('button', { class: 'btn btn-small', type: 'button', onclick: () => addLine() }, '+ Add line'),
+    ),
+  );
+
+  return {
+    element,
+    addLine,
+    getRequestLines: () => lines.map(rawRequestLine),
+    requestLineProblems: () => requestLineProblemsFor(lines.map(rawRequestLine)),
+  };
+}
+
+/** "—" for unknown prices, otherwise the computed line total (SPEC-v4.md 2). */
+function requestLineTotalText(line) {
+  const raw = rawRequestLine(line);
+  if (raw.unitPrice === null) return '—';
+  const { lines: computed } = requestTotals({ lines: [raw], hstRate: 0 });
+  return formatMoney(computed[0].lineTotalCents) || '—';
+}
+
+/* ---------- Request form (SPEC-v4.md 3.2) ----------
+   Shared by the full-page form (< 1024 px) and the desktop drawer; returns
+   the form node and an isDirty() probe for the drawer's discard check. */
+
+/* Lines gathered from a service order start with an empty description, which
+   the server rejects, so they ride along until the form saves (SPEC-v4.md
+   3.3): {forId: '<request id>' | 'new', lines: [...]} consumed once. */
+let pendingRequestLines = null;
+
+function consumePendingRequestLines(forId) {
+  if (!pendingRequestLines || pendingRequestLines.forId !== forId) return [];
+  const lines = pendingRequestLines.lines;
+  pendingRequestLines = null;
+  return lines;
+}
+
+/** "Requested by" defaults to the creator's display name (SPEC-v4.md 2). */
+function defaultRequesterName() {
+  return userDisplayName(teamUser && teamUser.id) || (teamUser && teamUser.displayName) || '';
+}
+
+function requestFormTitle(existing) {
+  return existing ? 'Edit parts request' : 'New parts request';
+}
+
+/** The money footer of the form: subtotal, HST at the typed rate, grand total
+ *  and the unpriced-line count (SPEC-v4.md 3.2). */
+function requestTotalsNode(stream) {
+  const box = h('div', { class: 'req-totals' });
+  const paint = (request) => {
+    const totals = requestTotals(request);
+    const rateLabel = requestHstLabel(request.hstRate);
+    box.replaceChildren(
+      h(
+        'div',
+        { class: 'req-total-row' },
+        h('span', {}, 'Subtotal before HST'),
+        h('span', { class: 'req-total-value tabular' }, formatMoney(totals.subtotalCents)),
+      ),
+      h(
+        'div',
+        { class: 'req-total-row' },
+        h('span', {}, rateLabel),
+        h('span', { class: 'req-total-value tabular' }, formatMoney(totals.hstCents)),
+      ),
+      h(
+        'div',
+        { class: 'req-total-row req-total-grand' },
+        h('span', {}, 'Grand total'),
+        h('span', { class: 'req-total-value tabular' }, formatMoney(totals.totalCents)),
+      ),
+      totals.unpricedCount > 0
+        ? h(
+            'div',
+            { class: 'req-total-note muted' },
+            `${totals.unpricedCount} line${totals.unpricedCount === 1 ? '' : 's'} have no price`,
+          )
+        : null,
+    );
+  };
+  if (typeof stream === 'function') stream(paint);
+  else paint(stream);
+  return { box, paint };
+}
+
+function requestFormBody({ existing = null } = {}) {
+  const base = existing || {
+    title: '',
+    status: 'draft',
+    supplier: '',
+    neededBy: '',
+    requestedBy: defaultRequesterName(),
+    hstRate: 13,
+    notes: '',
+    lines: [],
+    sentAt: null,
+    receivedAt: null,
+  };
+  const form = h('form', { class: 'form', novalidate: true });
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+
+  const titleInput = h('input', {
+    type: 'text',
+    required: true,
+    maxlength: '120',
+    autocomplete: 'off',
+    placeholder: 'e.g. Juki needles + belts, Nov',
+    value: base.title || '',
+  });
+  const supplierInput = h('input', {
+    type: 'text',
+    maxlength: '120',
+    autocomplete: 'off',
+    value: base.supplier || '',
+  });
+  const neededByInput = h('input', {
+    type: 'date',
+    value: isISODate(base.neededBy) ? base.neededBy : '',
+  });
+  const requestedByInput = h('input', {
+    type: 'text',
+    maxlength: '80',
+    autocomplete: 'off',
+    value: base.requestedBy || '',
+    placeholder: 'Who asked for these parts',
+  });
+  const hstRateInput = h('input', {
+    type: 'number',
+    min: '0',
+    max: '30',
+    step: '0.01',
+    value: base.hstRate === null || base.hstRate === undefined ? 13 : base.hstRate,
+  });
+  const notesInput = h('textarea', { rows: 3, maxlength: '2000', value: base.notes || '' });
+
+  // Lines gathered elsewhere (SPEC-v4.md 3.3) open pre-attached and focused.
+  const extraLines = consumePendingRequestLines(existing ? existing.id : 'new');
+  const linesEditor = createRequestLinesEditor(
+    [...(base.lines || []), ...extraLines],
+    {
+      onChange: () => footer.paint(shaped()),
+      focusLineId: extraLines.length ? extraLines[0].id : null,
+    },
+  );
+
+  function currentHstRate() {
+    const rate = Number(hstRateInput.value);
+    return Number.isFinite(rate) && rate >= 0 && rate <= 30 ? Math.min(rate, 30) : 13;
+  }
+
+  function shaped() {
+    return {
+      lines: linesEditor.getRequestLines(),
+      hstRate: currentHstRate(),
+    };
+  }
+
+  const footer = requestTotalsNode((paint) => {
+    paint(shaped());
+    hstRateInput.addEventListener('input', () => paint(shaped()));
+  });
+
+  const save = h(
+    'button',
+    { class: 'btn btn-primary', type: 'submit' },
+    existing ? 'Save changes' : 'Create request',
+  );
+
+  form.append(
+    errorBox,
+    field('Title', titleInput),
+    h('div', { class: 'grid-2' }, field('Supplier', supplierInput), field('Needed by', neededByInput)),
+    h('div', { class: 'grid-2' }, field('Requested by', requestedByInput), field('HST %', hstRateInput, 'Ontario HST is 13.')),
+    field('Notes', notesInput, 'Printed under the table on the request sheet.'),
+    sectionTitle('Lines'),
+    linesEditor.element,
+    footer.box,
+    h(
+      'div',
+      { class: 'form-actions' },
+      save,
+      h(
+        'a',
+        { class: 'btn', href: existing ? `#/requests/${encodeURIComponent(existing.id)}` : '#/requests' },
+        'Cancel',
+      ),
+    ),
+  );
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorBox.textContent = '';
+    const problems = [];
+    const title = titleInput.value.trim();
+    if (!title) problems.push('Enter a title.');
+    else if (title.length > 120) problems.push('The title is longer than 120 characters.');
+    const rate = Number(hstRateInput.value);
+    if (hstRateInput.value !== '' && (!Number.isFinite(rate) || rate < 0 || rate > 30 || Number(rate.toFixed(2)) !== rate)) {
+      problems.push('HST % must be between 0 and 30, with at most 2 decimals.');
+    }
+    if (neededByInput.value && !isISODate(neededByInput.value)) {
+      problems.push('Needed by is not a valid date.');
+    }
+    const lines = linesEditor.getRequestLines();
+    if (lines.length > MAX_REQUEST_LINES) problems.push(`At most ${MAX_REQUEST_LINES} lines.`);
+    problems.push(...linesEditor.requestLineProblems());
+    if (problems.length > 0) {
+      errorBox.textContent = problems[0];
+      return;
+    }
+    const now = nowISO();
+    const record = {
+      ...base,
+      id: existing ? existing.id : uid(),
+      title,
+      supplier: supplierInput.value.trim().slice(0, 120),
+      neededBy: neededByInput.value || null,
+      requestedBy: requestedByInput.value.trim().slice(0, 80),
+      hstRate: hstRateInput.value === '' ? 13 : Math.min(Math.max(rate, 0), 30),
+      notes: notesInput.value.trim(),
+      lines,
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+    };
+    save.disabled = true;
+    try {
+      await sync.saveRecord('purchaseRequests', record, existing ? existing.version : null);
+      await refreshState();
+      toast(existing ? 'Request saved.' : 'Request created.');
+      navigate(`#/requests/${encodeURIComponent(record.id)}`);
+    } catch (error) {
+      errorBox.textContent = 'Could not save. Please try again.';
+      console.error(error);
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  let dirty = extraLines.length > 0;
+  form.addEventListener('input', () => {
+    dirty = true;
+  });
+  form.addEventListener('change', () => {
+    dirty = true;
+  });
+
+  return { node: form, isDirty: () => dirty, title: requestFormTitle(existing) };
+}
+
+/** Full-page form route (< 1024 px); desktop opens the drawer instead. */
+function renderRequestFormPage(route, existing) {
+  const second = route.segments[1];
+  if (second && second !== 'new' && !existing) {
+    setTitle('Request not found');
+    return page(
+      pageHead('Request not found'),
+      emptyState('That parts request does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/requests' }, 'Back to Parts requests'),
+      ]),
+    );
+  }
+  const { node } = requestFormBody({ existing });
+  return page(pageHead(requestFormTitle(existing)), node);
+}
+
+/* The request form opens in the drawer on desktop (SPEC-v4.md 3.2); phones
+   and tablets keep the full-page form. */
+function maybeOpenRequestDrawer(route) {
+  if (!desktopMedia.matches) return false;
+  if (!can('purchasing', 'write')) return false;
+  const second = route.segments[1];
+  if (second === 'new') {
+    const { node, isDirty } = requestFormBody({ existing: null });
+    openDrawer({ title: requestFormTitle(null), content: node, isDirty });
+    return true;
+  }
+  if (route.segments[2] !== 'edit') return false;
+  const existing = requestById(second);
+  if (!existing) return false;
+  const { node, isDirty } = requestFormBody({ existing });
+  openDrawer({ title: requestFormTitle(existing), content: node, isDirty });
+  return true;
+}
+
+/* ---------- Request detail (SPEC-v4.md 3.2) ----------
+   Read view plus one-click status actions; read-only roles see everything
+   with no edit controls or status buttons. */
+
+/** Field changes a status action makes (SPEC-v4.md 2: sentAt/receivedAt are
+ *  set by the client when the status changes). */
+function requestStatusPatch(request, status) {
+  const now = nowISO();
+  if (status === 'sent') return { status, sentAt: now };
+  if (status === 'received') return { status, sentAt: request.sentAt || now, receivedAt: now };
+  if (status === 'draft') return { status, receivedAt: null };
+  return { status };
+}
+
+const REQUEST_STATUS_TOAST = {
+  draft: 'Back to draft.',
+  sent: 'Request marked sent.',
+  received: 'Request marked received.',
+  cancelled: 'Request cancelled.',
+};
+
+async function changeRequestStatus(request, status) {
+  if (status === request.status) return;
+  const totals = requestTotals(request);
+  // Mark sent asks again while lines have no price (SPEC-v4.md 3.2).
+  if (status === 'sent' && totals.unpricedCount > 0) {
+    const yes = await showConfirm({
+      title: 'Send without prices?',
+      message: `${totals.unpricedCount} line${totals.unpricedCount === 1 ? '' : 's'} still ${totals.unpricedCount === 1 ? 'has' : 'have'} no price. You can add prices after the supplier replies.`,
+      confirmText: 'Mark sent',
+      cancelText: 'Keep editing',
+    });
+    if (!yes) return;
+  }
+  if (status === 'cancelled') {
+    const yes = await showConfirm({
+      title: 'Cancel this request?',
+      message: 'It stays on record marked Cancelled and can still be printed.',
+      confirmText: 'Cancel request',
+      cancelText: 'Keep it',
+      danger: true,
+    });
+    if (!yes) return;
+  }
+  const next = { ...request, ...requestStatusPatch(request, status), updatedAt: nowISO() };
+  try {
+    await sync.saveRecord('purchaseRequests', next, request.version);
+    await refreshState();
+    toast(REQUEST_STATUS_TOAST[status] || 'Request updated.');
+    render();
+  } catch (error) {
+    console.error(error);
+    toast('Could not save the status change. Please try again.', 'warn');
+  }
+}
+
+/** Status transition buttons by status (SPEC-v4.md 3.2). */
+function requestStatusButtons(request) {
+  if (!can('purchasing', 'write')) return null;
+  const buttons = [];
+  if (request.status === 'draft') {
+    buttons.push(
+      h(
+        'button',
+        { class: 'btn btn-primary', type: 'button', onclick: () => changeRequestStatus(request, 'sent') },
+        'Mark sent',
+      ),
+    );
+  }
+  if (request.status === 'sent') {
+    buttons.push(
+      h(
+        'button',
+        { class: 'btn btn-primary', type: 'button', onclick: () => changeRequestStatus(request, 'received') },
+        'Mark received',
+      ),
+    );
+    buttons.push(
+      h(
+        'button',
+        { class: 'btn', type: 'button', onclick: () => changeRequestStatus(request, 'draft') },
+        'Back to draft',
+      ),
+    );
+  }
+  if (request.status !== 'cancelled') {
+    buttons.push(
+      h(
+        'button',
+        { class: 'btn btn-danger', type: 'button', onclick: () => changeRequestStatus(request, 'cancelled') },
+        'Cancel request',
+      ),
+    );
+  }
+  if (buttons.length === 0) return null;
+  return h('div', { class: 'status-buttons', role: 'group', 'aria-label': 'Request status' }, ...buttons);
+}
+
+/** Read-only lines: a table on desktop, stacked cards on phone. */
+function requestLinesView(request) {
+  const totals = requestTotals(request);
+  const machineNames = new Map(state.machines.map((machine) => [machine.id, machine.name]));
+  const lines = (request.lines || []).filter(Boolean);
+
+  const table = h(
+    'div',
+    { class: 'table-wrap req-lines-wrap' },
+    h(
+      'table',
+      { class: 'data-table req-lines-table' },
+      h(
+        'thead',
+        {},
+        h(
+          'tr',
+          {},
+          h('th', { scope: 'col' }, '#'),
+          h('th', { scope: 'col' }, 'Description'),
+          h('th', { scope: 'col' }, 'Part #'),
+          h('th', { scope: 'col' }, 'Qty'),
+          h('th', { scope: 'col' }, 'Unit'),
+          h('th', { scope: 'col' }, 'Unit price'),
+          h('th', { scope: 'col' }, 'Line total'),
+          h('th', { scope: 'col' }, 'Machine'),
+        ),
+      ),
+      h(
+        'tbody',
+        {},
+        ...lines.map((line, index) => {
+          const priced = line.unitPrice !== null && line.unitPrice !== undefined;
+          const lineTotal = totals.lines[index] ? totals.lines[index].lineTotalCents : null;
+          return h(
+            'tr',
+            {},
+            h('td', { 'data-col': 'n', class: 'tabular' }, String(index + 1)),
+            h('td', { 'data-col': 'description' }, line.description),
+            h('td', { 'data-col': 'part' }, line.partNumber || '—'),
+            h('td', { 'data-col': 'qty', class: 'tabular' }, String(line.qty)),
+            h('td', { 'data-col': 'unit' }, line.unit || 'pcs'),
+            h('td', { 'data-col': 'price', class: 'tabular' }, priced ? formatMoney(dollarsToCents(line.unitPrice)) : '—'),
+            h(
+              'td',
+              { 'data-col': 'total', class: 'tabular' },
+              priced ? formatMoney(lineTotal) : '—',
+            ),
+            h(
+              'td',
+              { 'data-col': 'machine' },
+              line.machineId && machineNames.get(line.machineId)
+                ? h(
+                    'a',
+                    { class: 'inline-link', href: `#/machines/${encodeURIComponent(line.machineId)}` },
+                    machineNames.get(line.machineId),
+                  )
+                : '—',
+            ),
+          );
+        }),
+      ),
+    ),
+  );
+
+  const cards = h(
+    'div',
+    { class: 'list cards-only req-lines-cards' },
+    ...lines.map((line, index) => {
+      const priced = line.unitPrice !== null && line.unitPrice !== undefined;
+      const lineTotal = totals.lines[index] ? totals.lines[index].lineTotalCents : null;
+      return h(
+        'div',
+        { class: 'req-line-card' },
+        h(
+          'div',
+          { class: 'req-line-card-head' },
+          h('span', { class: 'req-line-no tabular' }, String(index + 1)),
+          h('span', { class: 'req-line-card-title' }, line.description),
+        ),
+        h(
+          'div',
+          { class: 'row-sub' },
+          [
+            line.partNumber,
+            line.machineId && machineNames.get(line.machineId)
+              ? machineNames.get(line.machineId)
+              : '',
+          ]
+            .filter(Boolean)
+            .join(' · ') || '—',
+        ),
+        h(
+          'div',
+          { class: 'req-line-card-meta tabular' },
+          priced
+            ? `${line.qty} ${line.unit || 'pcs'} · ${formatMoney(dollarsToCents(line.unitPrice))} · ${formatMoney(lineTotal)}`
+            : `${line.qty} ${line.unit || 'pcs'} · price to be confirmed`,
+        ),
+      );
+    }),
+  );
+
+  return h('div', {}, cards, table);
+}
+
+function renderRequestDetail(route) {
+  const request = requestById(route.segments[1]);
+  setTitle(request ? request.title : 'Request not found');
+  if (!request) {
+    return page(
+      pageHead('Request not found'),
+      emptyState('That parts request does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/requests' }, 'Back to Parts requests'),
+      ]),
+    );
+  }
+
+  const canWrite = can('purchasing', 'write');
+  const lines = (request.lines || []).filter(Boolean);
+
+  const details = h(
+    'dl',
+    { class: 'detail-grid' },
+    h('dt', {}, 'Number'),
+    h('dd', {}, formatRequestNumber(request.number)),
+    h('dt', {}, 'Status'),
+    h('dd', {}, requestStatusPill(request.status)),
+    h('dt', {}, 'Supplier'),
+    h('dd', {}, request.supplier || '—'),
+    h('dt', {}, 'Requested by'),
+    h('dd', {}, request.requestedBy || '—'),
+    h('dt', {}, 'Needed by'),
+    h('dd', {}, request.neededBy ? formatDate(request.neededBy) : '—'),
+    h('dt', {}, 'Sent'),
+    h('dd', {}, request.sentAt ? formatBackupStamp(request.sentAt) : '—'),
+    h('dt', {}, 'Received'),
+    h('dd', {}, request.receivedAt ? formatBackupStamp(request.receivedAt) : '—'),
+    h('dt', {}, 'HST'),
+    h('dd', {}, requestHstLabel(request.hstRate)),
+  );
+
+  return page(
+    h(
+      'div',
+      { class: 'detail-head' },
+      h(
+        'div',
+        {},
+        h('h2', {}, request.title),
+        h('div', { class: 'row-sub' }, formatRequestNumber(request.number)),
+      ),
+      h(
+        'div',
+        { class: 'row-sub' },
+        requestStatusPill(request.status),
+        isReadOnly('purchasing') ? viewOnlyBadge() : null,
+      ),
+    ),
+    detailMeta(request),
+    conflictBanner('purchaseRequests', request.id),
+    requestStatusButtons(request),
+    h(
+      'div',
+      { class: 'button-row', style: { marginTop: '0.75rem' } },
+      canWrite
+        ? h('a', { class: 'btn btn-small', href: `#/requests/${encodeURIComponent(request.id)}/edit` }, 'Edit request')
+        : null,
+      h('a', { class: 'btn btn-small', href: `#/requests/${encodeURIComponent(request.id)}/sheet` }, 'View sheet'),
+    ),
+    h('div', { class: 'card', style: { marginTop: '0.75rem' } }, details),
+    sectionTitle('Lines'),
+    requestLinesView(request),
+    requestTotalsNode(request).box,
+    request.notes
+      ? h('div', { class: 'card pre', style: { marginTop: '0.75rem' } }, request.notes)
+      : null,
+    historySection('purchaseRequests', request.id),
+  );
+}
+
+/* ---------- Request sheet (SPEC-v4.md 3.4) ----------
+   A plain white printable page; @media print rules in styles.css hide the
+   app chrome and the screen-only buttons. */
+
+async function copyRequestSheet(request) {
+  const totals = requestTotals(request);
+  const options = { machines: state.machines };
+  const html = requestSheetHTML(request, totals, options);
+  const plain = requestSheetTSV(request, totals, options);
+  const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : null;
+  // The Clipboard API needs a secure context and permission; offer the CSV
+  // download instead of failing silently (SPEC-v4.md 3.4).
+  if (!clipboard || typeof clipboard.write !== 'function' || typeof window.ClipboardItem !== 'function') {
+    toast('Copying tables is not available here — use Download CSV instead.', 'warn');
+    return;
+  }
+  try {
+    await clipboard.write([
+      new window.ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([plain], { type: 'text/plain' }),
+      }),
+    ]);
+    toast('Table copied — paste it into an email or a spreadsheet.');
+  } catch (error) {
+    console.warn('Clipboard write failed:', error);
+    toast('Could not copy the table. Use Download CSV instead.', 'warn');
+  }
+}
+
+function downloadRequestSheetCSV(request) {
+  const csv = requestSheetCSV(request, requestTotals(request), { machines: state.machines });
+  const number = formatRequestNumber(request.number).toLowerCase();
+  downloadFile(`parts-request-${number}-${todayISO()}.csv`, 'text/csv;charset=utf-8', csv);
+  toast('CSV downloaded.');
+}
+
+function renderRequestSheetPage(route) {
+  const request = requestById(route.segments[1]);
+  setTitle(request ? `Request sheet ${formatRequestNumber(request.number)}` : 'Request not found');
+  if (!request) {
+    return page(
+      pageHead('Request not found'),
+      emptyState('That parts request does not exist.', 'It may have been deleted.', [
+        h('a', { class: 'btn btn-primary', href: '#/requests' }, 'Back to Parts requests'),
+      ]),
+    );
+  }
+
+  const totals = requestTotals(request);
+  const rows = requestSheetRows(request, totals, { machines: state.machines });
+  const footer = requestSheetTotals(request, totals);
+  const logoUrl = brandLogoUrl();
+
+  const table = h(
+    'table',
+    { class: 'pr-sheet-table' },
+    h('thead', {}, h('tr', {}, ...REQUEST_SHEET_COLUMNS.map((label) => h('th', { scope: 'col' }, label)))),
+    h(
+      'tbody',
+      {},
+      ...rows.map((row) =>
+        h(
+          'tr',
+          {},
+          h('td', { class: 'pr-sheet-n tabular' }, row.number),
+          h('td', { class: 'pr-sheet-desc' }, row.description),
+          h('td', { class: 'pr-sheet-qty tabular' }, row.qty),
+          h('td', { class: 'pr-sheet-unit' }, row.unit),
+          h('td', { class: 'pr-sheet-price tabular' }, row.unitPrice),
+          h('td', { class: 'pr-sheet-total tabular' }, row.totalPrice),
+        ),
+      ),
+    ),
+    h(
+      'tfoot',
+      {},
+      ...[footer.beforeHst, footer.hst, footer.grand].map(({ label, value }) =>
+        h(
+          'tr',
+          {},
+          h('td', { colspan: '5', class: 'pr-sheet-total-label' }, label),
+          h('td', { class: 'pr-sheet-total-value tabular' }, value),
+        ),
+      ),
+    ),
+  );
+
+  const metaRow = (label, value) =>
+    value
+      ? h('span', { class: 'pr-sheet-meta-item' }, h('span', { class: 'pr-sheet-meta-label' }, label), ' ', value)
+      : null;
+
+  const sheet = h(
+    'div',
+    { class: 'pr-sheet' },
+    h(
+      'div',
+      { class: 'pr-sheet-head' },
+      h(
+        'div',
+        { class: 'pr-sheet-brand' },
+        logoUrl
+          ? h('img', { class: 'pr-sheet-logo', src: logoUrl, alt: brandName() })
+          : h('span', { class: 'pr-sheet-mark' }, initialsOf(brandName()) || 'CM'),
+        h('span', { class: 'pr-sheet-brand-name' }, brandName()),
+      ),
+      h(
+        'div',
+        { class: 'pr-sheet-title' },
+        h('span', { class: 'pr-sheet-title-word' }, 'PURCHASE REQUEST'),
+        h('span', { class: 'pr-sheet-title-number' }, formatRequestNumber(request.number)),
+      ),
+    ),
+    h(
+      'div',
+      { class: 'pr-sheet-meta' },
+      metaRow('Title:', request.title),
+      metaRow('Requested by:', request.requestedBy),
+      metaRow('Date:', request.createdAt ? formatDate(String(request.createdAt).slice(0, 10)) : ''),
+      metaRow('Needed by:', request.neededBy ? formatDate(request.neededBy) : ''),
+      metaRow('Supplier:', request.supplier),
+    ),
+    table,
+    footer.unpricedCount > 0 ? h('p', { class: 'pr-sheet-footnote' }, 'Price to be confirmed') : null,
+    request.notes ? h('p', { class: 'pr-sheet-notes' }, request.notes) : null,
+  );
+
+  return page(
+    h(
+      'div',
+      { class: 'sheet-actions button-row', role: 'group', 'aria-label': 'Request sheet actions' },
+      h('button', { class: 'btn btn-primary', type: 'button', onclick: () => window.print() }, 'Print / Save as PDF'),
+      h('button', { class: 'btn', type: 'button', onclick: () => copyRequestSheet(request) }, 'Copy table'),
+      h('button', { class: 'btn', type: 'button', onclick: () => downloadRequestSheetCSV(request) }, 'Download CSV'),
+      h('a', { class: 'btn', href: `#/requests/${encodeURIComponent(request.id)}` }, 'Back to request'),
+    ),
+    sheet,
+  );
+}
+
+/* ---------- Gathering lines from other pages (SPEC-v4.md 3.3) ----------
+   One shared picker: the open draft requests (newest first) plus "New
+   request…". Complete lines append and save at once; lines without a
+   description (from a service order) open attached to the form, focused. */
+
+async function addLinesToRequest(request, lines) {
+  const clean = (Array.isArray(lines) ? lines : []).filter(Boolean);
+  if (clean.length === 0) {
+    toast('Nothing to add.', 'warn');
+    return;
+  }
+  // An empty description is rejected server-side (SPEC-v4.md 2), so those
+  // lines ride along into the form, description focused (SPEC-v4.md 3.3).
+  if (clean.some((line) => !String(line.description || '').trim())) {
+    pendingRequestLines = { forId: request.id, lines: clean.map(normalizeRequestLine) };
+    navigate(`#/requests/${encodeURIComponent(request.id)}/edit`);
+    return;
+  }
+  if ((request.lines || []).length + clean.length > MAX_REQUEST_LINES) {
+    toast('That request already has the most lines (100).', 'warn');
+    return;
+  }
+  const next = { ...request, lines: [...(request.lines || []), ...clean], updatedAt: nowISO() };
+  try {
+    const saved = await sync.saveRecord('purchaseRequests', next, request.version);
+    await refreshState();
+    toast(`Added to ${formatRequestNumber(saved && saved.number !== undefined ? saved.number : next.number)}.`);
+  } catch (error) {
+    console.error(error);
+    toast('Could not add to the request. Please try again.', 'warn');
+  }
+}
+
+function openAddToRequestPicker({ buildLines = null, label = null } = {}) {
+  // Adding lines needs purchasing Write (SPEC-v4.md 2/3.3).
+  if (!can('purchasing', 'write')) return;
+  const drafts = sortRequestsNewest(state.purchaseRequests.filter((request) => request.status === 'draft'));
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    // The picker removes every node it added (SPEC-v4.md section 6).
+    dialogRoot.replaceChildren();
+    if (previousFocus && document.contains(previousFocus)) previousFocus.focus();
+  };
+  const onKey = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+    }
+  };
+
+  const linesFor = (request) =>
+    typeof buildLines === 'function' ? (buildLines(request) || []).filter(Boolean) : [];
+
+  const newButton = h('button', { class: 'btn btn-primary', type: 'button' }, 'New request…');
+  newButton.addEventListener('click', () => {
+    const lines = linesFor(null);
+    close();
+    if (lines.length === 0) {
+      toast('Nothing to add.', 'warn');
+      return;
+    }
+    pendingRequestLines = { forId: 'new', lines: lines.map(normalizeRequestLine) };
+    navigate('#/requests/new');
+  });
+
+  const rows = drafts.map((request) => {
+    const button = h(
+      'button',
+      { class: 'picker-row', type: 'button' },
+      h('span', { class: 'picker-number so-number' }, formatRequestNumber(request.number)),
+      h('span', { class: 'picker-title' }, request.title),
+      h('span', { class: 'picker-lines muted small' }, `${(request.lines || []).length} lines`),
+    );
+    button.addEventListener('click', () => {
+      const lines = linesFor(request);
+      close();
+      addLinesToRequest(request, lines);
+    });
+    return button;
+  });
+
+  const dialog = h(
+    'div',
+    { class: 'dialog picker-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'picker-title' },
+    h('h2', { id: 'picker-title' }, 'Add to parts request'),
+    label ? h('p', { class: 'muted' }, label) : null,
+    rows.length
+      ? h('div', { class: 'picker-list' }, ...rows)
+      : h('p', { class: 'muted' }, 'No open draft requests yet.'),
+    newButton,
+    h('div', { class: 'dialog-actions' }, h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Cancel')),
+  );
+  const backdrop = h('div', { class: 'dialog-backdrop' }, dialog);
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop) close();
+  });
+  document.addEventListener('keydown', onKey);
+  dialogRoot.replaceChildren(backdrop);
+  const first = dialog.querySelector('.picker-row') || newButton;
+  if (first && typeof first.focus === 'function') first.focus();
+}
+
+/** Empty starting line for a service order (SPEC-v4.md 3.3): workOrderId and
+ *  machineId set, description filled in the form. */
+function serviceOrderRequestLine(order) {
+  return normalizeRequestLine({
+    description: '',
+    qty: 1,
+    unit: 'pcs',
+    workOrderId: order.id,
+    machineId: order.machineId || '',
+  });
+}
+
+/** "Request parts" on a service order (SPEC-v4.md 3.3). */
+function requestPartsForOrder(order) {
+  openAddToRequestPicker({
+    label: `A line for ${formatOrderNumber(order.number)} — describe what you need.`,
+    buildLines: () => [serviceOrderRequestLine(order)],
+  });
+}
+
+/** Row-level "Add to parts request" action on part rows (SPEC-v4.md 3.3). */
+function addToRequestButton(part) {
+  return h(
+    'button',
+    {
+      class: 'btn btn-ghost btn-small add-request-action',
+      type: 'button',
+      'aria-label': `Add ${part.name} to a parts request`,
+      title: 'Add to parts request',
+      onclick: (event) => {
+        // Do not open the part; open the picker.
+        event.preventDefault();
+        event.stopPropagation();
+        openAddToRequestPicker({
+          label: `"${part.name}" joins a draft request at ${requestDefaultQty(part)} ${part.unit || 'pcs'}.`,
+          buildLines: () => [partRequestLine(part)],
+        });
+      },
+    },
+    '+ request',
+  );
+}
+
+/** Qty a part line starts at: back to the minimum level, at least 1. */
+function requestDefaultQty(part) {
+  const need = partRequestLine(part);
+  return need ? need.qty : 1;
 }
 
 /* ---------- People: coworkers (SPEC-v3.md sections 5 and 13) ---------- */
@@ -8343,7 +9855,7 @@ async function render() {
   }
   // The phone "More" button lights up while a sheet page is shown.
   if (moreButton) {
-    if (['parts', 'statistics', 'coworkers', 'contractors', 'help', 'settings', 'admin'].includes(tab)) {
+    if (['parts', 'requests', 'statistics', 'coworkers', 'contractors', 'help', 'settings', 'admin'].includes(tab)) {
       moreButton.setAttribute('aria-current', 'page');
     } else {
       moreButton.removeAttribute('aria-current');
@@ -8423,6 +9935,46 @@ async function render() {
       content = renderPartDetail(route);
       isDetail = true;
       splitListRoot = 'parts';
+    }
+  } else if (root === 'requests') {
+    // v4 (SPEC-v4.md section 3): parts requests — list, form (drawer on
+    // desktop, full page below 1024 px), detail and the printable sheet.
+    if (!can('purchasing')) {
+      content = noAccessPage('Parts requests', 'Parts requests');
+    } else if (!second) {
+      content = renderRequests(route);
+    } else if (second === 'new') {
+      if (!can('purchasing', 'write')) {
+        content = noAccessPage('New parts request', 'Parts requests');
+      } else {
+        // Desktop opens the form in the drawer (SPEC-v4.md 3.2); phones and
+        // tablets keep the full-page form.
+        const requestDrawer = maybeOpenRequestDrawer(route);
+        if (requestDrawer) {
+          content = renderRequests({ segments: ['requests'], params: route.params });
+        } else {
+          content = renderRequestFormPage(route, null);
+        }
+      }
+    } else if (third === 'edit') {
+      if (!can('purchasing', 'write')) {
+        content = noAccessPage('Edit parts request', 'Parts requests');
+      } else {
+        const requestDrawer = maybeOpenRequestDrawer(route);
+        if (requestDrawer) {
+          content = renderRequests({ segments: ['requests'], params: route.params });
+        } else {
+          content = renderRequestFormPage(route, requestById(second));
+          isDetail = true;
+        }
+      }
+    } else if (third === 'sheet') {
+      content = renderRequestSheetPage(route);
+      isDetail = true;
+    } else {
+      content = renderRequestDetail(route);
+      isDetail = true;
+      splitListRoot = 'requests';
     }
   } else if (root === 'pm') {
     if (!can('pm')) {
@@ -8536,7 +10088,9 @@ async function render() {
             ? renderCoworkers(listRoute)
             : splitListRoot === 'contractors'
               ? renderContractors(listRoute)
-              : renderParts(listRoute);
+              : splitListRoot === 'requests'
+                ? renderRequests(listRoute)
+                : renderParts(listRoute);
     content = h(
       'div',
       { class: 'split', 'data-split-root': splitListRoot },
@@ -8828,6 +10382,13 @@ const NAV_ICONS = {
     'M3.25 7 12 11.75 20.75 7',
     'M12 11.75v9.75',
   ],
+  // v4 (SPEC-v4.md section 1): the Parts requests entry of the More sheet.
+  requests: [
+    'M7 3.5h10a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5Z',
+    'M9 2.25h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1Z',
+    'M9 11.5h6',
+    'M9 15.5h4',
+  ],
   stats: ['M4 20.5h16', 'M7 20.5v-6', 'M12 20.5V5', 'M17 20.5v-10'],
   coworkers: [
     'M5.5 8a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0',
@@ -8897,6 +10458,9 @@ function openMoreSheet() {
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const items = [
     can('parts') && { label: 'Parts', icon: NAV_ICONS.parts, href: '#/parts' },
+    // v4 (SPEC-v4.md section 1): Parts requests after Parts, only with the
+    // purchasing permission (read or more).
+    can('purchasing') && { label: 'Parts requests', icon: NAV_ICONS.requests, href: '#/requests' },
     // Statistics follows its own permission (SPEC-v3.md 13.3).
     can('statistics') && { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
     // People follow the coworkers/contractors permissions (SPEC-v3.md 13.3).
@@ -9188,6 +10752,9 @@ const NAV_TAB_AREAS = {
   pm: 'pm',
   machines: 'machines',
   parts: 'parts',
+  // v4 (SPEC-v4.md section 1): Parts requests follows Parts in the sidebar
+  // and the More sheet, hidden without the purchasing permission.
+  requests: 'purchasing',
   coworkers: 'coworkers',
   contractors: 'contractors',
   statistics: 'statistics',
@@ -9513,6 +11080,7 @@ const AREA_STORES = {
   pm: 'pmTasks',
   machines: 'machines',
   parts: 'parts',
+  purchasing: 'purchaseRequests',
   coworkers: 'coworkers',
   contractors: 'contractors',
 };
@@ -9852,6 +11420,7 @@ const LAST_TAB_AREAS = {
   jobs: 'serviceOrders',
   machines: 'machines',
   parts: 'parts',
+  requests: 'purchasing',
   pm: 'pm',
   coworkers: 'coworkers',
   contractors: 'contractors',
@@ -9861,7 +11430,7 @@ const LAST_TAB_AREAS = {
 function restoreLastTab() {
   if (location.hash) return;
   const last = storageGet(LAST_TAB_KEY);
-  const allowed = ['home', 'jobs', 'machines', 'parts', 'pm', 'coworkers', 'contractors', 'statistics'];
+  const allowed = ['home', 'jobs', 'machines', 'parts', 'requests', 'pm', 'coworkers', 'contractors', 'statistics'];
   if (last && allowed.includes(last)) {
     const area = LAST_TAB_AREAS[last];
     if (area && !can(area)) return;

@@ -4397,3 +4397,533 @@ body.logged-out .ai-chat-fab {
   font-weight: 650;
   padding-block: 0.5rem;
 }
+
+/* ============================================================
+   v4: Parts requests (SPEC-v4.md section 3)
+   ============================================================ */
+
+/* Request status pills: token colours like the service order pills. */
+.req-status-draft {
+  background: var(--progress-bg);
+  color: var(--progress-fg);
+}
+
+.req-status-sent {
+  background: var(--open-bg);
+  color: var(--open-fg);
+}
+
+.req-status-received {
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+.req-status-cancelled {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  text-decoration: line-through;
+}
+
+/* Row action on part rows (SPEC-v4.md 3.3). */
+.add-request-action {
+  flex: none;
+  margin-top: 0.15rem;
+}
+
+/* ---------- Request lines editor (SPEC-v4.md 3.2) ---------- */
+
+.req-lines-edit {
+  margin-top: 0.25rem;
+}
+
+.req-lines-head,
+.req-line-row {
+  display: grid;
+  grid-template-columns:
+    1.5rem minmax(9rem, 2.1fr) minmax(5.5rem, 1fr) 4.4rem 4.2rem 5.2rem 5.6rem minmax(6.5rem, 1.1fr) max-content;
+  gap: 0.4rem;
+  align-items: end;
+}
+
+.req-lines-head {
+  margin-bottom: 0.35rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.req-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.req-line-row {
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.req-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.req-cell input,
+.req-cell select {
+  width: 100%;
+  min-width: 0;
+}
+
+.req-cell-label {
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.req-cell-n {
+  align-self: start;
+}
+
+.req-line-no {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.35rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+/* Description cell with the autocomplete list under it. */
+.req-desc-wrap {
+  position: relative;
+}
+
+.req-line-suggest {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+.req-line-suggest:empty {
+  display: none;
+}
+
+.req-line-suggest-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.req-line-suggest-item:hover,
+.req-line-suggest-item.is-active {
+  background: var(--surface-2);
+}
+
+.req-line-suggest-no {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.req-line-total {
+  text-align: right;
+  font-weight: 600;
+}
+
+.req-cell-actions {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.req-lines-add {
+  margin-top: 0.6rem;
+}
+
+/* Below 560px the editor rows stack with their own visible labels; from
+   560px up the header row labels the columns instead. */
+@media (min-width: 560px) {
+  .req-cell-label {
+    display: none;
+  }
+}
+
+@media (max-width: 559.98px) {
+  .req-lines-head {
+    display: none;
+  }
+
+  .req-line-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .req-cell {
+    grid-column: 1 / -1;
+  }
+
+  .req-cell-n {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 650;
+  }
+
+  .req-cell-n .req-line-no {
+    background: transparent;
+    padding: 0;
+  }
+
+  .req-cell-n::before {
+    content: 'Line ';
+  }
+
+  .req-cell-qty,
+  .req-cell-unit,
+  .req-cell-price,
+  .req-cell-total,
+  .req-cell-machine {
+    grid-column: auto;
+  }
+
+  .req-cell-desc,
+  .req-cell-part,
+  .req-cell-actions {
+    grid-column: 1 / -1;
+  }
+
+  .req-cell-total {
+    align-self: center;
+    justify-content: flex-end;
+    flex-direction: row;
+    gap: 0.4rem;
+  }
+}
+
+/* ---------- Request totals footer (SPEC-v4.md 3.2) ---------- */
+
+.req-totals {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.85rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+}
+
+.req-total-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.req-total-grand,
+.req-total-grand .req-total-value {
+  font-weight: 750;
+}
+
+.req-total-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.req-total-note {
+  margin-top: 0.2rem;
+  font-size: 0.8rem;
+}
+
+/* ---------- Request detail: phone line cards ---------- */
+
+.req-lines-cards .req-line-card {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.req-line-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.req-line-card-title {
+  font-weight: 650;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.req-line-card-meta {
+  margin-top: 0.15rem;
+  font-size: 0.85rem;
+}
+
+/* ---------- "Add to parts request" picker (SPEC-v4.md 3.3) ---------- */
+
+.picker-dialog {
+  max-width: 27rem;
+}
+
+.picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.picker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-row:hover,
+.picker-row:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.picker-title {
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Request sheet (SPEC-v4.md 3.4): plain white page ---------- */
+
+.sheet-actions {
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.pr-sheet {
+  max-width: 46rem;
+  margin: 0.75rem auto 0;
+  padding: 1rem 1.1rem;
+  background: #ffffff;
+  color: #15181d;
+  border: 1px solid #d3d7dd;
+  border-radius: 4px;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.pr-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid #15181d;
+}
+
+.pr-sheet-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.pr-sheet-logo {
+  max-height: 36px;
+  max-width: 170px;
+}
+
+.pr-sheet-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: #15181d;
+  color: #ffffff;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.pr-sheet-brand-name {
+  font-size: 1rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-sheet-title {
+  text-align: right;
+  flex: none;
+}
+
+.pr-sheet-title-word {
+  display: block;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.pr-sheet-title-number {
+  display: block;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.pr-sheet-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid #d3d7dd;
+  font-size: 0.84rem;
+}
+
+.pr-sheet-meta-label {
+  color: #56606b;
+}
+
+.pr-sheet-table {
+  width: 100%;
+  margin-top: 0.5rem;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.pr-sheet-table th,
+.pr-sheet-table td {
+  border: 1px solid #454d57;
+  padding: 0.26rem 0.42rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.pr-sheet-desc {
+  min-width: 40%;
+}
+
+.pr-sheet-qty,
+.pr-sheet-unit {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.pr-sheet-price,
+.pr-sheet-total,
+.pr-sheet-total-value {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pr-sheet-table th {
+  background: #ececec;
+  font-size: 0.8rem;
+}
+
+.pr-sheet-total-label {
+  text-align: right;
+}
+
+.pr-sheet-total-value {
+  font-weight: 700;
+}
+
+.pr-sheet-footnote {
+  margin: 0.4rem 0 0;
+  font-style: italic;
+  color: #56606b;
+}
+
+.pr-sheet-notes {
+  margin: 0.6rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Print: only the request sheet (SPEC-v4.md 3.4) ----------
+   No sidebar, no tab bar, no buttons; a white page that fits one A4/Letter
+   sheet for up to 15 lines. */
+
+@media print {
+  .app-header,
+  .sidebar,
+  .tabbar,
+  .fab,
+  .ai-chat-fab,
+  .toast-root,
+  .skip-link,
+  #dialog-root,
+  #toast-root,
+  .sheet-actions,
+  .drawer-backdrop,
+  .drawer {
+    display: none !important;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+    color: #15181d;
+  }
+
+  main {
+    padding: 0 !important;
+    outline: none;
+  }
+
+  .page {
+    max-width: none;
+    width: auto;
+    margin: 0;
+    padding: 0;
+  }
+
+  .pr-sheet {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}

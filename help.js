@@ -4,6 +4,7 @@ const HELP_SECTIONS = [
   { id: 'help-quickstart', title: 'Quick start' },
   { id: 'help-glossary', title: 'Glossary' },
   { id: 'help-howto', title: 'How to…' },
+  { id: 'help-requests', title: 'Parts requests' },
   { id: 'help-install', title: 'Install on your phone' },
   { id: 'help-desktop', title: 'Desktop tips' },
   { id: 'help-ai', title: 'AI assistant' },
@@ -289,6 +290,49 @@ function helpInstall(h) {
   );
 }
 
+/* v4 (SPEC-v4.md section 7): how to gather request lines, send them to the
+   accountant, and print/copy the sheet. */
+function helpRequests(h) {
+  return helpSection(
+    h,
+    'help-requests',
+    'Parts requests',
+    h(
+      'p',
+      {},
+      'A parts request gathers everything you need to buy into one numbered price table (PR-0001, PR-0002…). It starts as a Draft and stays one for days while you add lines from anywhere; when it is complete, Mark sent turns it into a clean sheet you can print, save as PDF, paste into an email or hand to the accountant. Mark received closes it — stock quantities are not changed by that; record what actually arrived with the usual stock buttons or a service order.',
+    ),
+    h('h3', { class: 'help-question' }, 'Gathering lines'),
+    helpSteps(h, [
+      'Parts requests → New request gives you an empty draft: title, supplier, needed-by date, who asked, the HST % (13 by default) and notes all live in the header.',
+      'On the request, Add line starts a free-text line for things that are not in the catalogue — type what you need, a quantity and a price when you know it. Typing a description also offers matching catalogue parts; picking one fills the part number, unit and supplier for you.',
+      'Away from the request: Add to parts request on a part (its row or its detail page) adds that part at the quantity that brings you back above the minimum. Parts → Low stock only → Add all low-stock to request adds every low part in one go. Request parts on a service order adds a line tied to that order and that machine, then opens the request with the description ready to type.',
+      'Lines you do not have a price for yet just leave the Unit price blank: they count as “Price to be confirmed” and the footer tells you how many there are.',
+      'Up and down reorder lines (the Item # follows), the × removes one, and Machine notes which machine a line is for.',
+    ]),
+    h('h3', { class: 'help-question' }, 'Sending and the sheet'),
+    helpList(h, [
+      [
+        'Mark sent',
+        ' — moves the request to Sent and stamps the time. If lines still have no price it asks once whether you really want to send it; a sent request stays editable, so you can add the prices once the supplier replies.',
+      ],
+      [
+        'Mark received',
+        ' — stamps the received time; Back to draft reopens a sent request; Cancel request retires it but keeps it on record and printable.',
+      ],
+      [
+        'View sheet',
+        ' — the white printable page: Print / Save as PDF (your browser’s print dialog, “Save as PDF” as the destination), Copy table (pastes as a real table into Outlook, Gmail or Excel; a CSV download is offered where the browser blocks copying), and Download CSV for Excel, totals included.',
+      ],
+    ]),
+    h(
+      'p',
+      {},
+      'Only drafts accept lines added from other pages — a request that is already sent will not silently grow. Totals are always calculated from the lines (Subtotal before HST, HST, Grand total), never stored, so changing a price or the HST % updates everything at once. A Muse agent connected through the API can read and update requests the same way.',
+    ),
+  );
+}
+
 function helpShortcutsTable(h) {
   const key = (label) => h('kbd', {}, label);
   const row = (keys, what) =>
@@ -440,7 +484,7 @@ function helpRoles(h) {
     h(
       'p',
       {},
-      'Areas: Service Orders, Preventive Maintenance, Machines, Parts & Stock, Coworkers, Outside Contractors, Contractor rates & costs, Statistics, Photos & files, Backups, AI assistant, Branding & AI settings, and Users & roles.',
+      'Areas: Service Orders, Preventive Maintenance, Machines, Parts & Stock, Parts requests, Coworkers, Outside Contractors, Contractor rates & costs, Statistics, Photos & files, Backups, AI assistant, Branding & AI settings, and Users & roles.',
     ),
   );
 }
@@ -480,6 +524,7 @@ export function renderHelp(h, { isAdmin = false } = {}) {
     helpQuickStart(h),
     helpGlossarySection(h),
     helpHowTo(h),
+    helpRequests(h),
     helpInstall(h),
     helpDesktop(h),
     helpAi(h),
