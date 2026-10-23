@@ -6696,7 +6696,7 @@ function createStepsEditor(initialSteps = []) {
     { class: 'field' },
     h('span', { class: 'field-label editor-label' }, 'Steps'),
     listHost,
-    h('div', { class: 'check-add' }, input, addButton),
+    h('div', { class: 'check-add steps-add' }, input, addButton),
     hint,
     h('span', { class: 'field-hint' }, 'Enter adds a step; Shift+Enter makes a new line inside a step.'),
   );
@@ -6842,7 +6842,7 @@ function libraryFormBody({ existing = null, route = null } = {}) {
   const symptomInput = h('textarea', { rows: 3, maxlength: '1000', value: base.symptom || '', placeholder: 'What goes wrong, e.g. Thread breaks above 4,000 rpm' });
   const causeInput = h('textarea', { rows: 3, maxlength: '2000', value: base.cause || '', placeholder: 'What is actually behind it' });
   const stepsEditor = createStepsEditor(base.steps || []);
-  const toolsPartsInput = h('input', { type: 'text', maxlength: '1000', value: base.toolsParts || '', placeholder: 'e.g. Screwdriver #2, needles DBx1 #14' });
+  const toolsPartsInput = h('textarea', { rows: 3, maxlength: '1000', value: base.toolsParts || '', placeholder: 'e.g. Screwdriver #2, needles DBx1 #14' });
   const safetyInput = h('textarea', { rows: 3, maxlength: '1000', value: base.safety || '', placeholder: 'Lockout points and hazards before guards come off' });
 
   const save = h(
@@ -6853,30 +6853,29 @@ function libraryFormBody({ existing = null, route = null } = {}) {
 
   appendChildren(form, [
     errorBox,
+    sectionTitle('Basics'),
     field('Title', titleInput),
     field('Machine type', typeSelect, 'Applies to every machine of this type when no models or machines are given.'),
     modelsEditor.element,
     machineChecks.element,
     tagsEditor.element,
     isManual
-      ? h(
-          'div',
-          { class: 'card', style: { marginTop: '0.75rem' } },
-          h('h3', { class: 'section-title' }, 'PDFs & photos'),
+      ? [
+          sectionTitle('PDFs & photos'),
           h(
             'p',
             { class: 'field-hint' },
             'Upload the manual PDFs here — each one gets an “AI can read” badge once its text is extracted.',
           ),
           attachmentsEditor.element,
-        )
+        ]
       : null,
     isManual
       ? field('Text for the AI', notesInput, 'Typed or pasted key specs; used when a PDF is a scan without readable text.')
       : null,
     isManual
       ? null
-      : h('div', {}, field('Symptom', symptomInput), field('Cause', causeInput), sectionTitle('Steps'), stepsEditor.element, h('div', { class: 'grid-2', style: { marginTop: '0.75rem' } }, field('Tools & parts', toolsPartsInput), field('Safety', safetyInput, 'Shown in a highlighted box — always mention lockout/power-off.')), sectionTitle('Photos'), attachmentsEditor.element),
+      : [field('Symptom', symptomInput), field('Cause', causeInput), sectionTitle('Steps'), stepsEditor.element, h('div', { class: 'grid-2' }, field('Tools & parts', toolsPartsInput), field('Safety', safetyInput, 'Shown in a highlighted box — always mention lockout/power-off.')), sectionTitle('Photos'), attachmentsEditor.element],
     base.sourceWorkOrderId
       ? h('p', { class: 'field-hint' }, `From service order ${formatOrderNumber(workOrderById(base.sourceWorkOrderId) ? workOrderById(base.sourceWorkOrderId).number : null)} — kept as its source.`)
       : null,
@@ -6974,6 +6973,7 @@ function renderLibraryFormPage(route, existing) {
     );
   }
   const { node, title } = libraryFormBody({ existing, route });
+  setTitle(title);
   return page(pageHead(title), node);
 }
 

@@ -656,6 +656,23 @@ form.form {
 .field {
   display: grid;
   gap: 0.32rem;
+  /* In a two-column row a field is as tall as its neighbour; keep label and
+     input at the top instead of stretching the input (selects grew 22px). */
+  align-content: start;
+}
+
+/* Grouped checkboxes use a fieldset for screen readers; drop the browser's
+   border and indent so it lines up with every other field. */
+.field.fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.field.fieldset > legend {
+  padding: 0;
+  margin-bottom: 0.32rem;
 }
 
 .field > label,
@@ -3246,6 +3263,15 @@ body.logged-out .global-search {
   gap: 0.5rem;
 }
 
+/* A step is a multi-line box: keep Add step input-sized at the top. */
+.steps-add {
+  align-items: start;
+}
+
+.steps-add > .btn {
+  min-height: 48px;
+}
+
 .checklist-view {
   display: grid;
   gap: 0.35rem;
@@ -4953,7 +4979,8 @@ body.logged-out .ai-chat-fab {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.35rem;
+  /* Same 48px height as every other input while it holds no chips. */
+  padding: 0 0.35rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -4962,6 +4989,7 @@ body.logged-out .ai-chat-fab {
 .chips-input-field {
   flex: 1 1 10rem;
   min-width: 8rem;
+  min-height: 46px;
   border: 0;
   background: transparent;
   color: var(--text);
