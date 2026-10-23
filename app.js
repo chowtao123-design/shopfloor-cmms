@@ -6851,7 +6851,7 @@ function libraryFormBody({ existing = null, route = null } = {}) {
     existing ? 'Save changes' : isManual ? 'Add manual' : 'Add repair method',
   );
 
-  form.append(
+  appendChildren(form, [
     errorBox,
     field('Title', titleInput),
     field('Machine type', typeSelect, 'Applies to every machine of this type when no models or machines are given.'),
@@ -6876,7 +6876,7 @@ function libraryFormBody({ existing = null, route = null } = {}) {
       : null,
     isManual
       ? null
-      : h('div', {}, sectionTitle('Symptom'), field('Symptom', symptomInput), sectionTitle('Cause'), field('Cause', causeInput), sectionTitle('Steps'), stepsEditor.element, h('div', { class: 'grid-2', style: { marginTop: '0.75rem' } }, field('Tools & parts', toolsPartsInput), field('Safety', safetyInput, 'Shown in a highlighted box — always mention lockout/power-off.')), sectionTitle('Photos'), attachmentsEditor.element),
+      : h('div', {}, field('Symptom', symptomInput), field('Cause', causeInput), sectionTitle('Steps'), stepsEditor.element, h('div', { class: 'grid-2', style: { marginTop: '0.75rem' } }, field('Tools & parts', toolsPartsInput), field('Safety', safetyInput, 'Shown in a highlighted box — always mention lockout/power-off.')), sectionTitle('Photos'), attachmentsEditor.element),
     base.sourceWorkOrderId
       ? h('p', { class: 'field-hint' }, `From service order ${formatOrderNumber(workOrderById(base.sourceWorkOrderId) ? workOrderById(base.sourceWorkOrderId).number : null)} — kept as its source.`)
       : null,
@@ -6893,7 +6893,7 @@ function libraryFormBody({ existing = null, route = null } = {}) {
         'Cancel',
       ),
     ),
-  );
+  ]);
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -8165,7 +8165,7 @@ function contractorFormBody(existing) {
   const notesInput = h('textarea', { rows: 4, value: base.notes || '' });
   const save = h('button', { class: 'btn btn-primary', type: 'submit' }, existing ? 'Save changes' : 'Add contractor');
 
-  form.append(
+  appendChildren(form, [
     errorBox,
     field('Company', companyInput),
     h('div', { class: 'grid-2' }, field('Trade', tradeInput), field('Contact name', contactNameInput)),
@@ -8182,7 +8182,7 @@ function contractorFormBody(existing) {
       },
       'Cancel',
     )),
-  );
+  ]);
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
