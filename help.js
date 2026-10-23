@@ -592,12 +592,19 @@ function helpFloor(h) {
       'Tap a station to open its panel: the code, zone, staff name, Chinese name, employee ID, vacant mark and remark — editable right there if your role allows it; every change saves as soon as you leave the field. Nothing beyond that is kept (no phone numbers, no emergency contacts).',
       'Link the station to a machine in the same panel: a searchable list of all machines, or Unlink when the seat changes. With a link you see the machine’s status, its open service orders, and + New service order opens the normal form with the machine already filled in.',
       'On a machine or service order page, Show on map jumps straight to that machine’s station, centred and highlighted (when a station links to it).',
-      'Stations whose box was removed from the map land in Off-map stations under the map; Place on map moves one back into an empty slot you click.',
+      'Stations whose box was removed from the map land in Off-map stations under the map; Place on map moves one back into an empty slot you click. Empty slots themselves offer + Add station, which puts a brand-new station exactly there.',
+    ]),
+    h('h3', { class: 'help-question' }, 'Editing the map'),
+    helpSteps(h, [
+      'On a desktop screen (1024 px or wider), administrators and technicians get an Edit map button on the toolbar. It opens the drawing canvas on a working copy of the floor: nothing is written to the real map until you press Save map, and Cancel throws the copy away.',
+      'With Select: click a shape to select it (Shift+click adds to the selection), drag to move, or drag across empty floor to band-select everything inside. A single selected shape shows eight resize handles, and the arrow keys nudge it 1 unit (Shift = 10). The panel beside the canvas edits the selected shape: position and size, a box’s slots (1–12), fill colour and label, plus Duplicate and Delete.',
+      'With + Box, + Corridor or + Patch: drag out a rectangle, or just click to drop the default size (boxes 45 × 28, corridors 5 × 60, patches 24 × 24). Snap keeps everything on the 2-unit grid; the Snap button turns it off. Undo (Ctrl+Z) keeps the last 50 steps.',
+      'Deleting a box — or lowering its slots below the stations it holds — never deletes anyone: when you save, those stations become off-map (boxId null) and stay in the off-map list. Save map writes the whole floor layout as one record, so another device saving at the same time follows the usual last-save-wins rule. Leaving edit mode — or the page — with unsaved changes asks first.',
     ]),
     h(
       'p',
       {},
-      'The floor layout is imported once by an administrator with the server command import-floor-map; it arrives on every device through the normal sync. The roster that comes with it (names, employee IDs) stays off the AI assistant — questions about machines never see who sits where. Administrators and technicians can edit stations; viewers read the map as it is.',
+      'The floor layout is imported once by an administrator with the server command import-floor-map; it arrives on every device through the normal sync, and the desktop canvas is the everyday way to keep it true. The roster that comes with it (names, employee IDs) stays off the AI assistant — questions about machines never see who sits where. Administrators and technicians edit stations, and on the canvas the layout itself; viewers read the map as it is.',
     ),
   );
 }

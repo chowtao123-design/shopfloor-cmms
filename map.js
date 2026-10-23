@@ -2,18 +2,46 @@
 // layout with live machine state from logic-map.js, toolbar (search, filter
 // chips, zoom −/+/Fit, Show names), pan & zoom, the station panel (desktop
 // side drawer, phone bottom sheet), the off-map station list and the empty
-// state that explains the admin import (section 4). The edit canvas is
-// V5-M3 and is not part of this view.
+// state that explains the admin import (section 4). The edit canvas is the
+// V5-M3 half (SPEC section 3) further down in this module.
 //
 // Pure view-box math, the filter predicate and the legend counts are
-// exported for tests/v5m2.test.js; nothing DOM-shaped runs at import time so
-// the module also loads under node --test. The DOM helpers (h, field, toast,
-// can, …) come in through the render context app.js passes to
-// renderMapPage(); every SVG node is created with createElementNS (never
-// innerHTML with user text), and every node the phone sheet adds to the
-// page is removed again on close.
+// exported for tests/v5m2.test.js; the editor's enter/undo/save guards and
+// its pure geometry come from logic-map.js (tests/v5m3.test.js). Nothing
+// DOM-shaped runs at import time so the module also loads under node --test.
+// The DOM helpers (h, field, toast, can, …) come in through the render
+// context app.js passes to renderMapPage(); every SVG node is created with
+// createElementNS (never innerHTML with user text), and every node the phone
+// sheet adds to the page is removed again on close.
 
-import { fitText, searchStations, slotRects, stationState } from './logic-map.js';
+import {
+  BOX_SLOTS_MAX,
+  clampMapNumber,
+  createShapeFromRect,
+  defaultShapeRect,
+  fitText,
+  hitTest,
+  MAP_COORD_MAX,
+  MAP_COORD_MIN,
+  moveShape,
+  newBoxId,
+  nudgeShape,
+  offMapStationIds,
+  popUndoSnapshot,
+  pushUndoSnapshot,
+  rectIntersectsShape,
+  resizeShape,
+  roundMapNumber,
+  rubberBandRect,
+  sanitizeMapForSave,
+  searchStations,
+  SHAPE_MIN_SIZE,
+  slotRects,
+  snap,
+  RESIZE_HANDLES,
+  stationState,
+  UNDO_LIMIT,
+} from './logic-map.js';
 import { LABELS } from './logic.js';
 import * as sync from './sync.js';
 
@@ -355,6 +383,22 @@ export function renderMapPage(ctx, route) {
     .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
   if (maps.length === 0) return emptyMapPage(ctx);
 
+  // --- V5-M3 edit session (SPEC-v5.md section 3) ---------------------------
+  // Once Edit map is on, the whole page is the canvas, driven by the working
+  // COPY in module state (a sync re-render never clobbers it). The session
+  // only starts through the toolbar button (desktop ≥ 1024 px + write), but
+  // the role can change mid-edit: if write is gone or the map vanished, the
+  // copy cannot be saved any more, so it is thrown away (nothing was written).
+  const editSessionMap = mapEdit.active
+    ? maps.find((entry) => entry && entry.id === mapEdit.mapId) || null
+    : null;
+  if (mapEdit.active && (!editSessionMap || !ctx.can('floorMap', 'write'))) {
+    discardEditSession();
+  }
+  if (mapEdit.active && editSessionMap) {
+    return renderMapEditor(ctx, editSessionMap);
+  }
+
   const map = activeMap(maps, route);
   if (mapView.mapId !== map.id) {
     // New floor: the zoom of another map means nothing here.
@@ -364,6 +408,9 @@ export function renderMapPage(ctx, route) {
   }
   if (!mapView.viewBox) mapView.viewBox = fitViewBox(map);
 
+  // Writers can put NEW stations into empty slots ("+ Add station",
+  // SPEC-v5.md section 3); viewers just see the empty slot.
+  const canWrite = ctx.can('floorMap', 'write');
   const allStations = ctx.state.floorStations || [];
   const stations = stationsOfMap(allStations, map.id);
   const machines = ctx.state.machines || [];
@@ -465,7 +512,9 @@ export function renderMapPage(ctx, route) {
         slotNodes.push({ station, node });
         layers.append(node);
       } else {
-        layers.append(emptySlotNode(rect, box.id, rect.slot, Boolean(mapView.pickStationId)));
+        layers.append(
+          emptySlotNode(rect, box.id, rect.slot, Boolean(mapView.pickStationId), canWrite),
+        );
       }
     }
   }
@@ -727,6 +776,9 @@ export function renderMapPage(ctx, route) {
           const empty = emptySlotFromElement(pressTarget);
           if (empty && mapView.pickStationId) {
             scheduleClick(() => placeStationInSlot(empty.box, empty.slot));
+          } else if (empty && canWrite) {
+            // An empty slot opens the "+ Add station" panel (V5-M3).
+            scheduleClick(() => showNewStationPanel(ctx, map.id, empty.box, empty.slot));
           }
         }
       }
@@ -778,10 +830,18 @@ export function renderMapPage(ctx, route) {
   svg.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     const station = stationFromElement(event.target);
-    if (!station) return;
-    event.preventDefault();
-    cancelClick();
-    showStationPanel(ctx, station);
+    if (station) {
+      event.preventDefault();
+      cancelClick();
+      showStationPanel(ctx, station);
+      return;
+    }
+    const empty = emptySlotFromElement(event.target);
+    if (empty && canWrite && !mapView.pickStationId) {
+      event.preventDefault();
+      cancelClick();
+      showNewStationPanel(ctx, map.id, empty.box, empty.slot);
+    }
   });
 
   // --- toolbar buttons ----------------------------------------------------
@@ -822,6 +882,22 @@ export function renderMapPage(ctx, route) {
     },
     'Show names',
   );
+
+  // V5-M3 (SPEC-v5.md section 2 + 3): Edit map opens the canvas. Desktop
+  // (≥ 1024 px) and floorMap write only — a phone never shows this button.
+  const editButton =
+    canWrite && ctx.desktopMedia.matches
+      ? h(
+          'button',
+          {
+            class: 'btn btn-small fm-edit-open',
+            type: 'button',
+            'aria-label': 'Edit the floor layout',
+            onclick: () => startEditSession(ctx, map),
+          },
+          'Edit map',
+        )
+      : null;
 
   // Several floors: pick which map is shown (usually there is just one).
   let mapSelect = null;
@@ -945,6 +1021,7 @@ export function renderMapPage(ctx, route) {
       chipBar,
       h('div', { class: 'fm-zoom' }, zoomOut, zoomIn, zoomFit),
       namesToggle,
+      editButton,
       mapSelect,
     ),
     hintBar,
@@ -1049,22 +1126,51 @@ function stationNode(ctx, station, rect, live, machines) {
   return group;
 }
 
-/** An empty slot: faint, dashed, clickable only in pick mode. */
-function emptySlotNode(rect, boxId, slot, picking) {
-  return svgEl('g', {
-    class: `fm-slot-empty${picking ? ' fm-slot-pick' : ''}`,
-    'data-box': boxId,
-    'data-slot': String(slot),
-    'aria-hidden': 'true',
-  }, [
-    svgEl('rect', {
-      class: 'fm-slot-empty-rect',
-      x: round2(rect.x),
-      y: round2(rect.y),
-      width: round2(rect.w),
-      height: round2(rect.h),
-    }),
-  ]);
+/**
+ * An empty slot: faint, dashed — clickable only in pick mode, or (V5-M3) as a
+ * "+ Add station" affordance for writers. The add text fits and shrinks like
+ * any slot text and never overflows the box.
+ */
+function emptySlotNode(rect, boxId, slot, picking, addable = false) {
+  const canAdd = addable && !picking;
+  const group = svgEl(
+    'g',
+    {
+      class: `fm-slot-empty${picking ? ' fm-slot-pick' : ''}${canAdd ? ' fm-slot-add' : ''}`,
+      'data-box': boxId,
+      'data-slot': String(slot),
+      'aria-hidden': canAdd ? null : 'true',
+      role: canAdd ? 'button' : null,
+      tabindex: canAdd ? '0' : null,
+      'aria-label': canAdd ? 'Add a station in this slot' : null,
+    },
+    [
+      svgEl('rect', {
+        class: 'fm-slot-empty-rect',
+        x: round2(rect.x),
+        y: round2(rect.y),
+        width: round2(rect.w),
+        height: round2(rect.h),
+      }),
+    ],
+  );
+  if (canAdd && rect.w >= 12 && rect.h >= 6) {
+    const fit = fitText('+ Add station', Math.max(0, rect.w - 2), Math.max(0, rect.h - 2));
+    if (fit.fontSize >= 3) {
+      let y = round2(rect.y + fit.fontSize + 0.5);
+      for (const line of fit.lines) {
+        group.append(
+          svgEl(
+            'text',
+            { class: 'fm-slot-add-text', x: round2(rect.x + 1), y, 'font-size': round2(fit.fontSize) },
+            [svgEl('tspan', { text: line })],
+          ),
+        );
+        y = round2(y + fit.fontSize * 1.2);
+      }
+    }
+  }
+  return group;
 }
 
 // ---------------------------------------------------------------------------
@@ -1142,15 +1248,116 @@ function openStationSheet(ctx, station, body) {
   else root.focus();
 }
 
+/** Show a station panel body: drawer on desktop, bottom sheet on the phone. */
+function showPanelWithBody(ctx, title, body) {
+  if (ctx.desktopMedia.matches) {
+    ctx.openDrawer({ title, content: body });
+  } else {
+    openStationSheet(ctx, { code: title }, body);
+  }
+}
+
 /** Show the station panel: drawer on desktop, bottom sheet on the phone. */
 function showStationPanel(ctx, station) {
   if (!station) return;
-  const { body } = stationPanelBody(ctx, station);
-  if (ctx.desktopMedia.matches) {
-    ctx.openDrawer({ title: station.code || 'Station', content: body });
-  } else {
-    openStationSheet(ctx, station, body);
+  showPanelWithBody(ctx, station.code || 'Station', stationPanelBody(ctx, station).body);
+}
+
+/**
+ * The "+ Add station" panel (SPEC-v5.md section 3: a new box's empty slots
+ * offer a station after saving): the SPEC 1.2 field set, created in that
+ * box/slot as one floorStations record. Nothing saves until Add station.
+ */
+function showNewStationPanel(ctx, mapId, box, slot) {
+  const { body } = newStationBody(ctx, mapId, box, slot);
+  showPanelWithBody(ctx, `New station (slot ${slot + 1})`, body);
+}
+
+/** A station id for the new-station create (client-generated, ≤ 40 chars). */
+function newStationId() {
+  const random =
+    globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `st-${random}`.slice(0, 40);
+}
+
+function newStationBody(ctx, mapId, box, slot) {
+  const { h } = ctx;
+  const body = h('div', { class: 'fm-panel fm-panel-new' });
+  if (!ctx.can('floorMap', 'write') || !box) {
+    body.append(h('p', { class: 'muted' }, 'You cannot add stations here.'));
+    return { body };
   }
+  const nextId = newStationId();
+  const textInput = (key, label, maxlength) => {
+    const input = h('input', { type: 'text', maxlength, 'aria-label': label });
+    return { input, field: ctx.field(label, input), key };
+  };
+  const code = textInput('code', 'Station code', 40);
+  const zone = textInput('zone', 'Zone', 60);
+  const name = textInput('name', 'Staff name', 80);
+  const nameCn = textInput('nameCn', 'Chinese name', 80);
+  const empId = textInput('empId', 'Employee ID', 20);
+  const vacantInput = h('input', { type: 'checkbox' });
+  const remarkInput = h('textarea', { rows: 3, maxlength: 200 });
+  const addButton = h(
+    'button',
+    { class: 'btn btn-primary', type: 'button' },
+    'Add station',
+  );
+  const busyNote = h('p', { class: 'field-hint', role: 'status' }, '');
+  let busy = false;
+
+  addButton.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    busyNote.textContent = 'Adding…';
+    const record = {
+      id: nextId,
+      mapId,
+      boxId: box.id,
+      slot,
+      code: code.input.value.trim().slice(0, 40),
+      zone: zone.input.value.trim().slice(0, 60),
+      name: name.input.value.trim().slice(0, 80),
+      nameCn: nameCn.input.value.trim().slice(0, 80),
+      empId: empId.input.value.trim().slice(0, 20),
+      vacant: vacantInput.checked,
+      remark: remarkInput.value.slice(0, 200),
+      machineId: null,
+    };
+    try {
+      await sync.saveRecord('floorStations', record);
+      await ctx.refreshState();
+      ctx.toast('Station added.');
+      ctx.render();
+      const saved = stationById(ctx, record.id);
+      if (!ctx.desktopMedia.matches && stationSheet) closeStationSheet();
+      showStationPanel(ctx, saved);
+    } catch (error) {
+      console.error(error);
+      busy = false;
+      busyNote.textContent = '';
+      await ctx.refreshState();
+      ctx.toast('Could not add the station. Please try again.', 'warn');
+    }
+  });
+
+  body.append(
+    h('p', { class: 'field-hint' }, `A new station in box “${box.label || box.id}”, slot ${slot + 1}.`),
+    code.field,
+    zone.field,
+    name.field,
+    nameCn.field,
+    empId.field,
+    ctx.field('Vacant', vacantInput, 'No staff at this station'),
+    ctx.field('Remark', remarkInput),
+    addButton,
+    busyNote,
+    h('p', { class: 'field-hint' }, 'Link the machine after adding, from the station panel.'),
+  );
+  return { body };
 }
 
 /**
@@ -1447,4 +1654,1231 @@ function isOffMapForPanel(ctx, station) {
   const map = (ctx.state.floorMaps || []).find((entry) => entry && entry.id === station.mapId);
   if (!map) return true;
   return !((map.boxes || []) || []).some((box) => box && box.id === station.boxId);
+}
+
+// ---------------------------------------------------------------------------
+// V5-M3: the edit canvas (SPEC-v5.md section 3). Entered with the toolbar
+// Edit map button (desktop ≥ 1024 px + floorMap write; phones never see it).
+// Everything below edits a working COPY (structuredClone) of the floorMaps
+// record so Cancel — or a failed save — throws the changes away without
+// ever touching the synced state. The pure geometry lives in logic-map.js;
+// here it is wired to the canvas: selection, drag/resize/nudge, the tools,
+// rubber banding, the 50-step undo stack and Save (off-map stations get
+// boxId null, never deleted).
+// ---------------------------------------------------------------------------
+
+const EDIT_TOOLS = Object.freeze([
+  { key: 'select', label: 'Select' },
+  { key: 'box', label: '+ Box' },
+  { key: 'corridor', label: '+ Corridor' },
+  { key: 'patch', label: '+ Patch' },
+]);
+
+const SHAPE_KIND_LIST = ['box', 'fill', 'corridor'];
+
+/** The fill colours the panel offers (SVG-safe #rrggbb or '' = none). */
+const FILL_PALETTE = [
+  { value: '', label: 'No fill (white)' },
+  { value: '#e5e7ec', label: 'Grey' },
+  { value: '#cdd5e1', label: 'Slate' },
+  { value: '#f5e6a8', label: 'Yellow' },
+  { value: '#cfe6cf', label: 'Green' },
+  { value: '#e8dcc3', label: 'Tan' },
+];
+
+/** A duplicate lands 10 units away (a multiple of the snap grid). */
+const DUPLICATE_OFFSET = 10;
+/** A double-click must not create two default shapes in the same spot. */
+const CREATE_DOUBLE_MS = 350;
+
+const mapEdit = {
+  active: false,
+  mapId: null,
+  original: null, // the floorMaps record the copy came from (id, version…)
+  copy: null, // the working copy: {name, width, height, boxes, corridors, fills}
+  baseJson: '', // sanitized geometry at entry: dirty means "JSON differs"
+  tool: 'select',
+  snap: true,
+  selection: [], // [{kind, obj}] into the copy's lists
+  undo: [], // up to UNDO_LIMIT snapshots, oldest first
+  dirty: false,
+  ctx: null, // the render context, for the guards and async actions
+};
+
+function editShapesOf(kind) {
+  const copy = mapEdit.copy;
+  if (!copy) return [];
+  if (kind === 'box') return Array.isArray(copy.boxes) ? copy.boxes : [];
+  if (kind === 'corridor') return Array.isArray(copy.corridors) ? copy.corridors : [];
+  if (kind === 'fill') return Array.isArray(copy.fills) ? copy.fills : [];
+  return [];
+}
+
+/** Drop refs whose object vanished (deleted, or restored by an undo). */
+function resolveEditSelection() {
+  if (!Array.isArray(mapEdit.selection)) mapEdit.selection = [];
+  if (!mapEdit.copy) {
+    mapEdit.selection = [];
+    return mapEdit.selection;
+  }
+  mapEdit.selection = mapEdit.selection.filter(
+    (ref) => ref && ref.obj && editShapesOf(ref.kind).includes(ref.obj),
+  );
+  return mapEdit.selection;
+}
+
+function recomputeEditDirty() {
+  if (!mapEdit.copy || typeof mapEdit.baseJson !== 'string') {
+    mapEdit.dirty = false;
+    return;
+  }
+  mapEdit.dirty = JSON.stringify(sanitizeMapForSave(mapEdit.copy)) !== mapEdit.baseJson;
+}
+
+/** A deep snapshot of the working copy for one undo step. */
+function snapshotCopy() {
+  const copy = mapEdit.copy;
+  if (!copy) return null;
+  return structuredClone({
+    name: copy.name,
+    width: copy.width,
+    height: copy.height,
+    boxes: copy.boxes,
+    corridors: copy.corridors,
+    fills: copy.fills,
+  });
+}
+
+/**
+ * One discrete edit: push the pre-change snapshot (undo), run the mutation,
+ * then re-resolve the selection, recompute dirty and re-render the page.
+ * Gestures that push their own snapshot at drag start pass pushUndo: false.
+ */
+function editMutation(mutator, { pushUndo = true } = {}) {
+  if (pushUndo && mapEdit.active) {
+    mapEdit.undo = pushUndoSnapshot(mapEdit.undo, snapshotCopy());
+  }
+  const result = mutator();
+  resolveEditSelection();
+  recomputeEditDirty();
+  if (mapEdit.ctx) mapEdit.ctx.render();
+  return result;
+}
+
+/** Ctrl+Z: pop the newest snapshot and restore it (selection clears). */
+function undoEditChange() {
+  if (!mapEdit.active || mapEdit.undo.length === 0) return;
+  const { stack, snapshot } = popUndoSnapshot(mapEdit.undo);
+  mapEdit.undo = stack;
+  if (snapshot === null || typeof snapshot !== 'object') return;
+  mapEdit.copy = snapshot;
+  mapEdit.selection = [];
+  resolveEditSelection();
+  recomputeEditDirty();
+  if (mapEdit.ctx) mapEdit.ctx.render();
+}
+
+/** Arrow keys: exact 1-unit steps (Shift = 10), never grid-snapped. */
+function nudgeEditSelection(dx, dy) {
+  resolveEditSelection();
+  if (mapEdit.selection.length === 0) return;
+  editMutation(() => {
+    for (const { obj } of mapEdit.selection) {
+      const moved = nudgeShape(obj, dx, dy);
+      obj.x = moved.x;
+      obj.y = moved.y;
+    }
+  });
+}
+
+/** The panel's Delete (and the Delete key): remove the selected shapes. */
+function deleteEditSelection() {
+  resolveEditSelection();
+  if (mapEdit.selection.length === 0) return;
+  editMutation(() => {
+    for (const { kind, obj } of mapEdit.selection) {
+      const list = editShapesOf(kind);
+      const index = list.indexOf(obj);
+      if (index >= 0) list.splice(index, 1);
+    }
+    // Deleting a box (or lowering its slots) never deletes stations: at save
+    // time the affected ones go off-map instead (saveEditSession).
+  });
+}
+
+/** The panel's Duplicate: a copy of each selected shape, 10 units over. */
+function duplicateEditSelection() {
+  resolveEditSelection();
+  if (mapEdit.selection.length === 0) return;
+  editMutation(() => {
+    const added = [];
+    for (const { kind, obj } of mapEdit.selection) {
+      const clone = structuredClone(obj);
+      const moved = moveShape(
+        { x: obj.x, y: obj.y },
+        DUPLICATE_OFFSET,
+        DUPLICATE_OFFSET,
+        { snapOn: mapEdit.snap },
+      );
+      clone.x = moved.x;
+      clone.y = moved.y;
+      if (kind === 'box') clone.id = newBoxId(editShapesOf('box').map((box) => box && box.id));
+      const list = editShapesOf(kind);
+      list.push(clone);
+      added.push({ kind, obj: clone });
+    }
+    mapEdit.selection = added;
+  });
+}
+
+/** Enter edit mode on the working copy of this floorMaps record. */
+function startEditSession(ctx, map) {
+  if (mapEdit.active || !map) return;
+  // Desktop (≥ 1024 px) and floorMap write only — the button is already
+  // hidden otherwise; this is the belt to the braces.
+  if (!ctx.can('floorMap', 'write') || !ctx.desktopMedia.matches) return;
+  mapEdit.active = true;
+  mapEdit.mapId = map.id;
+  mapEdit.original = map;
+  mapEdit.copy = structuredClone({
+    name: map.name,
+    width: map.width,
+    height: map.height,
+    boxes: (Array.isArray(map.boxes) ? map.boxes : []).filter(Boolean),
+    corridors: (Array.isArray(map.corridors) ? map.corridors : []).filter(Boolean),
+    fills: (Array.isArray(map.fills) ? map.fills : []).filter(Boolean),
+  });
+  mapEdit.baseJson = JSON.stringify(sanitizeMapForSave(mapEdit.copy));
+  mapEdit.tool = 'select';
+  mapEdit.snap = true;
+  mapEdit.selection = [];
+  mapEdit.undo = [];
+  mapEdit.dirty = false;
+  mapEdit.ctx = ctx;
+  if (mapView.mapId !== map.id || !mapView.viewBox) mapView.viewBox = fitViewBox(map);
+  installEditGuards();
+  ctx.render();
+}
+
+/**
+ * Leave edit mode at once: the working copy is discarded (Cancel semantics),
+ * every guard listener comes off, no record was written.
+ */
+function discardEditSession() {
+  if (!mapEdit.active) return;
+  uninstallEditGuards();
+  mapEdit.active = false;
+  mapEdit.mapId = null;
+  mapEdit.original = null;
+  mapEdit.copy = null;
+  mapEdit.baseJson = '';
+  mapEdit.tool = 'select';
+  mapEdit.selection = [];
+  mapEdit.undo = [];
+  mapEdit.dirty = false;
+  mapEdit.ctx = null;
+}
+
+/**
+ * Cancel / Escape: leaving edit mode with unsaved changes asks first
+ * (SPEC-v5.md section 3). Confirming throws the copy away.
+ */
+async function confirmLeaveEditSession(ctx) {
+  if (!mapEdit.active) return;
+  if (!mapEdit.dirty || !ctx || typeof ctx.showConfirm !== 'function') {
+    discardEditSession();
+    if (ctx) ctx.render();
+    return;
+  }
+  const leave = await ctx.showConfirm({
+    title: 'Leave edit mode?',
+    message: 'Your map changes are not saved yet. Leave and discard them?',
+    confirmText: 'Discard changes',
+    cancelText: 'Keep editing',
+    danger: true,
+  });
+  if (!leave || !mapEdit.active) return;
+  discardEditSession();
+  ctx.render();
+}
+
+/**
+ * Save map (SPEC-v5.md section 3): validate/round the copy, PUT the whole
+ * floorMaps record on the original version (last save wins, history kept),
+ * then move the affected stations off-map (boxId null — never deleted) and
+ * refresh. A failed map save leaves the session open, copy untouched.
+ */
+async function saveEditSession(ctx) {
+  if (!mapEdit.active) return;
+  const data = sanitizeMapForSave(mapEdit.copy);
+  const stations = stationsOfMap((ctx.state && ctx.state.floorStations) || [], mapEdit.mapId);
+  const offIds = new Set(offMapStationIds(stations, data));
+  try {
+    await sync.saveRecord(
+      'floorMaps',
+      { ...data, id: mapEdit.original.id, updatedAt: ctx.nowISO() },
+      mapEdit.original.version,
+    );
+    let movedOff = 0;
+    for (const station of stations) {
+      if (!offIds.has(station.id)) continue;
+      const next = { ...station, boxId: null, updatedAt: ctx.nowISO() };
+      delete next.pendingSync;
+      try {
+        await sync.saveRecord('floorStations', next, station.version);
+        movedOff += 1;
+      } catch (stationError) {
+        // The map is saved; this station still points at a box that no longer
+        // exists, which the view already treats as off-map. Keep going.
+        console.error(stationError);
+      }
+    }
+    discardEditSession();
+    await ctx.refreshState();
+    ctx.render();
+    ctx.toast(
+      movedOff > 0
+        ? `Map saved. ${movedOff} station${movedOff === 1 ? '' : 's'} moved off-map (see the off-map list).`
+        : 'Map saved.',
+    );
+  } catch (error) {
+    console.error(error);
+    await ctx.refreshState();
+    ctx.toast('Could not save the map. Please try again.', 'warn');
+  }
+}
+
+// --- page-leave guards (installed while a session is open) -------------------
+
+function installEditGuards() {
+  window.addEventListener('hashchange', onEditRouteChange);
+  window.addEventListener('beforeunload', onEditBeforeUnload);
+  document.addEventListener('keydown', onEditKeyDown);
+}
+
+function uninstallEditGuards() {
+  window.removeEventListener('hashchange', onEditRouteChange);
+  window.removeEventListener('beforeunload', onEditBeforeUnload);
+  document.removeEventListener('keydown', onEditKeyDown);
+}
+
+/** Navigating off #/map with unsaved changes asks first; clean exits go silently. */
+function onEditRouteChange() {
+  if (!mapEdit.active) return;
+  const hash = window.location.hash || '';
+  if (hash === '' || hash === '#' || hash.startsWith('#/map')) return;
+  const ctx = mapEdit.ctx;
+  if (!ctx || !mapEdit.dirty) {
+    discardEditSession();
+    return;
+  }
+  const backTo = `#/map?map=${encodeURIComponent(mapEdit.mapId)}`;
+  Promise.resolve(
+    ctx.showConfirm({
+      title: 'Leave the floor map?',
+      message: 'Your map changes are not saved yet. Leave and discard them?',
+      confirmText: 'Discard and leave',
+      cancelText: 'Keep editing',
+      danger: true,
+    }),
+  ).then((leave) => {
+    if (!mapEdit.active) return;
+    if (!leave) {
+      // Back onto the map page: the session state is still there, editing
+      // continues from the copy.
+      window.location.hash = backTo;
+      return;
+    }
+    discardEditSession();
+  });
+}
+
+/** Closing/reloading the tab with unsaved changes: the browser asks. */
+function onEditBeforeUnload(event) {
+  if (mapEdit.active && mapEdit.dirty) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+}
+
+/** Ctrl+Z, Delete, arrow nudges and Escape while the canvas is open. */
+function onEditKeyDown(event) {
+  if (!mapEdit.active) return;
+  const ctx = mapEdit.ctx;
+  if (ctx && ctx.dialogOpen && ctx.dialogOpen()) return;
+  const target = event.target;
+  const typing =
+    target instanceof HTMLElement &&
+    (target.closest('input, select, textarea') !== null || target.isContentEditable);
+  if (typing) return; // typing in the panel keeps its native keys/undo
+  if (
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    String(event.key).toLowerCase() === 'z'
+  ) {
+    event.preventDefault();
+    undoEditChange();
+    return;
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    if (mapEdit.selection.length > 0) {
+      event.preventDefault();
+      deleteEditSelection();
+    }
+    return;
+  }
+  const step = event.shiftKey ? 10 : 1;
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault();
+    nudgeEditSelection(-step, 0);
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault();
+    nudgeEditSelection(step, 0);
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    nudgeEditSelection(0, -step);
+  } else if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    nudgeEditSelection(0, step);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    confirmLeaveEditSession(ctx);
+  }
+}
+
+/** Union of two ref lists by object (rubber band on top of a base selection). */
+function mergeRefs(base, hits) {
+  const out = [];
+  const seen = new Set();
+  const lists = [
+    Array.isArray(base) ? base : [],
+    Array.isArray(hits) ? hits : [],
+  ];
+  for (const ref of lists.flat()) {
+    if (!ref || !ref.obj || seen.has(ref.obj)) continue;
+    seen.add(ref.obj);
+    out.push(ref);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The edit canvas page: top bar (Save/Cancel/Undo/Snap/tools), hint, the SVG
+// working copy, and the selection panel (X/Y/W/H, slots, colour, label,
+// Duplicate, Delete). Gestures redraw attrs live; every discrete change and
+// every gesture end re-renders through ctx.render(), so nothing accumulates.
+// ---------------------------------------------------------------------------
+
+function renderMapEditor(ctx, mapRecord) {
+  const { h } = ctx;
+  const copy = mapEdit.copy;
+  const stations = stationsOfMap(ctx.state.floorStations || [], mapEdit.mapId);
+
+  // The zoom carries over from the view (the edit bar keeps −/+/Fit + wheel).
+  if (!mapView.viewBox || mapView.mapId !== mapRecord.id) mapView.viewBox = fitViewBox(mapRecord);
+
+  const svg = svgEl('svg', {
+    class: `fm-svg fm-editing fm-tool-${mapEdit.tool}`,
+    viewBox: viewBoxString(mapView.viewBox),
+    preserveAspectRatio: 'xMidYMid meet',
+    'aria-label': `Floor map editor: ${mapRecord.name || 'map'}`,
+    tabindex: '0',
+  });
+  const layers = svgEl('g', { class: 'fm-edit-layers' });
+  const overlay = svgEl('g', { class: 'fm-edit-overlay', 'aria-hidden': 'true' });
+  svg.append(layers, overlay);
+
+  // Occupants per box, for the dimmed station texts on the canvas (SPEC
+  // section 3: stations are edited in the panel, not on the canvas — clicks
+  // fall through to the box and the live colours are dimmed).
+  const occupantsByBox = new Map();
+  for (const station of stations) {
+    if (!station.boxId) continue;
+    const inner = occupantsByBox.get(station.boxId) ?? new Map();
+    inner.set(Number(station.slot) || 0, station);
+    occupantsByBox.set(station.boxId, inner);
+  }
+
+  // --- shape nodes (rebuilt on every render; gestures rewrite attrs) --------
+  const entries = [];
+  for (const fillItem of copy.fills || []) {
+    const rect = svgEl('rect', { class: 'fm-edit-fill-rect' });
+    rect.setAttribute(
+      'fill',
+      typeof fillItem.color === 'string' && fillItem.color !== '' ? fillItem.color : '#e5e7ec',
+    );
+    entries.push({ kind: 'fill', obj: fillItem, rect });
+    layers.append(rect);
+  }
+  for (const corridor of copy.corridors || []) {
+    const rect = svgEl('rect', { class: 'fm-edit-corridor-rect', fill: CORRIDOR_FILL });
+    entries.push({ kind: 'corridor', obj: corridor, rect });
+    layers.append(rect);
+  }
+  for (const box of copy.boxes || []) {
+    const group = svgEl('g', { class: 'fm-edit-box' });
+    const rect = svgEl('rect', {
+      class: 'fm-edit-box-rect',
+      stroke: BOX_BORDER,
+      'stroke-width': '0.8',
+      fill: typeof box.fill === 'string' && box.fill !== '' ? box.fill : '#ffffff',
+    });
+    const count = Math.max(1, Number.isInteger(box.slots) ? box.slots : 1);
+    const sepLines = [];
+    for (let i = 1; i < count; i += 1) sepLines.push(svgEl('line', { class: 'fm-slot-sep' }));
+    const label = svgEl('text', { class: 'fm-box-label' });
+    const dim = svgEl('g', { class: 'fm-edit-dim' });
+    group.append(rect, ...sepLines, label, dim);
+    entries.push({
+      kind: 'box',
+      obj: box,
+      rect,
+      sepLines,
+      label,
+      dim,
+      occupants: occupantsByBox.get(box.id) || new Map(),
+    });
+    layers.append(group);
+  }
+
+  function syncEntry(entry) {
+    const { obj } = entry;
+    entry.rect.setAttribute('x', round2(obj.x));
+    entry.rect.setAttribute('y', round2(obj.y));
+    entry.rect.setAttribute('width', round2(obj.w));
+    entry.rect.setAttribute('height', round2(obj.h));
+    if (entry.kind !== 'box') return;
+    const count = Math.max(1, Number.isInteger(obj.slots) ? obj.slots : 1);
+    if (entry.sepLines.length === count - 1) {
+      entry.sepLines.forEach((line, i) => {
+        const y = round2(obj.y + (obj.h / count) * (i + 1));
+        line.setAttribute('x1', round2(obj.x));
+        line.setAttribute('x2', round2(obj.x + obj.w));
+        line.setAttribute('y1', y);
+        line.setAttribute('y2', y);
+      });
+    }
+    const labelFit = fitText(
+      obj.label || '',
+      Math.max(0, obj.w - 4),
+      Math.max(0, Math.min(10, obj.h)),
+    );
+    entry.label.replaceChildren(
+      ...labelFit.lines.map((line, i) =>
+        svgEl('tspan', {
+          x: round2(obj.x + 2),
+          y: round2(obj.y + labelFit.fontSize * (i + 1)),
+          text: line,
+        }),
+      ),
+    );
+    entry.label.setAttribute('font-size', round2(labelFit.fontSize));
+    const texts = [];
+    for (const slot of slotRects(obj)) {
+      const station = entry.occupants.get(slot.slot);
+      if (station && slot.slot < count) {
+        texts.push(...slotTextNodes(slot, station.code, mapView.names ? station.name : null));
+      }
+    }
+    entry.dim.replaceChildren(...texts);
+  }
+
+  function redrawShapeNodes() {
+    for (const entry of entries) syncEntry(entry);
+  }
+
+  redrawShapeNodes();
+
+  // --- view math (preserveAspectRatio-aware client ⇄ units) ---------------
+  function viewTransform() {
+    const rect = svg.getBoundingClientRect();
+    const view = mapView.viewBox;
+    if (!rect.width || !rect.height || !view || !(view.w > 0) || !(view.h > 0)) return null;
+    const scale = Math.min(rect.width / view.w, rect.height / view.h);
+    if (!Number.isFinite(scale) || !(scale > 0)) return null;
+    return {
+      scale,
+      left: rect.left + (rect.width - view.w * scale) / 2,
+      top: rect.top + (rect.height - view.h * scale) / 2,
+    };
+  }
+
+  function toUnits(clientX, clientY) {
+    const view = mapView.viewBox;
+    const t = viewTransform();
+    if (!t) return { x: view.x + view.w / 2, y: view.y + view.h / 2 };
+    return { x: view.x + (clientX - t.left) / t.scale, y: view.y + (clientY - t.top) / t.scale };
+  }
+
+  /** ~7 px of grab room around a handle, in drawing units (clamped). */
+  function handleUnits() {
+    const t = viewTransform();
+    return Math.max(1, Math.min(24, t ? 7 / t.scale : 8));
+  }
+
+  /** The drawn handle square, in drawing units (clamped sane at any zoom). */
+  function handleSizeUnits() {
+    const t = viewTransform();
+    return Math.max(1.2, Math.min(4, t ? 5 / t.scale : 5));
+  }
+
+  function handlePoint(shape, handle) {
+    const fx = handle.includes('w') ? 0 : handle.includes('e') ? 1 : 0.5;
+    const fy = handle.includes('n') ? 0 : handle.includes('s') ? 1 : 0.5;
+    return { x: round2(shape.x + shape.w * fx), y: round2(shape.y + shape.h * fy) };
+  }
+
+  function hitHandle(u) {
+    const sel = resolveEditSelection();
+    if (sel.length !== 1) return null;
+    const obj = sel[0].obj;
+    const threshold = handleUnits();
+    let bestHandle = null;
+    let bestDist = Infinity;
+    for (const handle of RESIZE_HANDLES) {
+      const at = handlePoint(obj, handle);
+      const dist = Math.hypot(at.x - u.x, at.y - u.y);
+      if (dist <= threshold && dist < bestDist) {
+        bestHandle = handle;
+        bestDist = dist;
+      }
+    }
+    return bestHandle ? { handle: bestHandle, obj } : null;
+  }
+
+  // --- overlay: selection outlines, handles, band, create ghost -----------
+  function buildOverlayNodes() {
+    const nodes = [];
+    const sel = resolveEditSelection();
+    for (const { kind, obj } of sel) {
+      nodes.push(
+        svgEl('rect', {
+          class: 'fm-selection-rect',
+          'data-kind': kind,
+          x: round2(obj.x),
+          y: round2(obj.y),
+          width: round2(obj.w),
+          height: round2(obj.h),
+        }),
+      );
+    }
+    if (sel.length === 1) {
+      const obj = sel[0].obj;
+      const hs = handleSizeUnits();
+      for (const handle of RESIZE_HANDLES) {
+        const at = handlePoint(obj, handle);
+        nodes.push(
+          svgEl('rect', {
+            class: 'fm-handle',
+            'data-handle': handle,
+            x: round2(at.x - hs / 2),
+            y: round2(at.y - hs / 2),
+            width: round2(hs),
+            height: round2(hs),
+          }),
+        );
+      }
+    }
+    if (gesture && gesture.type === 'band' && gesture.activated && gesture.rect) {
+      nodes.push(
+        svgEl('rect', {
+          class: 'fm-band-rect',
+          x: round2(gesture.rect.x),
+          y: round2(gesture.rect.y),
+          width: round2(gesture.rect.w),
+          height: round2(gesture.rect.h),
+        }),
+      );
+    }
+    if (gesture && gesture.type === 'create' && gesture.activated && gesture.rect) {
+      nodes.push(
+        svgEl('rect', {
+          class: 'fm-ghost-rect',
+          x: round2(gesture.rect.x),
+          y: round2(gesture.rect.y),
+          width: round2(gesture.rect.w),
+          height: round2(gesture.rect.h),
+        }),
+      );
+    }
+    return nodes;
+  }
+
+  function refreshOverlay() {
+    overlay.replaceChildren(...buildOverlayNodes());
+  }
+
+  // --- selection panel ------------------------------------------------------
+  const panelHost = h('div', { class: 'fm-edit-panel card', 'aria-label': 'Selected shape' });
+  const panelInputs = {};
+
+  function fillOptionsFor(current, { allowNone = true } = {}) {
+    const options = allowNone ? [...FILL_PALETTE] : FILL_PALETTE.filter((entry) => entry.value !== '');
+    const clean = typeof current === 'string' && current.trim() !== '' ? current.toLowerCase() : '';
+    if (clean !== '' && !options.some((entry) => entry.value === clean)) {
+      options.unshift({ value: clean, label: clean });
+    }
+    return options;
+  }
+
+  function kindTitle(kind, obj) {
+    if (kind === 'box') return `Box ${obj.id || ''}`.trim();
+    if (kind === 'corridor') return 'Aisle';
+    return 'Floor patch';
+  }
+
+  function buildPanelNodes() {
+    for (const key of ['x', 'y', 'w', 'h']) panelInputs[key] = null;
+    const sel = resolveEditSelection();
+    if (sel.length === 0) {
+      return [
+        h('p', { class: 'muted' }, 'Nothing selected.'),
+        h(
+          'p',
+          { class: 'field-hint' },
+          'Click a shape to select it. Shift+click adds to the selection; dragging empty floor selects everything inside the band.',
+        ),
+      ];
+    }
+    const actions = h(
+      'div',
+      { class: 'fm-edit-panel-actions' },
+      h(
+        'button',
+        { class: 'btn btn-small', type: 'button', onclick: () => duplicateEditSelection() },
+        'Duplicate',
+      ),
+      h(
+        'button',
+        { class: 'btn btn-danger btn-small', type: 'button', onclick: () => deleteEditSelection() },
+        'Delete',
+      ),
+    );
+    if (sel.length > 1) {
+      return [
+        h('h4', { class: 'fm-panel-subhead' }, `${sel.length} shapes selected`),
+        actions,
+        h(
+          'p',
+          { class: 'field-hint' },
+          'Select a single shape to edit its numbers, colour and label.',
+        ),
+      ];
+    }
+    const { kind, obj } = sel[0];
+    const nodes = [h('h4', { class: 'fm-panel-subhead' }, kindTitle(kind, obj))];
+
+    const numberInput = (key, min, max) => {
+      const input = h('input', {
+        type: 'number',
+        step: '0.5',
+        min,
+        max,
+        value: String(roundMapNumber(obj[key])),
+      });
+      input.addEventListener('change', () => {
+        const parsed = Number(input.value);
+        if (!Number.isFinite(parsed)) {
+          input.value = String(roundMapNumber(obj[key]));
+          return;
+        }
+        const low = key === 'w' || key === 'h' ? SHAPE_MIN_SIZE : min;
+        editMutation(() => {
+          obj[key] = Math.min(max, Math.max(low, roundMapNumber(parsed)));
+        });
+      });
+      panelInputs[key] = input;
+      return ctx.field(key.toUpperCase(), input);
+    };
+    nodes.push(
+      numberInput('x', MAP_COORD_MIN, MAP_COORD_MAX),
+      numberInput('y', MAP_COORD_MIN, MAP_COORD_MAX),
+      numberInput('w', SHAPE_MIN_SIZE, MAP_COORD_MAX),
+      numberInput('h', SHAPE_MIN_SIZE, MAP_COORD_MAX),
+    );
+
+    if (kind === 'box') {
+      const slots = Math.min(
+        BOX_SLOTS_MAX,
+        Math.max(1, Number.isInteger(obj.slots) ? obj.slots : 1),
+      );
+      const slotsSelect = ctx.selectFrom(
+        Array.from({ length: BOX_SLOTS_MAX }, (_, i) => i + 1),
+        slots,
+        (value) => `${value} slot${value === 1 ? '' : 's'}`,
+      );
+      slotsSelect.setAttribute('aria-label', 'Slots');
+      slotsSelect.addEventListener('change', () => {
+        const value = Math.min(BOX_SLOTS_MAX, Math.max(1, Number(slotsSelect.value) || 1));
+        editMutation(() => {
+          obj.slots = value;
+        });
+      });
+      nodes.push(ctx.field('Slots', slotsSelect, 'Stations stacked top to bottom'));
+
+      const fillSelect = h(
+        'select',
+        { 'aria-label': 'Fill colour' },
+        ...fillOptionsFor(obj.fill).map((entry) =>
+          h('option', { value: entry.value }, entry.label),
+        ),
+      );
+      fillSelect.value = typeof obj.fill === 'string' && obj.fill !== '' ? obj.fill.toLowerCase() : '';
+      fillSelect.addEventListener('change', () => {
+        editMutation(() => {
+          obj.fill = fillSelect.value === '' ? null : fillSelect.value;
+        });
+      });
+      nodes.push(ctx.field('Fill', fillSelect));
+
+      const labelInput = h('input', { type: 'text', maxlength: 60, value: String(obj.label || '') });
+      labelInput.addEventListener('change', () => {
+        editMutation(() => {
+          obj.label = labelInput.value.slice(0, 60);
+        });
+      });
+      nodes.push(ctx.field('Label', labelInput));
+    } else if (kind === 'fill') {
+      const colorSelect = h(
+        'select',
+        { 'aria-label': 'Patch colour' },
+        ...fillOptionsFor(obj.color, { allowNone: false }).map((entry) =>
+          h('option', { value: entry.value }, entry.label),
+        ),
+      );
+      colorSelect.value = typeof obj.color === 'string' ? obj.color.toLowerCase() : '#e5e7ec';
+      colorSelect.addEventListener('change', () => {
+        editMutation(() => {
+          obj.color = colorSelect.value || '#e5e7ec';
+        });
+      });
+      nodes.push(ctx.field('Colour', colorSelect));
+    } else {
+      nodes.push(h('p', { class: 'field-hint' }, 'An aisle: always painted corridor blue.'));
+    }
+    nodes.push(actions);
+    return nodes;
+  }
+
+  panelHost.append(...buildPanelNodes());
+
+  function refreshPanelNumbers() {
+    const sel = resolveEditSelection();
+    if (sel.length !== 1) return;
+    const { obj } = sel[0];
+    for (const key of ['x', 'y', 'w', 'h']) {
+      const input = panelInputs[key];
+      if (!input || document.activeElement === input) continue;
+      input.value = String(roundMapNumber(obj[key]));
+    }
+  }
+
+  // --- zoom (the edit bar keeps −/+/Fit; the wheel zooms at the pointer) ----
+  function applyView() {
+    svg.setAttribute('viewBox', viewBoxString(mapView.viewBox));
+  }
+
+  function zoomAtClient(clientX, clientY, factor) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const fx = (clientX - rect.left) / rect.width;
+    const fy = (clientY - rect.top) / rect.height;
+    mapView.viewBox = clampViewBox(
+      zoomViewBox(mapView.viewBox, copy.width, copy.height, factor, fx, fy),
+      copy.width,
+      copy.height,
+    );
+    applyView();
+  }
+
+  function zoomCentre(factor) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      mapView.viewBox = clampViewBox(
+        zoomViewBox(mapView.viewBox, copy.width, copy.height, factor),
+        copy.width,
+        copy.height,
+      );
+      applyView();
+      return;
+    }
+    zoomAtClient(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
+  }
+
+  svg.addEventListener(
+    'wheel',
+    (event) => {
+      event.preventDefault();
+      zoomAtClient(event.clientX, event.clientY, event.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP);
+    },
+    { passive: false },
+  );
+
+  // --- gestures --------------------------------------------------------------
+  const pointers = new Set();
+  let gesture = null;
+  let lastCreate = null;
+
+  function boxIds() {
+    return (copy.boxes || []).map((box) => box && box.id);
+  }
+
+  function sameSpotCreate(event) {
+    return (
+      Boolean(lastCreate) &&
+      Date.now() - lastCreate.at < CREATE_DOUBLE_MS &&
+      Math.hypot(event.clientX - lastCreate.x, event.clientY - lastCreate.y) < 6
+    );
+  }
+
+  /** The create rectangle between the (snapped) anchor and the pointer. */
+  function rectForCreate(startUnits, u) {
+    const clean = mapEdit.snap ? snap : roundMapNumber;
+    return rubberBandRect(startUnits.x, startUnits.y, clean(u.x), clean(u.y));
+  }
+
+  svg.addEventListener('pointerdown', (event) => {
+    if (event.button !== undefined && event.button !== 0 && event.pointerType === 'mouse') return;
+    if (gesture) return; // one pointer at a time; no pinch in the canvas
+    const u = toUnits(event.clientX, event.clientY);
+    pointers.add(event.pointerId);
+    try {
+      svg.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is a nicety; the listeners below still work without it.
+    }
+    const startClient = { x: event.clientX, y: event.clientY };
+    const tool = mapEdit.tool;
+
+    if (tool === 'select') {
+      const grabHandle = hitHandle(u);
+      if (grabHandle) {
+        const { obj } = grabHandle;
+        gesture = {
+          type: 'resize',
+          pointerId: event.pointerId,
+          handle: grabHandle.handle,
+          obj,
+          starts: { x: obj.x, y: obj.y, w: obj.w, h: obj.h },
+          startUnits: u,
+          startClient,
+          pending: snapshotCopy(),
+          activated: false,
+        };
+        return;
+      }
+      const hit = hitTest(copy, u.x, u.y);
+      if (hit && hit.shape) {
+        // Click selects; Shift+click adds (or removes an already-selected one).
+        const already = mapEdit.selection.some((ref) => ref && ref.obj === hit.shape);
+        if (already && event.shiftKey) {
+          mapEdit.selection = mapEdit.selection.filter((ref) => ref.obj !== hit.shape);
+        } else if (!already) {
+          mapEdit.selection = event.shiftKey
+            ? [...mapEdit.selection, { kind: hit.kind, obj: hit.shape }]
+            : [{ kind: hit.kind, obj: hit.shape }];
+        }
+        refreshOverlay();
+        gesture = {
+          type: 'move',
+          pointerId: event.pointerId,
+          startUnits: u,
+          startClient,
+          grabs: mapEdit.selection.map(({ obj }) => ({ obj, x: obj.x, y: obj.y })),
+          pending: snapshotCopy(),
+          activated: false,
+        };
+        return;
+      }
+      // Dragging empty floor rubber-bands (SPEC section 3); Shift keeps the
+      // current selection under the band.
+      gesture = {
+        type: 'band',
+        pointerId: event.pointerId,
+        startUnits: u,
+        startClient,
+        base: event.shiftKey ? mapEdit.selection.slice() : [],
+        activated: false,
+        rect: null,
+      };
+      return;
+    }
+
+    // Create tools: a plain click drops the default size (spec section 3); a
+    // double-click must not drop two.
+    if (sameSpotCreate(event)) return;
+    const start = {
+      x: mapEdit.snap ? snap(u.x) : roundMapNumber(u.x),
+      y: mapEdit.snap ? snap(u.y) : roundMapNumber(u.y),
+    };
+    gesture = {
+      type: 'create',
+      kind: tool,
+      pointerId: event.pointerId,
+      startUnits: start,
+      startClient,
+      pending: snapshotCopy(),
+      activated: false,
+      rect: null,
+    };
+  });
+
+  svg.addEventListener('pointermove', (event) => {
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const u = toUnits(event.clientX, event.clientY);
+    if (!gesture.activated) {
+      const distPx = Math.hypot(
+        event.clientX - gesture.startClient.x,
+        event.clientY - gesture.startClient.y,
+      );
+      if (distPx <= CLICK_SLOP_PX) return;
+      gesture.activated = true;
+      if (gesture.pending) {
+        // First real movement: this gesture becomes one undo step.
+        mapEdit.undo = pushUndoSnapshot(mapEdit.undo, gesture.pending);
+        gesture.pending = null;
+      }
+    }
+    const dxu = u.x - gesture.startUnits.x;
+    const dyu = u.y - gesture.startUnits.y;
+    if (gesture.type === 'move') {
+      // Snap the delta off the anchor grab so a multi-selection keeps its
+      // inner layout while the destination lands on the grid.
+      const anchor = gesture.grabs[0];
+      if (!anchor) return;
+      const moved = moveShape({ x: anchor.x, y: anchor.y }, dxu, dyu, { snapOn: mapEdit.snap });
+      const dx = moved.x - anchor.x;
+      const dy = moved.y - anchor.y;
+      for (const grab of gesture.grabs) {
+        grab.obj.x = roundMapNumber(grab.x + dx);
+        grab.obj.y = roundMapNumber(grab.y + dy);
+      }
+      redrawShapeNodes();
+      refreshOverlay();
+      refreshPanelNumbers();
+    } else if (gesture.type === 'resize') {
+      const next = resizeShape(gesture.starts, gesture.handle, dxu, dyu, {
+        snapOn: mapEdit.snap,
+      });
+      gesture.obj.x = next.x;
+      gesture.obj.y = next.y;
+      gesture.obj.w = next.w;
+      gesture.obj.h = next.h;
+      redrawShapeNodes();
+      refreshOverlay();
+      refreshPanelNumbers();
+    } else if (gesture.type === 'band') {
+      gesture.rect = rubberBandRect(gesture.startUnits.x, gesture.startUnits.y, u.x, u.y);
+      const hits = [];
+      for (const kind of SHAPE_KIND_LIST) {
+        for (const obj of editShapesOf(kind)) {
+          if (rectIntersectsShape(gesture.rect, obj)) hits.push({ kind, obj });
+        }
+      }
+      mapEdit.selection = mergeRefs(gesture.base, hits);
+      refreshOverlay();
+    } else if (gesture.type === 'create') {
+      gesture.rect = rectForCreate(gesture.startUnits, u);
+      refreshOverlay();
+    }
+  });
+
+  svg.addEventListener('pointerup', (event) => {
+    pointers.delete(event.pointerId);
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const g = gesture;
+    gesture = null;
+    if (g.type === 'create') {
+      if (g.activated && g.rect && g.rect.w >= SHAPE_MIN_SIZE && g.rect.h >= SHAPE_MIN_SIZE) {
+        const rect = g.rect;
+        // The snapshot pushed at drag start is this step's undo entry.
+        editMutation(
+          () => {
+            const shape = createShapeFromRect(g.kind, rect, boxIds());
+            if (shape) {
+              editShapesOf(g.kind).push(shape);
+              mapEdit.selection = [{ kind: g.kind, obj: shape }];
+            }
+          },
+          { pushUndo: false },
+        );
+      } else {
+        // A plain click drops the default size at the snapped anchor.
+        const at = { x: g.startUnits.x, y: g.startUnits.y };
+        editMutation(() => {
+          const shape = createShapeFromRect(g.kind, defaultShapeRect(g.kind, at.x, at.y), boxIds());
+          if (shape) {
+            editShapesOf(g.kind).push(shape);
+            mapEdit.selection = [{ kind: g.kind, obj: shape }];
+          }
+        });
+        lastCreate = { x: g.startClient.x, y: g.startClient.y, at: Date.now() };
+      }
+      return;
+    }
+    // move / resize / band: the undo snapshot went on at drag start; band only
+    // previewed the selection. Re-render so panel and buttons catch up.
+    ctx.render();
+  });
+
+  svg.addEventListener('pointercancel', (event) => {
+    pointers.delete(event.pointerId);
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const g = gesture;
+    gesture = null;
+    if ((g.type === 'move' || g.type === 'resize') && g.activated) {
+      undoEditChange(); // restores the pre-gesture snapshot
+      return;
+    }
+    if (g.type === 'band') {
+      mapEdit.selection = g.base.filter(
+        (ref) => ref && ref.obj && editShapesOf(ref.kind).includes(ref.obj),
+      );
+    }
+    ctx.render();
+  });
+
+  // --- top bar ---------------------------------------------------------------
+  const saveButton = h(
+    'button',
+    {
+      class: 'btn btn-primary btn-small',
+      type: 'button',
+      disabled: !mapEdit.dirty,
+      title: mapEdit.dirty ? 'Save the whole floor layout' : 'No changes to save',
+      onclick: () => saveEditSession(ctx),
+    },
+    'Save map',
+  );
+  const cancelButton = h(
+    'button',
+    {
+      class: 'btn btn-small',
+      type: 'button',
+      onclick: () => confirmLeaveEditSession(ctx),
+    },
+    'Cancel',
+  );
+  const undoButton = h(
+    'button',
+    {
+      class: 'btn btn-small',
+      type: 'button',
+      disabled: mapEdit.undo.length === 0,
+      'aria-label': 'Undo the last step (Ctrl+Z)',
+      onclick: () => undoEditChange(),
+    },
+    `Undo (${mapEdit.undo.length})`,
+  );
+  const snapButton = h(
+    'button',
+    {
+      class: `btn btn-small${mapEdit.snap ? ' is-active' : ''}`,
+      type: 'button',
+      'aria-pressed': mapEdit.snap ? 'true' : 'false',
+      title: 'Snap to the 2-unit grid while moving and resizing',
+      onclick: () => {
+        mapEdit.snap = !mapEdit.snap;
+        snapButton.classList.toggle('is-active', mapEdit.snap);
+        snapButton.setAttribute('aria-pressed', String(mapEdit.snap));
+      },
+    },
+    'Snap',
+  );
+
+  function toolHint(tool) {
+    if (tool === 'select') {
+      return 'Drag to move · drag empty floor to band-select · Shift+click adds · arrows nudge (Shift = 10) · Ctrl+Z undo · Delete removes';
+    }
+    if (tool === 'box') return 'Drag a rectangle for the new box, or plain-click for the default 45 × 28.';
+    if (tool === 'corridor') return 'Drag a rectangle for the new aisle, or plain-click for the default 5 × 60.';
+    return 'Drag a rectangle for the floor patch, or plain-click for the default 24 × 24.';
+  }
+
+  const hint = h('p', { class: 'field-hint fm-edit-hint', role: 'status' }, toolHint(mapEdit.tool));
+
+  const toolButtons = EDIT_TOOLS.map((tool) =>
+    h(
+      'button',
+      {
+        class: `btn btn-small${mapEdit.tool === tool.key ? ' is-active' : ''}`,
+        type: 'button',
+        'aria-pressed': mapEdit.tool === tool.key ? 'true' : 'false',
+        dataset: { tool: tool.key },
+        onclick: () => {
+          mapEdit.tool = tool.key;
+          svg.setAttribute('class', `fm-svg fm-editing fm-tool-${tool.key}`);
+          hint.textContent = toolHint(tool.key);
+          for (const button of toolButtons) {
+            const active = button.dataset.tool === tool.key;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-pressed', String(active));
+          }
+        },
+      },
+      tool.label,
+    ),
+  );
+
+  const zoomButtons = h(
+    'div',
+    { class: 'fm-zoom' },
+    h(
+      'button',
+      { class: 'btn btn-small', type: 'button', 'aria-label': 'Zoom out', onclick: () => zoomCentre(1 / ZOOM_STEP) },
+      '−',
+    ),
+    h(
+      'button',
+      { class: 'btn btn-small', type: 'button', 'aria-label': 'Zoom in', onclick: () => zoomCentre(ZOOM_STEP) },
+      '+',
+    ),
+    h(
+      'button',
+      {
+        class: 'btn btn-small',
+        type: 'button',
+        onclick: () => {
+          mapView.viewBox = fitViewBox({ width: copy.width, height: copy.height });
+          applyView();
+        },
+      },
+      'Fit',
+    ),
+  );
+
+  refreshOverlay();
+  applyView();
+
+  return ctx.page(
+    ctx.pageHead('Floor map'),
+    h(
+      'div',
+      { class: 'fm-edit-topbar' },
+      h('span', { class: 'fm-edit-title' }, `Editing ${mapRecord.name || 'this floor'}`),
+      saveButton,
+      cancelButton,
+      undoButton,
+      snapButton,
+      h(
+        'div',
+        { class: 'fm-edit-tools', role: 'group', 'aria-label': 'Canvas tools' },
+        ...toolButtons,
+      ),
+      zoomButtons,
+    ),
+    hint,
+    h(
+      'div',
+      { class: 'fm-edit-wrap' },
+      h('div', { class: 'fm-svg-wrap fm-edit-canvas' }, svg),
+      panelHost,
+    ),
+    h(
+      'p',
+      { class: 'field-hint fm-edit-note' },
+      'Deleting a box — or giving it fewer slots than it holds — never deletes stations: they move to the off-map list when you save.',
+    ),
+  );
 }

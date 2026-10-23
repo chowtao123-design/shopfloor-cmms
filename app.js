@@ -10939,6 +10939,7 @@ function mapPageContext() {
     openDrawer,
     trapTabKey,
     dialogOpen: () => dialogRoot.childElementCount > 0,
+    showConfirm,
     navigate,
     render,
     refreshState,
@@ -11038,8 +11039,9 @@ async function render() {
       splitListRoot = 'machines';
     }
   } else if (root === 'map') {
-    // v5 (SPEC-v5.md section 2): the floor map view (V5-M2); the edit canvas
-    // is V5-M3. Optional ?station=<id> centres and highlights that station.
+    // v5 (SPEC-v5.md sections 2 and 3): the floor map view and — once an
+    // Edit map session is open — the edit canvas, both in map.js (V5-M2 +
+    // V5-M3). Optional ?station=<id> centres and highlights that station.
     if (!can('floorMap')) {
       content = noAccessPage('Floor map', 'Floor map & stations');
     } else {

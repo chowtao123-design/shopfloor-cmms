@@ -278,13 +278,11 @@ test('map.js: stations save through sync.saveRecord on floorStations', () => {
   assert.doesNotMatch(src, /console\.log/);
 });
 
-test('app.js + map.js: the V5-M3 edit canvas is not smuggled into the view', () => {
-  // This milestone is the map view only; "Edit map" (canvas) is V5-M3, and a
-  // disabled "Coming next" button was explicitly not wanted.
+test('app.js + map.js: no “Coming next” placeholder while features build', () => {
+  // V5-M3 (the edit canvas) has landed in map.js; unbuilt features never ship
+  // a disabled placeholder button, so bans like this stay in force.
   for (const name of ['app.js', 'map.js']) {
-    const src = read(name);
-    assert.doesNotMatch(src, /Coming next/);
-    assert.doesNotMatch(src, /Edit map/);
+    assert.doesNotMatch(read(name), /Coming next/);
   }
 });
 
