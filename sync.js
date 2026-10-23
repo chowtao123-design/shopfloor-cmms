@@ -17,7 +17,9 @@ import { areaLabel } from './permissions.js';
 // stores (stored offline by db.js; the requests page reads them in V4-M2).
 // v4 (SPEC-v4.md section 4.1): libraryItems too, so the Library page (M4)
 // and the offline mirror work from the same sync.
-const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests', 'libraryItems'];
+// v5 (SPEC-v5.md section 1): floorMaps and floorStations arrive the same
+// way; the map page (V5-M2) renders them from the local mirror.
+const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests', 'libraryItems', 'floorMaps', 'floorStations'];
 const PULL_INTERVAL_MS = 30000;
 const PULL_PAGE_LIMIT = 500;
 const MAX_PULL_PAGES = 200;

@@ -20,6 +20,8 @@ export const AREAS = [
   { key: 'serviceOrders', label: 'Service Orders' },
   { key: 'pm', label: 'Preventive Maintenance' },
   { key: 'machines', label: 'Machines' },
+  // v5 (SPEC-v5.md section 1.3): the floor map and its stations.
+  { key: 'floorMap', label: 'Floor map & stations' },
   { key: 'parts', label: 'Parts & Stock' },
   // v4 (SPEC-v4.md section 1): parts requests and the repair library.
   { key: 'purchasing', label: 'Parts requests' },
@@ -50,6 +52,9 @@ const STORE_AREAS = new Map([
   ['workOrders', 'serviceOrders'],
   ['pmTasks', 'pm'],
   ['machines', 'machines'],
+  // v5 (SPEC-v5.md section 1.3): both floor stores -> the floorMap area.
+  ['floorMaps', 'floorMap'],
+  ['floorStations', 'floorMap'],
   ['parts', 'parts'],
   ['purchaseRequests', 'purchasing'],
   ['libraryItems', 'library'],
@@ -136,6 +141,8 @@ export const BUILTIN_ROLES = [
       serviceOrders: 'write',
       pm: 'write',
       machines: 'write',
+      // v5 (SPEC-v5.md section 1.3): technicians place and edit stations.
+      floorMap: 'write',
       parts: 'write',
       coworkers: 'write',
       contractors: 'write',
@@ -154,6 +161,8 @@ export const BUILTIN_ROLES = [
       serviceOrders: 'read',
       pm: 'read',
       machines: 'read',
+      // v5 (SPEC-v5.md section 1.3): viewers see the map, read-only.
+      floorMap: 'read',
       parts: 'read',
       purchasing: 'read',
       library: 'read',

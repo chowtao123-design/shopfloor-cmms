@@ -1,13 +1,14 @@
 'use strict';
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import * as auth from './auth.js';
 import { BACKUP_NAME_RE, formatBackupStamp, isValidBackupName } from './backup.js';
-import { can } from './permissions.js';
-import { importV1 } from './records.js';
+import { can, normalizePermissions } from './permissions.js';
+import { deleteRecord, importV1, isValidRecordId, putRecord, validateRecordData } from './records.js';
 import { openStore } from './store.js';
 import { ensureAgentUser } from './apiTokens.js';
 import { isMainModule } from './is-main.js';
@@ -25,6 +26,7 @@ const USAGE = `Usage:
   node server/admin.js token list
   node server/admin.js token revoke <token-id>
   node server/admin.js import-v1 <file> --as <username>
+  node server/admin.js import-floor-map <layout.json> <stations.json> [--name "Main floor"] [--replace]
   node server/admin.js restore <backup-file> [--yes]
 
 Accounts live in the SQLite database under DATA_DIR (default: ./data).
@@ -36,7 +38,18 @@ create-user assigns the Administrator role with --admin, the named role
 with --role "<Role name>" (see list-users), and the Technician role
 otherwise. restore copies a backup from DATA_DIR/backups over the live
 database. Stop the Shop Maintenance Log server first; restore asks for
---yes to confirm. The current database is kept as backups/pre-restore-<timestamp>.db.`;
+--yes to confirm. The current database is kept as backups/pre-restore-<timestamp>.db.
+
+import-floor-map (SPEC-v5.md section 4) creates the floor map record and
+its stations from the client's map export: layout.json holds the geometry
+(page size, boxes, corridors, fills) and stations.json the roster. Box
+slot "lines" are ignored completely and non-roster fields (phone,
+emergency contact, join date, shift...) are dropped; a station whose box
+does not exist becomes off-map, and a station whose code matches a machine
+name (ignoring case, spaces and dashes) is auto-linked to it. --name names
+the floor (default "Main floor"); an existing map with that name is only
+replaced with --replace. Only counts and codes are printed, never staff
+names: the roster lives in the database only, never in this repo.`;
 
 function usageError() {
   console.error(USAGE);
@@ -274,6 +287,280 @@ async function cmdImportV1(args) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// import-floor-map (SPEC-v5.md section 4): the one-time admin import of the
+// client's map export. layout.json carries the geometry (page size, boxes,
+// corridors, fills) and stations.json the roster. Box slot "lines" (staff
+// names) are ignored completely; non-roster station fields are dropped.
+// Everything is written through putRecord/deleteRecord, so history rows and
+// attribution exist exactly like a server-side write.
+// ---------------------------------------------------------------------------
+
+const SYSTEM_USERNAME = 'system';
+const SYSTEM_DISPLAY_NAME = 'System';
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonFile(file, what) {
+  try {
+    return JSON.parse(await fs.promises.readFile(file, 'utf8'));
+  } catch (err) {
+    throw new Error(`could not read the ${what} file "${file}": ${err.message}`);
+  }
+}
+
+/** Map numbers keep at most two decimals (SPEC-v5.md section 1.1). */
+function roundMapNumber(value, where) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${where} must be a number`);
+  }
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * The disabled bot user the CLI writes as — the same convention the admin
+ * commands already use for non-human actors (the Muse Agent / AI Assistant
+ * bot accounts): every record edit is attributed in the history log, and
+ * nobody can sign in as the bot. Its role only ever carries floorMap.
+ */
+function ensureSystemUser(store) {
+  const existing = store.getUserByUsername(SYSTEM_USERNAME);
+  if (existing !== null) {
+    return { ...existing, roleId: existing.role_id ?? existing.roleId ?? null };
+  }
+  let role = store.getRoleByName(SYSTEM_DISPLAY_NAME);
+  if (role === null) {
+    role = store.createRole({
+      name: SYSTEM_DISPLAY_NAME,
+      permissions: normalizePermissions({ floorMap: 'write' }),
+      updatedBy: null,
+    });
+  }
+  const created = store.createUser({
+    username: SYSTEM_USERNAME,
+    displayName: SYSTEM_DISPLAY_NAME,
+    roleId: role.id,
+    passwordHash: auth.hashPassword(crypto.randomBytes(32).toString('hex')),
+  });
+  store.updateUser(created.id, { disabled: 1 });
+  const row = store.getUserById(created.id);
+  return { ...row, roleId: role.id };
+}
+
+/** Geometry -> one floorMaps record data object (SPEC-v5.md section 4). */
+function buildMapData(layout, name) {
+  if (!isPlainObject(layout)) throw new Error('the layout file must be a JSON object');
+  const page = isPlainObject(layout.page) ? layout.page : {};
+  const map = {
+    name,
+    width: roundMapNumber(page.w, 'layout page.w'),
+    height: roundMapNumber(page.h, 'layout page.h'),
+  };
+  const boxes = Array.isArray(layout.boxes) ? layout.boxes : [];
+  map.boxes = boxes.map((box, index) => {
+    if (!isPlainObject(box)) throw new Error(`layout boxes[${index}] must be an object`);
+    if (typeof box.id !== 'string' || box.id === '') {
+      throw new Error(`layout boxes[${index}].id is required`);
+    }
+    // slots = box.slots.length (SPEC-v5.md section 4); box.slots[].lines are
+    // ignored completely — staff names never reach the map record.
+    const slotCount = Array.isArray(box.slots) ? box.slots.length : 0;
+    if (slotCount > 12) {
+      throw new Error(`layout boxes[${index}] has ${slotCount} slots; a box holds at most 12`);
+    }
+    return {
+      id: box.id,
+      x: roundMapNumber(box.x, `layout boxes[${index}].x`),
+      y: roundMapNumber(box.y, `layout boxes[${index}].y`),
+      w: roundMapNumber(box.w, `layout boxes[${index}].w`),
+      h: roundMapNumber(box.h, `layout boxes[${index}].h`),
+      slots: slotCount > 0 ? slotCount : 1,
+      fill: typeof box.fill === 'string' ? box.fill : null,
+      label: typeof box.label === 'string' ? box.label : '',
+    };
+  });
+  map.corridors = (Array.isArray(layout.corridors) ? layout.corridors : []).map((rect, index) => {
+    if (!Array.isArray(rect) || rect.length !== 4) {
+      throw new Error(`layout corridors[${index}] must be [x, y, w, h]`);
+    }
+    return {
+      x: roundMapNumber(rect[0], `layout corridors[${index}].x`),
+      y: roundMapNumber(rect[1], `layout corridors[${index}].y`),
+      w: roundMapNumber(rect[2], `layout corridors[${index}].w`),
+      h: roundMapNumber(rect[3], `layout corridors[${index}].h`),
+    };
+  });
+  map.fills = (Array.isArray(layout.fills) ? layout.fills : []).map((patch, index) => {
+    if (!Array.isArray(patch) || patch.length !== 5) {
+      throw new Error(`layout fills[${index}] must be [x, y, w, h, color]`);
+    }
+    if (typeof patch[4] !== 'string') {
+      throw new Error(`layout fills[${index}].color must be a #rrggbb string`);
+    }
+    return {
+      x: roundMapNumber(patch[0], `layout fills[${index}].x`),
+      y: roundMapNumber(patch[1], `layout fills[${index}].y`),
+      w: roundMapNumber(patch[2], `layout fills[${index}].w`),
+      h: roundMapNumber(patch[3], `layout fills[${index}].h`),
+      color: patch[4],
+    };
+  });
+  return map;
+}
+
+/**
+ * One stations.json entry -> floorStations data (SPEC-v5.md section 4):
+ * id, box, slot, zone, code, emp->empId, en->name, cn->nameCn, vac->vacant,
+ * rem->remark. Every other field (phone, emg, join, shift...) is dropped.
+ */
+function buildStationData(station, mapId) {
+  const data = { mapId };
+  if (station.slot !== undefined) data.slot = station.slot;
+  if (station.code !== undefined) data.code = station.code;
+  if (station.zone !== undefined) data.zone = station.zone;
+  if (station.en !== undefined) data.name = station.en;
+  if (station.cn !== undefined) data.nameCn = station.cn;
+  if (station.emp !== undefined) data.empId = station.emp;
+  if (station.vac !== undefined) data.vacant = station.vac === true;
+  if (station.rem !== undefined) data.remark = station.rem;
+  return data;
+}
+
+/** A station code's match key: case, space and dash insensitive (section 4). */
+function machineKey(text) {
+  return String(text ?? '').toLowerCase().replace(/[\s-]+/g, '');
+}
+
+async function cmdImportFloorMap(args) {
+  let name = 'Main floor';
+  let replace = false;
+  const positional = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--name') {
+      name = args[i + 1] ?? null;
+      i += 1;
+    } else if (arg.startsWith('--name=')) {
+      name = arg.slice(7);
+    } else if (arg === '--replace') {
+      replace = true;
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length !== 2) return usageError();
+  if (typeof name !== 'string' || name.trim() === '' || name.trim().length > 80) {
+    throw new Error('--name must be 1-80 characters');
+  }
+  name = name.trim();
+  const [layoutFile, stationsFile] = positional;
+  const layout = await readJsonFile(layoutFile, 'layout');
+  const stations = await readJsonFile(stationsFile, 'stations');
+  if (!Array.isArray(stations)) throw new Error('the stations file must be a JSON array');
+
+  const store = openStore(DATA_DIR);
+  try {
+    const user = ensureSystemUser(store);
+    const map = buildMapData(layout, name);
+    const boxIds = new Set(map.boxes.map((box) => box.id));
+
+    // Auto-link: station code == machine name, case/space/dash-insensitive.
+    const machineByKey = new Map();
+    for (const record of store.listRecords('machines')) {
+      const key = machineKey(record.data.name);
+      if (key !== '' && !machineByKey.has(key)) machineByKey.set(key, record.id);
+    }
+
+    const mapId = crypto.randomUUID();
+    const rows = [];
+    let linked = 0;
+    const unlinked = [];
+    for (const [index, station] of stations.entries()) {
+      if (!isPlainObject(station)) {
+        throw new Error(`stations[${index}] must be an object`);
+      }
+      const data = buildStationData(station, mapId);
+      // A station whose box does not exist becomes off-map (boxId null).
+      data.boxId = typeof station.box === 'string' && boxIds.has(station.box) ? station.box : null;
+      const key = machineKey(data.code);
+      if (key !== '' && machineByKey.has(key)) {
+        data.machineId = machineByKey.get(key);
+        linked += 1;
+      } else if (data.code !== undefined && data.code !== '') {
+        unlinked.push(data.code);
+      }
+      rows.push({ id: null, sourceId: station.id, data });
+    }
+
+    // Validate everything before writing anything: a bad line never leaves a
+    // half-imported map behind (putRecord validates again on the write path).
+    validateRecordData('floorMaps', map, { isCreate: true, part: 'layout' });
+    for (const [index, row] of rows.entries()) {
+      validateRecordData('floorStations', row.data, {
+        isCreate: true,
+        part: `stations[${index}]`,
+      });
+    }
+
+    const existing = store
+      .listRecords('floorMaps')
+      .find((record) => record.data.name === name);
+    let removedStations = 0;
+    if (existing !== undefined) {
+      if (!replace) {
+        throw new Error(
+          `a floor map named "${name}" already exists (record ${existing.id}); pass --replace to import over it`
+        );
+      }
+      for (const record of store.listRecords('floorStations')) {
+        if (record.data.mapId !== existing.id) continue;
+        deleteRecord(store, {
+          storeName: 'floorStations',
+          id: record.id,
+          baseVersion: null,
+          user,
+        });
+        removedStations += 1;
+      }
+      deleteRecord(store, { storeName: 'floorMaps', id: existing.id, baseVersion: null, user });
+    }
+
+    // Station ids: the roster's own id when it is a valid unused record id,
+    // a fresh UUID otherwise (stable for a later "request repair" page).
+    for (const row of rows) {
+      const sourceId = row.sourceId;
+      row.id =
+        isValidRecordId(sourceId) && store.getRecord('floorStations', sourceId) === null
+          ? sourceId
+          : crypto.randomUUID();
+    }
+
+    putRecord(store, { storeName: 'floorMaps', id: mapId, body: { data: map }, user });
+    for (const row of rows) {
+      putRecord(store, { storeName: 'floorStations', id: row.id, body: { data: row.data }, user });
+    }
+
+    const offMap = rows.filter((row) => !row.data.boxId).length;
+    console.log(`Imported floor map "${name}" (${map.width} x ${map.height}), record ${mapId}.`);
+    console.log(
+      `  ${map.boxes.length} boxes, ${map.corridors.length} corridors, ${map.fills.length} floor patches.`
+    );
+    console.log(`  ${rows.length} stations: ${rows.length - offMap} placed, ${offMap} off-map.`);
+    console.log(`  ${linked} station(s) auto-linked to a machine by code.`);
+    if (unlinked.length > 0) {
+      console.log(`  ${unlinked.length} station(s) without a machine link: ${unlinked.join(', ')}.`);
+    }
+    if (existing !== undefined) {
+      console.log(`  Replaced the existing map and removed its ${removedStations} station(s).`);
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 /** Recorded backup row for `name` in the given database file, or null. */
 function recordedBackup(dbFile, name) {
   let db = null;
@@ -463,6 +750,8 @@ async function main(argv) {
       return cmdToken(args);
     case 'import-v1':
       return cmdImportV1(args);
+    case 'import-floor-map':
+      return cmdImportFloorMap(args);
     case 'restore':
       return cmdRestore(args);
     case '--help':

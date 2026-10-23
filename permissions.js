@@ -6,6 +6,8 @@ const AREAS = [
   { key: 'serviceOrders', label: 'Service Orders' },
   { key: 'pm', label: 'Preventive Maintenance' },
   { key: 'machines', label: 'Machines' },
+  // v5 (SPEC-v5.md section 1.3): the floor map and its stations.
+  { key: 'floorMap', label: 'Floor map & stations' },
   { key: 'parts', label: 'Parts & Stock' },
   // v4 (SPEC-v4.md section 1): parts requests and the repair library.
   { key: 'purchasing', label: 'Parts requests' },
@@ -29,6 +31,9 @@ const STORE_AREAS = new Map([
   ['workOrders', 'serviceOrders'],
   ['pmTasks', 'pm'],
   ['machines', 'machines'],
+  // v5 (SPEC-v5.md section 1.3): both floor stores -> the floorMap area.
+  ['floorMaps', 'floorMap'],
+  ['floorStations', 'floorMap'],
   ['parts', 'parts'],
   // v4 (SPEC-v4.md section 1): purchaseRequests -> purchasing,
   // libraryItems -> library.

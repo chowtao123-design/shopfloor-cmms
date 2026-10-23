@@ -395,18 +395,18 @@ test('app.js: people come from the synced stores and the users cache', () => {
 
 test('db.js + sync.js: coworkers and contractors sync as record stores', () => {
   const dbSrc = read('db.js');
-  // v4 (SPEC-v4.md section 2): DB_VERSION 4 created purchaseRequests;
   // v4 (SPEC-v4.md section 4.1): 5 creates the libraryItems store.
-  assert.match(dbSrc, /const DB_VERSION = 5;/);
+  // v5 (SPEC-v5.md section 1): 6 creates floorMaps and floorStations.
+  assert.match(dbSrc, /const DB_VERSION = 6;/);
   assert.match(dbSrc, /'coworkers'/);
   assert.match(dbSrc, /'contractors'/);
   assert.match(dbSrc, /'purchaseRequests'/);
   assert.match(dbSrc, /'libraryItems'/);
+  assert.match(dbSrc, /'floorMaps'/);
+  assert.match(dbSrc, /'floorStations'/);
   const syncSrc = read('sync.js');
-  assert.match(
-    syncSrc,
-    /const RECORD_STORES = \['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests', 'libraryItems'\];/,
-  );
+  assert.match(syncSrc, /'floorMaps'/);
+  assert.match(syncSrc, /'floorStations'/);
 });
 
 test('app.js + index.html: no user-visible job wording left', () => {

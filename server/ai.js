@@ -964,6 +964,10 @@ function countEntries(records, labelFor) {
  * Never reads users, sessions or raw files (manual PDF text comes from the
  * pre-extracted `file_texts` table). Capped at CONTEXT_MAX_CHARS.
  *
+ * SPEC-v5.md section 1.3: floorMaps and floorStations (the floor roster)
+ * never enter the AI context, whatever the user's role allows — staff names
+ * must not reach any AI provider (see AI_EXCLUDED_STORES below).
+ *
  * V4-M5 (SPEC-v4.md section 5): users with library Read also get a Library
  * block (repair methods, manual excerpts with page labels, past fixes),
  * second after the shop totals, within LIBRARY_CONTEXT_MAX_CHARS.
@@ -972,9 +976,21 @@ function countEntries(records, labelFor) {
  * @param {{id: string, roleId: string, store?: object}} user the signed-in user
  * @param {string} question the user's message
  */
+/**
+ * Stores whose records are never read into the AI context (SPEC-v5.md
+ * section 1.3): the floor map and its stations hold the staff roster, and
+ * staff names must not reach any AI provider. buildContext refuses them
+ * outright — even for an Administrator whose role could Read them.
+ */
+export const AI_EXCLUDED_STORES = Object.freeze(['floorMaps', 'floorStations']);
+const AI_EXCLUDED = new Set(AI_EXCLUDED_STORES);
+
 export function buildContext(store, user, question, { now = new Date() } = {}) {
   const who = { ...user, store };
-  const read = (storeName) => can(who, storeArea(storeName), 'read');
+  // The exclusion is explicit, not just absence from the lists below: a
+  // later edit that adds a floor store here reads nothing (SPEC-v5.md 1.3).
+  const read = (storeName) =>
+    !AI_EXCLUDED.has(storeName) && can(who, storeArea(storeName), 'read');
   const readMachines = can(who, 'machines', 'read');
   const includeRate = can(who, 'contractorRates', 'read');
   const workOrders = read('workOrders') ? store.listRecords('workOrders') : [];

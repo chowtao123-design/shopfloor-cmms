@@ -156,6 +156,10 @@ const state = {
   // v4 (SPEC-v4.md section 4.1): the repair library (manuals + methods),
   // synced the same way for the Library page (SPEC-v4.md 4.3).
   libraryItems: [],
+  // v5 (SPEC-v5.md section 1): the floor map and its stations, synced like
+  // every record store; the map page renders them in V5-M2.
+  floorMaps: [],
+  floorStations: [],
 };
 
 let fieldCounter = 0;
@@ -336,19 +340,32 @@ function setTitle(title) {
 }
 
 async function refreshState() {
-  const [machines, parts, workOrders, pmTasks, coworkers, contractors, purchaseRequests, libraryItems] =
-    await Promise.all([
-      db.getAll('machines'),
-      db.getAll('parts'),
-      db.getAll('workOrders'),
-      db.getAll('pmTasks'),
-      db.getAll('coworkers'),
-      db.getAll('contractors'),
-      // v4 (SPEC-v4.md section 2): pulled like the other record stores.
-      db.getAll('purchaseRequests'),
-      // v4 (SPEC-v4.md section 4.1): the repair library pulls the same way.
-      db.getAll('libraryItems'),
-    ]);
+  const [
+    machines,
+    parts,
+    workOrders,
+    pmTasks,
+    coworkers,
+    contractors,
+    purchaseRequests,
+    libraryItems,
+    floorMaps,
+    floorStations,
+  ] = await Promise.all([
+    db.getAll('machines'),
+    db.getAll('parts'),
+    db.getAll('workOrders'),
+    db.getAll('pmTasks'),
+    db.getAll('coworkers'),
+    db.getAll('contractors'),
+    // v4 (SPEC-v4.md section 2): pulled like the other record stores.
+    db.getAll('purchaseRequests'),
+    // v4 (SPEC-v4.md section 4.1): the repair library pulls the same way.
+    db.getAll('libraryItems'),
+    // v5 (SPEC-v5.md section 1): the floor map stores, for the map page.
+    db.getAll('floorMaps'),
+    db.getAll('floorStations'),
+  ]);
   state.machines = machines;
   state.parts = parts;
   state.workOrders = workOrders;
@@ -357,6 +374,8 @@ async function refreshState() {
   state.contractors = contractors;
   state.purchaseRequests = purchaseRequests;
   state.libraryItems = libraryItems;
+  state.floorMaps = floorMaps;
+  state.floorStations = floorStations;
 }
 
 function routeInfo() {

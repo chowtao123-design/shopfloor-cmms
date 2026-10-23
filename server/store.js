@@ -272,7 +272,7 @@ function upgradeBuiltinRolePermissions(db) {
       new Date().toISOString(),
       before,
       snapshotOrNull(refreshed),
-      'added the purchasing and library areas (SPEC-v4.md section 1)'
+      'added the purchasing and library areas (SPEC-v4.md section 1), then the floorMap area (SPEC-v5.md section 1.3)'
     );
   }
 }

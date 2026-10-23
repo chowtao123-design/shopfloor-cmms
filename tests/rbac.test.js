@@ -105,6 +105,8 @@ test('fresh databases get exactly the three built-in roles with the 13.1 levels'
         serviceOrders: 'write',
         pm: 'write',
         machines: 'write',
+        // v5 (SPEC-v5.md section 1.3): the floor map area.
+        floorMap: 'write',
         parts: 'write',
         purchasing: 'write',
         library: 'write',
@@ -122,6 +124,8 @@ test('fresh databases get exactly the three built-in roles with the 13.1 levels'
         serviceOrders: 'write',
         pm: 'write',
         machines: 'write',
+        // v5 (SPEC-v5.md section 1.3): the floor map area.
+        floorMap: 'write',
         parts: 'write',
         purchasing: 'write',
         library: 'write',
@@ -139,6 +143,8 @@ test('fresh databases get exactly the three built-in roles with the 13.1 levels'
         serviceOrders: 'read',
         pm: 'read',
         machines: 'read',
+        // v5 (SPEC-v5.md section 1.3): the floor map area.
+        floorMap: 'read',
         parts: 'read',
         purchasing: 'read',
         library: 'read',

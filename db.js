@@ -1,7 +1,9 @@
 const DB_NAME = 'maint-log';
 // v4 (SPEC-v4.md sections 2 and 4.1): DB_VERSION 4 created purchaseRequests;
 // 5 creates the libraryItems store for the repair library.
-const DB_VERSION = 5;
+// v5 (SPEC-v5.md section 1): 6 creates floorMaps and floorStations for the
+// floor map page (V5-M2).
+const DB_VERSION = 6;
 
 // v3 (SPEC-v3.md section 5): coworkers and contractors sync like records,
 // so the pull can store them offline (read by the service order form).
@@ -14,6 +16,10 @@ export const STORES = [
   'contractors',
   'purchaseRequests',
   'libraryItems',
+  // v5 (SPEC-v5.md section 1): the floor map and its stations sync the same
+  // way so the map page works offline.
+  'floorMaps',
+  'floorStations',
 ];
 export const OUTBOX_STORE = 'outbox';
 export const META_STORE = 'meta';

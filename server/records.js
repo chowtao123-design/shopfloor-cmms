@@ -40,6 +40,11 @@ export const STORES = [
   'purchaseRequests',
   // v4 (SPEC-v4.md section 4.1): the repair library, ruled by `library`.
   'libraryItems',
+  // v5 (SPEC-v5.md section 1): the floor map and its stations, ruled by the
+  // `floorMap` area. Imported once by the admin CLI (section 4); the roster
+  // (staff names) stays in the database only — never in the repo or the AI.
+  'floorMaps',
+  'floorStations',
 ];
 
 export const STOCK_REASONS = ['job-done', 'job-reopened', 'manual', 'import'];
@@ -98,6 +103,16 @@ const REQUEST_STATUSES = ['draft', 'sent', 'received', 'cancelled'];
 // SPEC-v4.md section 4.1: repair-library kinds and the method-only fields.
 const LIBRARY_KINDS = ['manual', 'method'];
 const METHOD_ONLY_KEYS = ['symptom', 'cause', 'steps', 'toolsParts', 'safety'];
+
+// SPEC-v5.md section 1.1: the floor map stores. Every map number is finite,
+// -10000...20000, with at most two decimals (drawing units; the import uses
+// PDF points); colours are #rrggbb.
+const MAP_NUMBER_MIN = -10000;
+const MAP_NUMBER_MAX = 20000;
+const MAP_BOX_KEYS = ['id', 'x', 'y', 'w', 'h', 'slots', 'fill', 'label'];
+const MAP_RECT_KEYS = ['x', 'y', 'w', 'h'];
+const MAP_FILL_KEYS = ['x', 'y', 'w', 'h', 'color'];
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -159,12 +174,15 @@ function expectString(store, key, value, { nonEmpty = false, orNull = false, max
   return value;
 }
 
-function expectInteger(store, key, value, { min = -Infinity } = {}) {
+function expectInteger(store, key, value, { min = -Infinity, max = Infinity } = {}) {
   if (!Number.isInteger(value)) {
     throw bad(`${store}.${key} must be an integer`);
   }
   if (value < min) {
     throw bad(`${store}.${key} must be >= ${min}`);
+  }
+  if (value > max) {
+    throw bad(`${store}.${key} must be <= ${max}`);
   }
   return value;
 }
@@ -342,6 +360,112 @@ function expectSteps(store, key, value) {
     expectString(store, `${key}[${index}].id`, item.id, { nonEmpty: true });
     expectString(store, `${key}[${index}].text`, item.text, { nonEmpty: true, maxLength: 1000 });
     return { id: item.id, text: item.text };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-v5.md section 1.1: floor map validation. Unknown fields are rejected
+// everywhere; numbers are finite, -10000...20000, at most two decimals.
+// ---------------------------------------------------------------------------
+
+/** One map number (finite, in range, at most two decimals). */
+function expectMapNumber(store, where, value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw bad(`${store}.${where} must be a number`);
+  }
+  if (value < MAP_NUMBER_MIN || value > MAP_NUMBER_MAX) {
+    throw bad(`${store}.${where} must be between ${MAP_NUMBER_MIN} and ${MAP_NUMBER_MAX}`);
+  }
+  if (Math.abs(value * 100 - Math.round(value * 100)) > 1e-6) {
+    throw bad(`${store}.${where} must have at most two decimals`);
+  }
+  return value;
+}
+
+/** A floor's width/height: a map number, 10-10000 (SPEC-v5.md section 1.1). */
+function expectMapDimension(store, key, value) {
+  expectMapNumber(store, key, value);
+  if (value < 10 || value > 10000) {
+    throw bad(`${store}.${key} must be between 10 and 10000`);
+  }
+  return value;
+}
+
+/** `#rrggbb`, normalised to lower case (SPEC-v5.md section 1.1). */
+function expectHexColor(store, where, value) {
+  if (typeof value !== 'string' || !HEX_COLOR_RE.test(value)) {
+    throw bad(`${store}.${where} must be a #rrggbb colour`);
+  }
+  return value.toLowerCase();
+}
+
+/** The x/y/w/h values of a rect item; the size rules are the caller's. */
+function mapRectValues(store, where, item) {
+  return {
+    x: expectMapNumber(store, `${where}.x`, item.x),
+    y: expectMapNumber(store, `${where}.y`, item.y),
+    w: expectMapNumber(store, `${where}.w`, item.w),
+    h: expectMapNumber(store, `${where}.h`, item.h),
+  };
+}
+
+/** A plain x/y/w/h rect with exactly those four fields. */
+function expectMapRect(store, where, item) {
+  checkItemKeys(store, where, item, MAP_RECT_KEYS);
+  return mapRectValues(store, where, item);
+}
+
+/**
+ * Boxes hold `slots` stations stacked top to bottom in equal parts: at most
+ * 1500 per map, unknown fields rejected, `slots` an integer 1-12 (default 1),
+ * `fill` #rrggbb or null, `label` at most 60 characters.
+ */
+function expectMapBoxes(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of boxes`);
+  if (value.length > 1500) throw bad(`${store}.${key} must have at most 1500 entries`);
+  return value.map((item, index) => {
+    const where = `${key}[${index}]`;
+    checkItemKeys(store, where, item, MAP_BOX_KEYS);
+    const rect = mapRectValues(store, where, item);
+    if (rect.w < 2) throw bad(`${store}.${where}.w must be at least 2`);
+    if (rect.h < 2) throw bad(`${store}.${where}.h must be at least 2`);
+    return {
+      ...rect,
+      id: expectString(store, `${where}.id`, item.id, { nonEmpty: true, maxLength: 40 }),
+      slots:
+        item.slots === undefined
+          ? 1
+          : expectInteger(store, `${where}.slots`, item.slots, { min: 1, max: 12 }),
+      fill:
+        item.fill === undefined || item.fill === null
+          ? null
+          : expectHexColor(store, `${where}.fill`, item.fill),
+      label:
+        item.label === undefined
+          ? ''
+          : expectString(store, `${where}.label`, item.label, { maxLength: 60 }),
+    };
+  });
+}
+
+/** Blue aisles: at most 800 plain rects per map (SPEC-v5.md section 1.1). */
+function expectMapCorridors(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of corridors`);
+  if (value.length > 800) throw bad(`${store}.${key} must have at most 800 entries`);
+  return value.map((item, index) => expectMapRect(store, `${key}[${index}]`, item));
+}
+
+/** Grey/yellow floor patches: at most 200 rects with a colour (1.1). */
+function expectMapFills(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of floor patches`);
+  if (value.length > 200) throw bad(`${store}.${key} must have at most 200 entries`);
+  return value.map((item, index) => {
+    const where = `${key}[${index}]`;
+    checkItemKeys(store, where, item, MAP_FILL_KEYS);
+    return {
+      ...mapRectValues(store, where, item),
+      color: expectHexColor(store, `${where}.color`, item.color),
+    };
   });
 }
 
@@ -712,6 +836,50 @@ const FIELD_SPECS = {
       return data;
     },
   },
+  // SPEC-v5.md section 1.1: one record per floor (usually one). Geometry in
+  // drawing units (the import uses PDF points); ~80 KB per map record.
+  floorMaps: {
+    required: ['name', 'width', 'height'],
+    fields: {
+      name: { type: 'string', nonEmpty: true, maxLength: 80 },
+      width: { type: 'mapDimension' },
+      height: { type: 'mapDimension' },
+      boxes: { type: 'mapBoxes' },
+      corridors: { type: 'mapCorridors' },
+      fills: { type: 'mapFills' },
+    },
+    defaults: () => ({ boxes: [], corridors: [], fills: [] }),
+  },
+  // SPEC-v5.md section 1.2: one station per seat. `boxId` null = off-map
+  // (its box was deleted); the station is still listed and flagged.
+  floorStations: {
+    required: ['mapId'],
+    fields: {
+      mapId: { type: 'string', nonEmpty: true },
+      boxId: { type: 'string', orNull: true, nonEmpty: true },
+      slot: { type: 'int', min: 0, max: 11 },
+      code: { type: 'string', maxLength: 40 },
+      zone: { type: 'string', maxLength: 60 },
+      name: { type: 'string', maxLength: 80 },
+      nameCn: { type: 'string', maxLength: 80 },
+      empId: { type: 'string', maxLength: 20 },
+      vacant: { type: 'boolean' },
+      remark: { type: 'string', maxLength: 200 },
+      machineId: { type: 'string', orNull: true, nonEmpty: true },
+    },
+    defaults: () => ({
+      boxId: null,
+      slot: 0,
+      code: '',
+      zone: '',
+      name: '',
+      nameCn: '',
+      empId: '',
+      vacant: false,
+      remark: '',
+      machineId: null,
+    }),
+  },
 };
 
 function validateField(store, key, spec, value) {
@@ -723,7 +891,7 @@ function validateField(store, key, spec, value) {
         maxLength: spec.maxLength,
       });
     case 'int':
-      return expectInteger(store, key, value, { min: spec.min ?? -Infinity });
+      return expectInteger(store, key, value, { min: spec.min ?? -Infinity, max: spec.max ?? Infinity });
     case 'number':
       return expectNumber(store, key, value, { min: spec.min });
     case 'boolean':
@@ -764,6 +932,15 @@ function validateField(store, key, spec, value) {
       return expectBoundedStringArray(store, key, value, { maxItems: 20, itemMax: 40 });
     case 'steps':
       return expectSteps(store, key, value);
+    // SPEC-v5.md section 1: floor map geometry.
+    case 'mapDimension':
+      return expectMapDimension(store, key, value);
+    case 'mapBoxes':
+      return expectMapBoxes(store, key, value);
+    case 'mapCorridors':
+      return expectMapCorridors(store, key, value);
+    case 'mapFills':
+      return expectMapFills(store, key, value);
     case 'photos': {
       if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array (reserved)`);
       return value;

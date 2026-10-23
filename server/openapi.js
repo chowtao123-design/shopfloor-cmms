@@ -9,7 +9,7 @@
  * per-record GET, because the client mirror is the source of truth.
  */
 
-const storeEnum = ['machines', 'workOrders', 'pmTasks', 'purchaseRequests', 'libraryItems'];
+const storeEnum = ['machines', 'workOrders', 'pmTasks', 'purchaseRequests', 'libraryItems', 'floorMaps', 'floorStations'];
 
 function recordRef() {
   return { $ref: '#/components/schemas/Record' };
@@ -147,6 +147,87 @@ export function openApiSpec(version = '2.0.0') {
           },
           required: ['kind', 'title'],
         },
+        FloorMapRect: {
+          type: 'object',
+          description: 'A plain map rectangle. Every map number is finite, -10000...20000, at most two decimals.',
+          properties: {
+            x: { type: 'number' },
+            y: { type: 'number' },
+            w: { type: 'number' },
+            h: { type: 'number' },
+          },
+          required: ['x', 'y', 'w', 'h'],
+        },
+        FloorMapBox: {
+          type: 'object',
+          description:
+            'One map box (SPEC-v5.md section 1.1): holds `slots` stations stacked top to bottom in equal ' +
+            'parts. Unknown fields are rejected.',
+          properties: {
+            id: { type: 'string', minLength: 1, maxLength: 40 },
+            x: { type: 'number' },
+            y: { type: 'number' },
+            w: { type: 'number', minimum: 2, description: 'At least 2.' },
+            h: { type: 'number', minimum: 2, description: 'At least 2.' },
+            slots: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 12,
+              default: 1,
+              description: 'How many stations stack in the box.',
+            },
+            fill: { type: ['string', 'null'], description: '#rrggbb or null.' },
+            label: { type: 'string', maxLength: 60, default: '' },
+          },
+          required: ['id', 'x', 'y', 'w', 'h'],
+        },
+        FloorMapFill: {
+          type: 'object',
+          description: 'A grey/yellow floor patch; `color` is #rrggbb.',
+          properties: {
+            x: { type: 'number' },
+            y: { type: 'number' },
+            w: { type: 'number' },
+            h: { type: 'number' },
+            color: { type: 'string', description: '#rrggbb.' },
+          },
+          required: ['x', 'y', 'w', 'h', 'color'],
+        },
+        FloorMap: {
+          type: 'object',
+          description:
+            'A floor map (SPEC-v5.md section 1.1): one record per floor, usually one, in drawing units ' +
+            '(the import uses PDF points). A record is ~80 KB. Unknown fields are rejected.',
+          properties: {
+            name: { type: 'string', minLength: 1, maxLength: 80 },
+            width: { type: 'number', minimum: 10, maximum: 10000 },
+            height: { type: 'number', minimum: 10, maximum: 10000 },
+            boxes: { type: 'array', maxItems: 1500, items: { $ref: '#/components/schemas/FloorMapBox' } },
+            corridors: { type: 'array', maxItems: 800, items: { $ref: '#/components/schemas/FloorMapRect' } },
+            fills: { type: 'array', maxItems: 200, items: { $ref: '#/components/schemas/FloorMapFill' } },
+          },
+          required: ['name', 'width', 'height'],
+        },
+        FloorStation: {
+          type: 'object',
+          description:
+            'One station of the floor roster (SPEC-v5.md section 1.2). `boxId` null means off-map (its box ' +
+            'was deleted); the station is still listed and flagged. Unknown fields are rejected.',
+          properties: {
+            mapId: { type: 'string', description: 'The floorMaps record this station belongs to.' },
+            boxId: { type: ['string', 'null'], description: 'The box holding the station, or null when off-map.' },
+            slot: { type: 'integer', minimum: 0, maximum: 11, default: 0, description: 'Position inside the box.' },
+            code: { type: 'string', maxLength: 40, description: 'Station label printed on the map, e.g. "SP14".' },
+            zone: { type: 'string', maxLength: 60 },
+            name: { type: 'string', maxLength: 80, description: 'Staff name (English).' },
+            nameCn: { type: 'string', maxLength: 80, description: 'Staff name (Chinese).' },
+            empId: { type: 'string', maxLength: 20, description: 'Employee ID.' },
+            vacant: { type: 'boolean', default: false },
+            remark: { type: 'string', maxLength: 200 },
+            machineId: { type: ['string', 'null'], description: 'The linked CMMS machine, or null.' },
+          },
+          required: ['mapId'],
+        },
         HistoryEntry: {
           type: 'object',
           additionalProperties: true,
@@ -282,7 +363,11 @@ export function openApiSpec(version = '2.0.0') {
             'the server and ignored in the body, and a PUT replaces the whole record — read the current one ' +
             'from `GET /api/changes` first, then send it back with the new lines. `store` may likewise be ' +
             '`libraryItems` (the repair library, the `LibraryItem` schema); method-only fields are rejected ' +
-            'for manuals, and a PUT replaces the whole record the same way.',
+            'for manuals, and a PUT replaces the whole record the same way. `store` may also be `floorMaps` ' +
+            'or `floorStations` (the floor map, the `FloorMap`/`FloorStation` schemas, SPEC-v5.md section 1): ' +
+            'geometry numbers are finite -10000...20000 with at most two decimals and unknown fields are ' +
+            'rejected; agents rarely touch them (the roster is imported by the admin CLI), and the stores ' +
+            'never appear in AI answers.',
           requestBody: {
             required: true,
             content: {
