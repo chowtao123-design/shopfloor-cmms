@@ -1082,12 +1082,19 @@ function closeStationSheet({ refocus = false } = {}) {
   if (!stationSheet) return;
   const { root, backdrop, previousFocus } = stationSheet;
   document.removeEventListener('keydown', onStationSheetKey);
+  window.removeEventListener('hashchange', onStationSheetRouteChange);
   root.remove();
   backdrop.remove();
   stationSheet = null;
   if (refocus && previousFocus instanceof HTMLElement && previousFocus.isConnected) {
     previousFocus.focus();
   }
+}
+
+// "Open machine" and "+ New service order" leave the map; a sheet left
+// behind would cover the next page and block every tap.
+function onStationSheetRouteChange() {
+  closeStationSheet();
 }
 
 function onStationSheetKey(event) {
@@ -1128,6 +1135,7 @@ function openStationSheet(ctx, station, body) {
     if (event.target === backdrop) closeStationSheet({ refocus: true });
   });
   document.addEventListener('keydown', onStationSheetKey);
+  window.addEventListener('hashchange', onStationSheetRouteChange);
   document.body.append(backdrop, root);
   const first = root.querySelector('button, [href], input, select, textarea');
   if (first) first.focus();
