@@ -4966,3 +4966,336 @@ body.logged-out .ai-chat-fab {
   color: var(--waiting-fg);
   margin-bottom: 0.3rem;
 }
+
+/* ==========================================================================
+   v5 Floor map view (SPEC-v5.md section 2, map.js): toolbar, legend, the
+   SVG floor, the pick-a-slot hint, the off-map list and the station panel.
+   ========================================================================== */
+
+/* Toolbar: search, filter chips, zoom buttons, Show names, floor picker. */
+.fm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0.35rem 0 0.4rem;
+}
+
+.fm-toolbar .search-wrap {
+  flex: 1 1 230px;
+  min-width: 190px;
+}
+
+.fm-search-status {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.fm-chips {
+  margin: 0;
+}
+
+.fm-zoom {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.fm-zoom .btn {
+  min-width: 2.2rem;
+}
+
+/* Legend under the toolbar (SPEC-v5.md section 2): the live-state colours. */
+.fm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  margin: 0 0 0.55rem;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.fm-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.fm-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.fm-swatch-down {
+  border: 1.5px solid #bb2d3f;
+  background: #f6c9cb;
+}
+
+.fm-swatch-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #e8710a;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-align: center;
+  line-height: 17px;
+}
+
+.fm-swatch-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e0b400;
+}
+
+.fm-swatch-plain {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+
+/* The SVG floor itself. */
+.fm-svg-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow: hidden;
+  touch-action: none;
+}
+
+.fm-svg {
+  display: block;
+  width: 100%;
+  height: clamp(320px, 58vh, 760px);
+  touch-action: none;
+}
+
+.fm-svg.fm-panning {
+  cursor: grabbing;
+}
+
+.fm-svg text {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.fm-code {
+  fill: #1c2433;
+  font-weight: 700;
+}
+
+.fm-name {
+  fill: #56606e;
+}
+
+.fm-box-label {
+  fill: #56606e;
+  font-weight: 650;
+}
+
+.fm-badge-text {
+  fill: #ffffff;
+  font-weight: 700;
+}
+
+.fm-svg.fm-hide-names .fm-name {
+  display: none;
+}
+
+/* Station interaction states: search hit, chip dimming, ?station highlight. */
+.fm-station {
+  cursor: pointer;
+}
+
+.fm-station:focus-visible {
+  outline: none;
+}
+
+.fm-station:focus-visible .fm-slot-rect {
+  stroke: var(--focus);
+  stroke-width: 1.4;
+}
+
+.fm-hit .fm-slot-rect,
+.fm-selected .fm-slot-rect {
+  stroke: var(--focus);
+  stroke-width: 1.5;
+}
+
+.fm-selected .fm-slot-rect {
+  stroke: var(--accent);
+  stroke-width: 1.7;
+}
+
+.fm-dim {
+  opacity: 0.18;
+}
+
+/* Empty slots: faint marks, bright and clickable in pick mode. */
+.fm-slot-empty-rect {
+  fill: rgb(16 24 40 / 2%);
+  stroke: rgb(16 24 40 / 18%);
+  stroke-dasharray: 2 2;
+  stroke-width: 0.5;
+}
+
+.fm-svg.fm-picking .fm-slot-pick,
+.fm-svg.fm-picking .fm-slot-pick .fm-slot-empty-rect {
+  cursor: pointer;
+}
+
+.fm-slot-pick .fm-slot-empty-rect {
+  fill: rgb(217 84 26 / 14%);
+  stroke: var(--accent);
+  stroke-dasharray: 3 2;
+  stroke-width: 0.9;
+}
+
+/* Pick-a-slot hint bar. */
+.fm-hint-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  font-size: 0.9rem;
+}
+
+/* Off-map stations (SPEC-v5.md section 2): collapsible list under the map. */
+.fm-offmap {
+  margin-top: 0.9rem;
+}
+
+.fm-offmap summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.fm-offmap .list {
+  margin-top: 0.5rem;
+}
+
+.fm-offmap-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.fm-offmap-row:hover,
+.fm-offmap-row:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* The import command empty state (SPEC-v5.md section 4). */
+.fm-import-command {
+  margin-top: 0.75rem;
+  font-size: 0.86rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* Station panel (inside the drawer body / the phone sheet). */
+.fm-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.fm-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.55rem 0.75rem;
+}
+
+.fm-fields .field:last-child {
+  grid-column: 1 / -1;
+}
+
+.fm-field-check {
+  align-items: center;
+}
+
+.fm-panel-subhead {
+  margin: 0.25rem 0 0.15rem;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.fm-panel-machine .list {
+  margin-top: 0.2rem;
+}
+
+.fm-machine-linked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.6rem;
+}
+
+.fm-machine-linked .inline-link {
+  font-weight: 650;
+}
+
+.fm-machines-hint {
+  margin: 0 0 0.3rem;
+}
+
+.fm-machine-picker {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.fm-new-order {
+  margin-top: 0.6rem;
+}
+
+.fm-place-btn {
+  align-self: flex-start;
+}
+
+/* Phone sheet variant (reuses .sheet): sticky head, scrolling body. */
+.fm-sheet {
+  max-height: min(82vh, 640px);
+}
+
+.fm-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0 0.45rem;
+}
+
+.fm-sheet-head .sheet-title {
+  margin: 0;
+}
+
+.fm-sheet-close {
+  flex: 0 0 auto;
+}
+
+.fm-sheet-body {
+  min-height: 0;
+  max-height: calc(min(82vh, 640px) - 3.4rem);
+  overflow-y: auto;
+  padding: 0.35rem 0.15rem 0.4rem;
+}

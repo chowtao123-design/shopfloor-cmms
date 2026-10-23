@@ -100,6 +100,9 @@ import {
 } from './chat.js';
 import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
+// v5 (SPEC-v5.md section 2): the Floor map view module (V5-M2). app.js only
+// routes to it and passes the shared UI helpers through mapPageContext().
+import { renderMapPage, stationForMachine } from './map.js';
 import * as sync from './sync.js';
 import { checkSession, logout, renderLogin } from './login.js';
 import { AREAS, AREA_KEYS, allows } from './permissions.js';
@@ -2775,22 +2778,32 @@ function renderJobDetail(route) {
     canEditOrder ? statusButtons : null,
     // v4 (SPEC-v4.md 3.3): request parts for this order into a draft request.
     // v4 (SPEC-v4.md 4.3): a completed order can be saved as a repair method.
-    can('purchasing', 'write') || can('library', 'write')
-      ? h(
-          'div',
-          { class: 'button-row', style: { marginTop: '0.5rem' } },
-          can('purchasing', 'write')
-            ? h('button', { class: 'btn btn-small', type: 'button', onclick: () => requestPartsForOrder(order) }, 'Request parts')
-            : null,
-          can('library', 'write') && order.status === 'done'
-            ? h(
-                'a',
-                { class: 'btn btn-small', href: `#/library/new?kind=method&from=${encodeURIComponent(order.id)}` },
-                'Save as repair method',
-              )
-            : null,
-        )
-      : null,
+    // v5 (SPEC-v5.md section 2): Show on map for this order's machine.
+    (() => {
+      const orderStation = machine ? stationForMachine(machine.id, state.floorStations) : null;
+      const showOnMap =
+        orderStation && can('floorMap')
+          ? h(
+              'a',
+              { class: 'btn btn-small', href: `#/map?station=${encodeURIComponent(orderStation.id)}` },
+              'Show on map',
+            )
+          : null;
+      const requestParts = can('purchasing', 'write')
+        ? h('button', { class: 'btn btn-small', type: 'button', onclick: () => requestPartsForOrder(order) }, 'Request parts')
+        : null;
+      const saveMethod =
+        can('library', 'write') && order.status === 'done'
+          ? h(
+              'a',
+              { class: 'btn btn-small', href: `#/library/new?kind=method&from=${encodeURIComponent(order.id)}` },
+              'Save as repair method',
+            )
+          : null;
+      return requestParts || saveMethod || showOnMap
+        ? h('div', { class: 'button-row', style: { marginTop: '0.5rem' } }, requestParts, saveMethod, showOnMap)
+        : null;
+    })(),
     h('div', { class: 'card' }, details),
     sectionTitle('Assigned to'),
     assignees.length
@@ -4160,6 +4173,15 @@ function renderMachineDetail(route) {
       { class: 'button-row' },
       can('serviceOrders', 'write')
         ? h('a', { class: 'btn btn-primary btn-small', href: `#/jobs/new?machine=${encodeURIComponent(machine.id)}` }, '+ Service order')
+        : null,
+      // v5 (SPEC-v5.md section 2): straight to the station that links to this
+      // machine, centred and highlighted — only when one exists and the
+      // floor map is readable.
+      stationForMachine(machine.id, state.floorStations) && can('floorMap')
+        ? h('a', {
+            class: 'btn btn-small',
+            href: `#/map?station=${encodeURIComponent(stationForMachine(machine.id, state.floorStations).id)}`,
+          }, 'Show on map')
         : null,
       can('machines', 'write')
         ? h('a', { class: 'btn btn-small', href: `#/machines/${encodeURIComponent(machine.id)}/edit` }, 'Edit machine')
@@ -10893,6 +10915,44 @@ function updateNavCounts() {
   }
 }
 
+/* v5 (SPEC-v5.md section 2): the render context for the floor map view
+   (map.js). It gets the shared UI helpers the map reuses — h, field, toast,
+   the permission helpers, the drawer and the state stores — and nothing
+   else; map.js stays free of app.js internals and testable on its own. */
+function mapPageContext() {
+  return {
+    h,
+    appendChildren,
+    field,
+    toast,
+    searchBox,
+    sectionTitle,
+    selectFrom,
+    page,
+    pageHead,
+    emptyState,
+    viewOnlyBadge,
+    isReadOnly,
+    can,
+    statusPill,
+    noAccess: noAccessPage,
+    openDrawer,
+    trapTabKey,
+    dialogOpen: () => dialogRoot.childElementCount > 0,
+    navigate,
+    render,
+    refreshState,
+    setTitle,
+    state,
+    desktopMedia,
+    phoneMedia,
+    nowISO,
+    todayISO,
+    formatOrderNumber,
+    LABELS,
+  };
+}
+
 async function render() {
   if (loginActive) return;
   const route = routeInfo();
@@ -10913,7 +10973,7 @@ async function render() {
   }
   // The phone "More" button lights up while a sheet page is shown.
   if (moreButton) {
-    if (['parts', 'requests', 'library', 'statistics', 'coworkers', 'contractors', 'help', 'settings', 'admin'].includes(tab)) {
+    if (['parts', 'requests', 'library', 'map', 'statistics', 'coworkers', 'contractors', 'help', 'settings', 'admin'].includes(tab)) {
       moreButton.setAttribute('aria-current', 'page');
     } else {
       moreButton.removeAttribute('aria-current');
@@ -10976,6 +11036,14 @@ async function render() {
       content = renderMachineDetail(route);
       isDetail = true;
       splitListRoot = 'machines';
+    }
+  } else if (root === 'map') {
+    // v5 (SPEC-v5.md section 2): the floor map view (V5-M2); the edit canvas
+    // is V5-M3. Optional ?station=<id> centres and highlights that station.
+    if (!can('floorMap')) {
+      content = noAccessPage('Floor map', 'Floor map & stations');
+    } else {
+      content = renderMapPage(mapPageContext(), route);
     }
   } else if (root === 'parts') {
     if (!can('parts')) {
@@ -11489,6 +11557,13 @@ const NAV_ICONS = {
   stats: ['M4 20.5h16', 'M7 20.5v-6', 'M12 20.5V5', 'M17 20.5v-10'],
   // v4 (SPEC-v4.md section 4.3): the Library entry of the More sheet (book).
   library: ['M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20'],
+  // v5 (SPEC-v5.md section 2): the Floor map entry of the More sheet (folded
+  // map, same shape as the sidebar icon).
+  map: [
+    'M8.5 3.75 3 5.25v14.5l5.5-1.5 7 3 5.5-1.5v-14.5l-5.5 1.5-7-3Z',
+    'M8.5 3.75v14.5',
+    'M15.5 6.75v14.5',
+  ],
   coworkers: [
     'M5.5 8a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0',
     'M3 20c.6-3.4 3-5.2 6-5.2s5.4 1.8 6 5.2',
@@ -11563,6 +11638,10 @@ function openMoreSheet() {
     // v4 (SPEC-v4.md section 1): Library after Machines in the sidebar; on
     // the phone it sits in the More sheet, only with the library permission.
     can('library') && { label: 'Library', icon: NAV_ICONS.library, href: '#/library' },
+    // v5 (SPEC-v5.md section 2): Floor map after Machines (the tabbar keeps
+    // Machines), only with the floorMap permission; the roster stays private
+    // to the shop (never in AI context, SPEC-v5.md 1.3).
+    can('floorMap') && { label: 'Floor map', icon: NAV_ICONS.map, href: '#/map' },
     // Statistics follows its own permission (SPEC-v3.md 13.3).
     can('statistics') && { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
     // People follow the coworkers/contractors permissions (SPEC-v3.md 13.3).
@@ -11860,6 +11939,9 @@ const NAV_TAB_AREAS = {
   // v4 (SPEC-v4.md section 1): Library follows Machines in the sidebar;
   // hidden without the library permission.
   library: 'library',
+  // v5 (SPEC-v5.md sections 1.3 and 2): the Floor map view, after Machines.
+  // Muse Agent / AI Assistant roles carry floorMap: none and hide it.
+  map: 'floorMap',
   coworkers: 'coworkers',
   contractors: 'contractors',
   statistics: 'statistics',

@@ -6,6 +6,7 @@ const HELP_SECTIONS = [
   { id: 'help-howto', title: 'How to…' },
   { id: 'help-requests', title: 'Parts requests' },
   { id: 'help-library', title: 'Library' },
+  { id: 'help-floor', title: 'Floor map' },
   { id: 'help-install', title: 'Install on your phone' },
   { id: 'help-desktop', title: 'Desktop tips' },
   { id: 'help-ai', title: 'AI assistant' },
@@ -549,6 +550,58 @@ function helpRoles(h) {
   );
 }
 
+/* v5 (SPEC-v5.md sections 2 and 4): the floor map page — reading the shop
+   floor, the live colours, finding a station, and who can import. */
+function helpFloor(h) {
+  return helpSection(
+    h,
+    'help-floor',
+    'Floor map',
+    h(
+      'p',
+      {},
+      'The Floor map page shows the shop floor as it was imported from the shop’s own layout drawing: slots for every seat, blue corridors, and grey or coloured floor patches. Each slot is a station with its code; most stations can be linked to a machine, and then the map shows that machine’s state live:',
+    ),
+    helpList(h, [
+      [
+        'Red slot ',
+        '— the machine is down. The whole slot turns red-tinted with a red border.',
+      ],
+      [
+        'Orange badge ',
+        '— the machine has open service orders; the number on the badge is how many.',
+      ],
+      [
+        'Yellow dot ',
+        '— preventive maintenance on the machine is overdue.',
+      ],
+      [
+        'Plain slot ',
+        '— a station with no machine link, or everything fine.',
+      ],
+    ]),
+    h('h3', { class: 'help-question' }, 'Getting around the map'),
+    helpSteps(h, [
+      'Search by station code, staff name, employee ID or machine name; matching stations light up and the first match moves to the middle. The Filter chips (All · Down · Open orders · Unlinked · Vacant) fade out everything that does not fit.',
+      'Drag to pan; scroll, pinch or double-click to zoom (from half size to 8×). The − and + buttons zoom around the middle, and Fit puts the whole floor back.',
+      'Show names toggles the staff names under the station codes. Employee IDs never show on the map — they are in the station panel.',
+      'Zoom and search stay put while the data refreshes behind them.',
+    ]),
+    h('h3', { class: 'help-question' }, 'The station panel'),
+    helpSteps(h, [
+      'Tap a station to open its panel: the code, zone, staff name, Chinese name, employee ID, vacant mark and remark — editable right there if your role allows it; every change saves as soon as you leave the field. Nothing beyond that is kept (no phone numbers, no emergency contacts).',
+      'Link the station to a machine in the same panel: a searchable list of all machines, or Unlink when the seat changes. With a link you see the machine’s status, its open service orders, and + New service order opens the normal form with the machine already filled in.',
+      'On a machine or service order page, Show on map jumps straight to that machine’s station, centred and highlighted (when a station links to it).',
+      'Stations whose box was removed from the map land in Off-map stations under the map; Place on map moves one back into an empty slot you click.',
+    ]),
+    h(
+      'p',
+      {},
+      'The floor layout is imported once by an administrator with the server command import-floor-map; it arrives on every device through the normal sync. The roster that comes with it (names, employee IDs) stays off the AI assistant — questions about machines never see who sits where. Administrators and technicians can edit stations; viewers read the map as it is.',
+    ),
+  );
+}
+
 export function renderHelp(h, { isAdmin = false } = {}) {
   const sections = isAdmin ? HELP_SECTIONS : HELP_SECTIONS.filter((section) => section.id !== 'help-roles');
   return h(
@@ -586,6 +639,7 @@ export function renderHelp(h, { isAdmin = false } = {}) {
     helpHowTo(h),
     helpRequests(h),
     helpLibrary(h),
+    helpFloor(h),
     helpInstall(h),
     helpDesktop(h),
     helpAi(h),
