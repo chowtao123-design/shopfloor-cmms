@@ -495,3 +495,9 @@ test('app.js + help.js + sw.js + styles.css: the editor is wired into the shell'
   // Dimmed stations are click-through, so canvas clicks reach the box.
   assert.match(css, /\.fm-edit-dim \{[\s\S]*?pointer-events: none;/);
 });
+test('a plain move or resize marks the map changed (Save map enables, Cancel asks)', () => {
+  const src = fs.readFileSync(new URL('../map.js', import.meta.url), 'utf8');
+  const end = src.indexOf('// move / resize / band: the undo snapshot went on at drag start');
+  assert.ok(end > 0);
+  assert.match(src.slice(end, end + 400), /recomputeEditDirty\(\);\s*ctx\.render\(\);/);
+});

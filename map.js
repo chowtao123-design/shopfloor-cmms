@@ -2718,7 +2718,9 @@ function renderMapEditor(ctx, mapRecord) {
       return;
     }
     // move / resize / band: the undo snapshot went on at drag start; band only
-    // previewed the selection. Re-render so panel and buttons catch up.
+    // previewed the selection. Re-check dirty (or Save stays disabled after a
+    // plain move) and re-render so panel and buttons catch up.
+    recomputeEditDirty();
     ctx.render();
   });
 
