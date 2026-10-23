@@ -944,3 +944,21 @@ test('pdfText: word gaps drawn without space glyphs become spaces; per-glyph pla
   assert.equal(lines[1], 'Check hook timing');
   assert.ok(lines[2].startsWith('Oil daily before use '), lines[2].slice(0, 40));
 });
+
+test('pdfText: text inside form XObjects (web-to-PDF manuals) is read; a self-drawing form cannot loop', () => {
+  const pageContent = 'BT\n/F1 9 Tf\n10 10 Td\n(Downloaded from a manuals site) Tj\nET\n/Fm1 Do\n';
+  const filler = 'Adjust the needle bar height so the hook point meets the needle 1.5 mm above the eye. '.repeat(3);
+  const formContent = `BT\n/F1 12 Tf\n72 720 Td\n(${escapeLiteral(filler)}) Tj\nET\n/Fm1 Do\n`;
+  const pdf = buildPdf({
+    1: '<< /Type /Catalog /Pages 2 0 R >>',
+    2: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    3: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> /XObject << /Fm1 6 0 R >> >> /Contents 4 0 R >>',
+    4: `<< /Length ${pageContent.length} >>\nstream\n${pageContent}endstream`,
+    5: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+    // The form draws itself again (a loop) and inherits the page's resources.
+    6: `<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Length ${formContent.length} >>\nstream\n${formContent}endstream`,
+  });
+  const result = extractPdfText(pdf);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.pages[0], `Downloaded from a manuals site\n${filler}`);
+});

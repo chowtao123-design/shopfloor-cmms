@@ -644,7 +644,7 @@ function decodeStringBytes(font, bytes) {
  * Td, TD, T* and Tm y-changes break lines. Every other operator just clears
  * its operands off the stack.
  */
-function runContentStreams(strings, fonts) {
+function runContentStreams(strings, fonts, drawForm = () => '') {
   let out = '';
   let stack = [];
   let inText = false;
@@ -799,6 +799,17 @@ function runContentStreams(strings, fonts) {
           }
           break;
         }
+        case 'Do': {
+          // A form XObject is a reusable block of page content (web-to-PDF
+          // tools put each whole manual page in one); its text joins the page.
+          const name = stack[stack.length - 1];
+          const formText = typeof name === 'string' ? drawForm(name) : '';
+          if (formText !== '') {
+            out += (out === '' || out.endsWith('\n') ? '' : '\n') + formText;
+            pendingBreak = true;
+          }
+          break;
+        }
         default:
           break; // every other operator only clears its operands
       }
@@ -808,20 +819,54 @@ function runContentStreams(strings, fonts) {
   return out;
 }
 
-/** Decode every content stream of one page and run the text operators. */
-function extractPageText(objects, page) {
+const FORM_MAX_DEPTH = 8;
+const FORM_MAX_PER_PAGE = 300;
+
+function fontsOf(objects, resources) {
   const fonts = new Map();
-  const resources = resolve(objects, page.resources);
-  if (isDict(resources)) {
-    const fontDict = resolve(objects, resources['/Font']);
-    if (isDict(fontDict)) {
-      for (const [name, fontValue] of Object.entries(fontDict)) {
-        if (!isName(name)) continue;
-        const decoder = buildFontDecoder(objects, fontValue);
-        if (decoder !== null) fonts.set(name, decoder);
-      }
+  if (!isDict(resources)) return fonts;
+  const fontDict = resolve(objects, resources['/Font']);
+  if (isDict(fontDict)) {
+    for (const [name, fontValue] of Object.entries(fontDict)) {
+      if (!isName(name)) continue;
+      const decoder = buildFontDecoder(objects, fontValue);
+      if (decoder !== null) fonts.set(name, decoder);
     }
   }
+  return fonts;
+}
+
+/**
+ * Run content strings with their resources; `Do` on a /Form XObject runs the
+ * form's own stream with its own resources (inheriting ours when it has none).
+ * `active` blocks a form that (indirectly) draws itself; `budget` caps forms
+ * per page so a hostile file cannot blow up.
+ */
+function runWithResources(objects, strings, resources, depth, active, budget) {
+  const drawForm = (name) => {
+    if (depth >= FORM_MAX_DEPTH || budget.left <= 0 || !isDict(resources)) return '';
+    const xobjects = resolve(objects, resources['/XObject']);
+    if (!isDict(xobjects)) return '';
+    const form = resolve(objects, xobjects[name]);
+    if (!(form instanceof PdfStream) || resolve(objects, form.dict['/Subtype']) !== '/Form') return '';
+    if (active.has(form)) return '';
+    const decoded = decodeStream(objects, form);
+    if (decoded === null) return '';
+    budget.left -= 1;
+    const formResources = resolve(objects, form.dict['/Resources']);
+    active.add(form);
+    try {
+      return runWithResources(objects, [decoded.toString('latin1')], isDict(formResources) ? formResources : resources, depth + 1, active, budget);
+    } finally {
+      active.delete(form);
+    }
+  };
+  return runContentStreams(strings, fontsOf(objects, resources), drawForm);
+}
+
+/** Decode every content stream of one page and run the text operators. */
+function extractPageText(objects, page) {
+  const resources = resolve(objects, page.resources);
   const contents = page.node['/Contents'];
   const contentList = Array.isArray(contents) ? contents : contents === undefined ? [] : [contents];
   const strings = [];
@@ -832,7 +877,7 @@ function extractPageText(objects, page) {
     if (decoded === null) continue; // unsupported filter: skip that stream
     strings.push(decoded.toString('latin1'));
   }
-  return runContentStreams(strings, fonts);
+  return runWithResources(objects, strings, resources, 0, new Set(), { left: FORM_MAX_PER_PAGE });
 }
 
 // ---------------------------------------------------------------------------
