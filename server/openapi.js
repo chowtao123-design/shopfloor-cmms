@@ -9,7 +9,7 @@
  * per-record GET, because the client mirror is the source of truth.
  */
 
-const storeEnum = ['machines', 'workOrders', 'pmTasks', 'purchaseRequests'];
+const storeEnum = ['machines', 'workOrders', 'pmTasks', 'purchaseRequests', 'libraryItems'];
 
 function recordRef() {
   return { $ref: '#/components/schemas/Record' };
@@ -101,6 +101,51 @@ export function openApiSpec(version = '2.0.0') {
             },
           },
           required: ['title'],
+        },
+        LibraryItem: {
+          type: 'object',
+          description:
+            'A repair-library item (SPEC-v4.md section 4.1): a manual (PDF attachments) or a ' +
+            'repair method (symptom -> cause -> steps). Method-only fields are rejected for ' +
+            'kind "manual"; unknown fields are rejected.',
+          properties: {
+            kind: { type: 'string', enum: ['manual', 'method'] },
+            title: { type: 'string', minLength: 1, maxLength: 160 },
+            machineType: {
+              type: ['string', 'null'],
+              description: 'Machine type the item applies to when no models/machines are given, or null.',
+            },
+            models: {
+              type: 'array',
+              maxItems: 20,
+              items: { type: 'string', maxLength: 60 },
+              description: 'Model numbers, matched ignoring case, spaces and dashes.',
+            },
+            machineIds: { type: 'array', maxItems: 50, items: { type: 'string' } },
+            tags: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 40 } },
+            attachments: {
+              type: 'array',
+              maxItems: 20,
+              items: { type: 'object', description: '{fileId, name, mime, size} upload reference.' },
+            },
+            notes: { type: 'string', maxLength: 20000, description: 'Text for the AI: key pages/specs typed or pasted.' },
+            symptom: { type: 'string', maxLength: 1000, description: 'Method only.' },
+            cause: { type: 'string', maxLength: 2000, description: 'Method only.' },
+            steps: {
+              type: 'array',
+              maxItems: 60,
+              description: 'Method only.',
+              items: {
+                type: 'object',
+                properties: { id: { type: 'string' }, text: { type: 'string', minLength: 1, maxLength: 1000 } },
+                required: ['id', 'text'],
+              },
+            },
+            toolsParts: { type: 'string', maxLength: 1000, description: 'Method only.' },
+            safety: { type: 'string', maxLength: 1000, description: 'Method only (lockout points).' },
+            sourceWorkOrderId: { type: ['string', 'null'], description: 'Method created from a service order.' },
+          },
+          required: ['kind', 'title'],
         },
         HistoryEntry: {
           type: 'object',
@@ -235,7 +280,9 @@ export function openApiSpec(version = '2.0.0') {
             '`version` to update; a stale version returns 409 with the server copy. `store` may also be ' +
             '`purchaseRequests` (parts requests, the `PurchaseRequest` schema): `number` there is assigned by ' +
             'the server and ignored in the body, and a PUT replaces the whole record — read the current one ' +
-            'from `GET /api/changes` first, then send it back with the new lines.',
+            'from `GET /api/changes` first, then send it back with the new lines. `store` may likewise be ' +
+            '`libraryItems` (the repair library, the `LibraryItem` schema); method-only fields are rejected ' +
+            'for manuals, and a PUT replaces the whole record the same way.',
           requestBody: {
             required: true,
             content: {

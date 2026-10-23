@@ -144,6 +144,16 @@ CREATE TABLE IF NOT EXISTS files (
   uploaded_at TEXT NOT NULL
 );
 
+-- v4 (SPEC-v4.md section 4.2): text extracted from manual PDFs, one row per
+-- file, filled in the background after an upload and at startup.
+CREATE TABLE IF NOT EXISTS file_texts (
+  file_id TEXT PRIMARY KEY REFERENCES files(id),
+  status TEXT NOT NULL,
+  pages_json TEXT NOT NULL DEFAULT '[]',
+  chars INTEGER NOT NULL DEFAULT 0,
+  extracted_at TEXT
+);
+
 -- v3 (SPEC-v3.md section 9): AI chat history, per user and conversation.
 CREATE TABLE IF NOT EXISTS ai_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -567,6 +577,55 @@ export function openStore(dataDir) {
     },
     deleteFileById(id) {
       return db.prepare('DELETE FROM files WHERE id = ?').run(id).changes > 0;
+    },
+    // ---------------------------------------------------------------------
+    // v4 (SPEC-v4.md section 4.2): extracted manual text per uploaded PDF.
+    // ---------------------------------------------------------------------
+    /** One file_texts row (snake_case) or null. */
+    getFileText(fileId) {
+      const row = db.prepare('SELECT * FROM file_texts WHERE file_id = ?').get(fileId);
+      return row === undefined ? null : row;
+    },
+    /** Insert or update one file_texts row. */
+    upsertFileText({ fileId, status, pages = [], chars = 0, extractedAt = null }) {
+      db.prepare(
+        `INSERT INTO file_texts (file_id, status, pages_json, chars, extracted_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(file_id) DO UPDATE SET
+           status = excluded.status,
+           pages_json = excluded.pages_json,
+           chars = excluded.chars,
+           extracted_at = excluded.extracted_at`
+      ).run(fileId, status, JSON.stringify(pages), chars, extractedAt);
+    },
+    /**
+     * The extracted page texts of one file for the AI to read (V4-M5), or
+     * null when there is no row or the extraction did not succeed.
+     */
+    getFileTextPages(fileId) {
+      const row = this.getFileText(fileId);
+      if (row === null || row.status !== 'ok') return null;
+      try {
+        const pages = JSON.parse(row.pages_json);
+        return Array.isArray(pages) ? pages : null;
+      } catch {
+        return null;
+      }
+    },
+    /**
+     * PDFs with no file_texts row (or still 'pending' from an interrupted
+     * run): the startup extraction sweep (SPEC-v4.md section 4.2), oldest
+     * upload first.
+     */
+    listFilesNeedingText() {
+      return db
+        .prepare(
+          `SELECT f.* FROM files f
+           LEFT JOIN file_texts t ON t.file_id = f.id
+           WHERE f.mime = 'application/pdf' AND (t.file_id IS NULL OR t.status = 'pending')
+           ORDER BY f.uploaded_at, f.id`
+        )
+        .all();
     },
     /**
      * Resolve the role a create/update refers to: an explicit roleId, or the

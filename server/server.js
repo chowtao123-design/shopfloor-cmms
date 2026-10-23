@@ -44,6 +44,7 @@ import {
   sanitizeRecordForRole,
 } from './records.js';
 import { createUploadedFile, findFileById, streamStoredFile } from './files.js';
+import { scheduleFileTextExtraction, startTextExtractionQueue } from './fileTexts.js';
 import {
   brandingPayload,
   clearBrandingLogo,
@@ -480,6 +481,11 @@ async function uploadFileHandler(req, res, ctx) {
   const file = await createUploadedFile(ctx.store, ctx.store.dataDir, req, {
     uploadedBy: ctx.user.id,
   });
+  // v4 (SPEC-v4.md section 4.2): manual PDFs get their text extracted in the
+  // background; the upload response never waits for it.
+  if (file.mime === 'application/pdf') {
+    scheduleFileTextExtraction(ctx.store, file.fileId);
+  }
   sendJson(req, res, 201, file);
 }
 
@@ -491,6 +497,40 @@ function getFileHandler(req, res, ctx, params) {
     return;
   }
   streamStoredFile(req, res, row, ctx.store.dataDir);
+}
+
+/**
+ * GET /api/files/:id/text-status (SPEC-v4.md section 4.2): the extraction
+ * state of one uploaded PDF — `{status, chars, pages}` once extracted, or
+ * `{status: 'pending'}` while the background queue has not reached it.
+ */
+function fileTextStatusHandler(req, res, ctx, params) {
+  requireArea(ctx, 'files', 'read');
+  const row = findFileById(ctx.store, params.id);
+  if (row === null) {
+    notFound(req, res);
+    return;
+  }
+  if (row.mime !== 'application/pdf') {
+    throw new HttpError(404, 'not_found', 'No extracted text for this file');
+  }
+  const text = ctx.store.getFileText(row.id);
+  if (text === null || text.status === 'pending') {
+    sendJson(req, res, 200, { status: 'pending' });
+    return;
+  }
+  let pages = 0;
+  try {
+    const parsed = JSON.parse(text.pages_json);
+    if (Array.isArray(parsed)) pages = parsed.length;
+  } catch {
+    pages = 0;
+  }
+  sendJson(req, res, 200, {
+    status: text.status,
+    chars: Number(text.chars),
+    pages,
+  });
 }
 
 function getBrandingHandler(req, res, ctx) {
@@ -1061,6 +1101,7 @@ const ROUTES = [
   compileRoute('POST', '/api/import-v1', { auth: true }, importV1Handler),
   compileRoute('POST', '/api/files', { auth: true }, uploadFileHandler),
   compileRoute('GET', '/api/files/:id', { auth: true }, getFileHandler),
+  compileRoute('GET', '/api/files/:id/text-status', { auth: true }, fileTextStatusHandler),
   compileRoute('GET', '/api/branding', { auth: false }, getBrandingHandler),
   compileRoute('PUT', '/api/branding', { auth: true }, putBrandingHandler),
   compileRoute('POST', '/api/branding/logo', { auth: true }, postBrandingLogoHandler),
@@ -1320,10 +1361,14 @@ export async function startServer(options = {}) {
     at: config.backupDailyAt,
     keep: config.backupKeep,
   });
+  // v4 (SPEC-v4.md section 4.2): extract text for PDFs that have no
+  // file_texts row yet, one at a time in the background.
+  const textExtractionQueue = startTextExtractionQueue(store);
   let closed = false;
   const close = async () => {
     if (closed) return;
     closed = true;
+    textExtractionQueue.stop();
     backupSchedule.stop();
     if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
     await new Promise((resolve) => server.close(() => resolve()));

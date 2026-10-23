@@ -7,17 +7,21 @@ import path from 'node:path';
 import { ApiError, UUID_RE } from './records.js';
 
 /**
- * Uploaded photos, manuals and reports (SPEC-v3.md section 6).
+ * Uploaded photos, manuals and reports (SPEC-v3.md section 6; PDF limits
+ * raised in SPEC-v4.md section 4.2).
  *
  * POST /api/files sends the raw file as the request body with `Content-Type`
  * and a URL-encoded `X-File-Name` header. Only jpeg/png/webp/pdf are allowed,
- * at most 15 MB, and the magic bytes must match the declared type. Bytes are
+ * and the magic bytes must match the declared type. Images are at most
+ * 15 MB (buffered); PDFs stream to a temp file at up to 50 MB. Bytes are
  * stored as DATA_DIR/files/<uuid> plus a `files` table row; GET /api/files/:id
  * streams them with nosniff, a sandbox CSP and an inline disposition. Ids are
  * UUIDs only; there is no directory listing.
  */
 
 export const FILE_MAX_BYTES = 15 * 1024 * 1024;
+// v4 (SPEC-v4.md section 4.2): PDFs (manuals) may be 50 MB; images stay 15 MB.
+export const PDF_MAX_BYTES = 50 * 1024 * 1024;
 export const ALLOWED_FILE_MIME = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 export const MAX_FILE_NAME_CHARS = 200;
 
@@ -144,6 +148,11 @@ export function readFileName(header) {
  * declared Content-Type against `allowedMimes`, read at most `limitBytes`,
  * check the magic bytes, then store the bytes as DATA_DIR/files/&lt;uuid&gt;
  * with a `files` table row. Returns the API shape {fileId, name, mime, size}.
+ *
+ * v4 (SPEC-v4.md section 4.2): `application/pdf` streams to a temp file under
+ * DATA_DIR/files with the raised 50 MB PDF limit (the magic bytes come from
+ * the first chunk), so a manual is never buffered whole in memory; on any
+ * error the temp file is deleted. Images keep the buffered 15 MB path.
  */
 export async function createUploadedFile(
   store,
@@ -160,7 +169,10 @@ export async function createUploadedFile(
     );
   }
   const name = readFileName(req.headers['x-file-name']);
-  const buffer = await readRawBody(req, limitBytes);
+  if (mime === 'application/pdf') {
+    return streamPdfToDisk(store, dataDir, req, { name, mime, uploadedBy, limitBytes });
+  }
+  const buffer = await readRawBody(req, Math.min(limitBytes, PDF_MAX_BYTES));
   if (!matchesMime(buffer, mime)) {
     throw new ApiError(
       415,
@@ -169,6 +181,116 @@ export async function createUploadedFile(
     );
   }
   return createFileRecord(store, dataDir, { name, mime, buffer, uploadedBy });
+}
+
+/**
+ * Stream one PDF upload to DATA_DIR/files/.tmp-&lt;uuid&gt;: bytes are counted
+ * (413 past the limit), hashed and written incrementally, the magic bytes
+ * come from the first chunk, and the temp file is renamed into place on
+ * success. Any error (limit, magic, stream, disk) deletes the temp file.
+ */
+function streamPdfToDisk(store, dataDir, req, { name, mime, uploadedBy, limitBytes }) {
+  // Default the PDF limit to the raised 50 MB (SPEC-v4.md 4.2); an explicitly
+  // tighter caller limit still wins.
+  const limit = limitBytes < FILE_MAX_BYTES ? limitBytes : PDF_MAX_BYTES;
+  return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > limit) {
+      req.resume();
+      reject(
+        new ApiError(413, 'payload_too_large', `Request body exceeds the ${formatBytes(limit)} limit`)
+      );
+      return;
+    }
+    const id = crypto.randomUUID();
+    const filesDir = path.join(dataDir, 'files');
+    fs.mkdirSync(filesDir, { recursive: true });
+    const tempPath = path.join(filesDir, `.tmp-${id}`);
+    const finalPath = path.join(filesDir, id);
+    const hash = crypto.createHash('sha256');
+    let fd = null;
+    let total = 0;
+    let head = Buffer.alloc(0);
+    let done = false;
+    const settleError = (err) => {
+      if (done) return;
+      done = true;
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch { /* best effort */ }
+        fd = null;
+      }
+      try { fs.rmSync(tempPath, { force: true }); } catch { /* best effort */ }
+      reject(err);
+    };
+    try {
+      fd = fs.openSync(tempPath, 'wx', 0o600);
+    } catch (err) {
+      settleError(err);
+      return;
+    }
+    req.on('data', (chunk) => {
+      if (done) return;
+      try {
+        if (head.length < 5) {
+          head = Buffer.concat([head, chunk.subarray(0, 5 - head.length)]);
+          if (head.length === 5 && !matchesMime(head, mime)) {
+            throw new ApiError(
+              415,
+              'unsupported_media_type',
+              'The file contents do not match the declared Content-Type'
+            );
+          }
+        }
+        total += chunk.length;
+        if (total > limit) {
+          throw new ApiError(
+            413,
+            'payload_too_large',
+            `Request body exceeds the ${formatBytes(limit)} limit`
+          );
+        }
+        hash.update(chunk);
+        fs.writeSync(fd, chunk);
+      } catch (err) {
+        settleError(err);
+      }
+    });
+    req.on('end', () => {
+      if (done) return;
+      try {
+        if (!matchesMime(head, mime)) {
+          throw new ApiError(
+            415,
+            'unsupported_media_type',
+            'The file contents do not match the declared Content-Type'
+          );
+        }
+        fs.closeSync(fd);
+        fd = null;
+        fs.renameSync(tempPath, finalPath);
+        done = true;
+        try {
+          const row = store.insertFile({
+            id,
+            name,
+            mime,
+            size: total,
+            sha256: hash.digest('hex'),
+            uploadedBy,
+            uploadedAt: new Date().toISOString(),
+          });
+          resolve({ fileId: row.id, name: row.name, mime: row.mime, size: Number(row.size) });
+        } catch (err) {
+          // The bytes landed but the row did not: leave no half upload.
+          try { fs.rmSync(finalPath, { force: true }); } catch { /* best effort */ }
+          throw err;
+        }
+      } catch (err) {
+        settleError(err);
+      }
+    });
+    req.on('error', (err) => settleError(err));
+  });
 }
 
 /** Write the bytes and insert the `files` row; returns {fileId, name, mime, size}. */

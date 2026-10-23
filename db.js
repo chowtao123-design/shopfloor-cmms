@@ -1,7 +1,7 @@
 const DB_NAME = 'maint-log';
-// v4 (SPEC-v4.md section 2): purchaseRequests sync like records, so the
-// parts request list works offline; bump to create the object store.
-const DB_VERSION = 4;
+// v4 (SPEC-v4.md sections 2 and 4.1): DB_VERSION 4 created purchaseRequests;
+// 5 creates the libraryItems store for the repair library.
+const DB_VERSION = 5;
 
 // v3 (SPEC-v3.md section 5): coworkers and contractors sync like records,
 // so the pull can store them offline (read by the service order form).
@@ -13,6 +13,7 @@ export const STORES = [
   'coworkers',
   'contractors',
   'purchaseRequests',
+  'libraryItems',
 ];
 export const OUTBOX_STORE = 'outbox';
 export const META_STORE = 'meta';

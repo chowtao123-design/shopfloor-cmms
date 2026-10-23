@@ -5,8 +5,8 @@ import { can } from './permissions.js';
 /**
  * Record validation and write operations for the record stores
  * (SPEC-v2.md sections 5, 7.1, 7.3, 11; SPEC-v3.md sections 2 and 5;
- * SPEC-v4.md section 2 for purchaseRequests; field rules from SPEC.md
- * section 6).
+ * SPEC-v4.md section 2 for purchaseRequests and section 4.1 for
+ * libraryItems; field rules from SPEC.md section 6).
  *
  * `data` holds the record fields minus id/createdAt/updatedAt, which live in
  * `records` columns. Parts' qtyOnHand is server-owned (SPEC-v2.md 7.3):
@@ -38,6 +38,8 @@ export const STORES = [
   // v4 (SPEC-v4.md section 2): parts requests, ruled by the `purchasing`
   // permission area like the stores above.
   'purchaseRequests',
+  // v4 (SPEC-v4.md section 4.1): the repair library, ruled by `library`.
+  'libraryItems',
 ];
 
 export const STOCK_REASONS = ['job-done', 'job-reopened', 'manual', 'import'];
@@ -93,6 +95,9 @@ const PERSON_KINDS = ['user', 'coworker', 'contractor'];
 const COWORKER_SHIFTS = ['day', 'evening', 'night', 'rotating', 'other'];
 // SPEC-v4.md section 2: parts request statuses.
 const REQUEST_STATUSES = ['draft', 'sent', 'received', 'cancelled'];
+// SPEC-v4.md section 4.1: repair-library kinds and the method-only fields.
+const LIBRARY_KINDS = ['manual', 'method'];
+const METHOD_ONLY_KEYS = ['symptom', 'cause', 'steps', 'toolsParts', 'safety'];
 
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -307,6 +312,36 @@ function expectAttachments(store, key, value) {
     expectString(store, `${key}[${index}].mime`, item.mime, { nonEmpty: true, maxLength: 100 });
     expectInteger(store, `${key}[${index}].size`, item.size, { min: 0 });
     return { fileId: item.fileId, name: item.name, mime: item.mime, size: item.size };
+  });
+}
+
+// SPEC-v4.md section 4.1: a bounded string array — at most `maxItems`
+// entries, each a non-empty string of at most `itemMax` characters.
+function expectBoundedStringArray(store, key, value, { maxItems, itemMax } = {}) {
+  const list = expectStringArray(store, key, value);
+  if (maxItems !== undefined && list.length > maxItems) {
+    throw bad(`${store}.${key} must have at most ${maxItems} entries`);
+  }
+  if (itemMax !== undefined) {
+    for (const [index, item] of list.entries()) {
+      if (item.length > itemMax) {
+        throw bad(`${store}.${key}[${index}] must be at most ${itemMax} characters`);
+      }
+    }
+  }
+  return list;
+}
+
+// SPEC-v4.md section 4.1: repair-method steps — at most 60 {id, text 1-1000}.
+function expectSteps(store, key, value) {
+  if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array of {id, text}`);
+  if (value.length > 60) throw bad(`${store}.${key} must have at most 60 entries`);
+  return value.map((item, index) => {
+    const where = `${store}.${key}[${index}]`;
+    checkItemKeys(store, where, item, ['id', 'text']);
+    expectString(store, `${key}[${index}].id`, item.id, { nonEmpty: true });
+    expectString(store, `${key}[${index}].text`, item.text, { nonEmpty: true, maxLength: 1000 });
+    return { id: item.id, text: item.text };
   });
 }
 
@@ -634,6 +669,49 @@ const FIELD_SPECS = {
     },
     defaults: () => ({ status: 'draft', hstRate: 13, lines: [], sentAt: null, receivedAt: null }),
   },
+  // SPEC-v4.md section 4.1: the repair library. Manuals (PDF uploads) and
+  // repair methods (symptom -> cause -> steps) linked to a machine type,
+  // model numbers and/or specific machines. The method-only fields are
+  // rejected for kind "manual" so a manual stays a manual.
+  libraryItems: {
+    required: ['kind', 'title'],
+    fields: {
+      kind: { type: 'enum', values: LIBRARY_KINDS },
+      title: { type: 'string', nonEmpty: true, maxLength: 160 },
+      machineType: { type: 'enumOrNull', values: MACHINE_TYPES },
+      models: { type: 'models' },
+      machineIds: { type: 'machineIds' },
+      tags: { type: 'tags' },
+      attachments: { type: 'attachments' },
+      notes: { type: 'string', maxLength: 20000 },
+      symptom: { type: 'string', maxLength: 1000 },
+      cause: { type: 'string', maxLength: 2000 },
+      steps: { type: 'steps' },
+      toolsParts: { type: 'string', maxLength: 1000 },
+      safety: { type: 'string', maxLength: 1000 },
+      sourceWorkOrderId: { type: 'string', orNull: true, nonEmpty: true },
+    },
+    defaults: (data) => ({
+      machineType: null,
+      models: [],
+      machineIds: [],
+      tags: [],
+      attachments: [],
+      ...(data.kind === 'method' ? { steps: [] } : {}),
+      sourceWorkOrderId: null,
+    }),
+    // Method-only fields cannot ride along on a manual (SPEC-v4.md 4.1).
+    finalize: (data) => {
+      if (data.kind === 'manual') {
+        for (const key of METHOD_ONLY_KEYS) {
+          if (data[key] !== undefined) {
+            throw bad(`libraryItems.${key} is only allowed when kind is "method"`);
+          }
+        }
+      }
+      return data;
+    },
+  },
 };
 
 function validateField(store, key, spec, value) {
@@ -674,6 +752,18 @@ function validateField(store, key, spec, value) {
       return expectTimestampOrNull(store, key, value);
     case 'requestLines':
       return expectRequestLines(store, key, value);
+    // SPEC-v4.md section 4.1: library fields.
+    case 'enumOrNull':
+      if (value === null) return value;
+      return expectEnum(store, key, value, spec.values);
+    case 'models':
+      return expectBoundedStringArray(store, key, value, { maxItems: 20, itemMax: 60 });
+    case 'machineIds':
+      return expectBoundedStringArray(store, key, value, { maxItems: 50 });
+    case 'tags':
+      return expectBoundedStringArray(store, key, value, { maxItems: 20, itemMax: 40 });
+    case 'steps':
+      return expectSteps(store, key, value);
     case 'photos': {
       if (!Array.isArray(value)) throw bad(`${store}.${key} must be an array (reserved)`);
       return value;
@@ -717,7 +807,9 @@ export function validateRecordData(storeName, raw, { isCreate = true, part = 're
   }
   if (spec.finalize) spec.finalize(data);
   if (isCreate) {
-    for (const [key, value] of Object.entries(spec.defaults())) {
+    // `defaults(data)` lets a spec fill kind-dependent defaults (SPEC-v4.md
+    // 4.1 libraryItems); the other stores ignore the argument.
+    for (const [key, value] of Object.entries(spec.defaults(data))) {
       if (data[key] === undefined) data[key] = value;
     }
   }

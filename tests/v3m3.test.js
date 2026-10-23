@@ -395,15 +395,17 @@ test('app.js: people come from the synced stores and the users cache', () => {
 
 test('db.js + sync.js: coworkers and contractors sync as record stores', () => {
   const dbSrc = read('db.js');
-  // v4 (SPEC-v4.md section 2): DB_VERSION 4 creates the purchaseRequests store.
-  assert.match(dbSrc, /const DB_VERSION = 4;/);
+  // v4 (SPEC-v4.md section 2): DB_VERSION 4 created purchaseRequests;
+  // v4 (SPEC-v4.md section 4.1): 5 creates the libraryItems store.
+  assert.match(dbSrc, /const DB_VERSION = 5;/);
   assert.match(dbSrc, /'coworkers'/);
   assert.match(dbSrc, /'contractors'/);
   assert.match(dbSrc, /'purchaseRequests'/);
+  assert.match(dbSrc, /'libraryItems'/);
   const syncSrc = read('sync.js');
   assert.match(
     syncSrc,
-    /const RECORD_STORES = \['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests'\];/,
+    /const RECORD_STORES = \['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests', 'libraryItems'\];/,
   );
 });
 

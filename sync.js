@@ -15,7 +15,9 @@ import { areaLabel } from './permissions.js';
 
 // v4 (SPEC-v4.md section 2): purchaseRequests pull like the other record
 // stores (stored offline by db.js; the requests page reads them in V4-M2).
-const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests'];
+// v4 (SPEC-v4.md section 4.1): libraryItems too, so the Library page (M4)
+// and the offline mirror work from the same sync.
+const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests', 'libraryItems'];
 const PULL_INTERVAL_MS = 30000;
 const PULL_PAGE_LIMIT = 500;
 const MAX_PULL_PAGES = 200;

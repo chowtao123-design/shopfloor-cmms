@@ -959,6 +959,61 @@ export function searchPurchaseRequests(requests, query) {
   });
 }
 
+/* ---------- Library helpers (SPEC-v4.md section 4.1) ---------- */
+
+/**
+ * A model number reduced for matching (SPEC-v4.md 4.1): lower-cased with
+ * spaces, dashes, dots and slashes removed, so "DDL-8700-7", "DDL 8700 7"
+ * and "ddl.8700/7" all compare equal. Non-strings become ''.
+ */
+export function normalizeModel(text) {
+  if (text === null || text === undefined) return '';
+  return String(text).toLowerCase().replace(/[\s\-./]+/g, '');
+}
+
+/**
+ * Library items that apply to one machine (SPEC-v4.md 4.1): the machine id
+ * is in `machineIds`, OR one of the item's models matches the machine's
+ * model (compared through normalizeModel), OR the item names no models and
+ * no machines and its `machineType` equals the machine's type. Matching
+ * items come back in input order.
+ */
+export function relatedLibraryItems(machine, items) {
+  if (machine === null || machine === undefined || !Array.isArray(items)) return [];
+  const id = machine.id === undefined ? null : machine.id;
+  const modelKey = normalizeModel(machine.model);
+  const type = machine.type === undefined ? null : machine.type;
+  const matches = [];
+  for (const item of items) {
+    if (item === null || item === undefined) continue;
+    const machineIds = Array.isArray(item.machineIds) ? item.machineIds : [];
+    if (id !== null && machineIds.includes(id)) {
+      matches.push(item);
+      continue;
+    }
+    const models = Array.isArray(item.models) ? item.models : [];
+    if (
+      modelKey !== '' &&
+      models.some((model) => model !== null && model !== undefined && normalizeModel(model) === modelKey)
+    ) {
+      matches.push(item);
+      continue;
+    }
+    // Type-only rule: applies to all machines of the type when the item
+    // gives no models and no specific machines.
+    if (
+      models.length === 0 &&
+      machineIds.length === 0 &&
+      item.machineType !== null &&
+      item.machineType !== undefined &&
+      item.machineType === type
+    ) {
+      matches.push(item);
+    }
+  }
+  return matches;
+}
+
 /**
  * Due state used by the "due" filter: 'none' (no due date), 'overdue'
  * (before today), 'this-week' (today through the next 7 days) or 'later'.
