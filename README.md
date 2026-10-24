@@ -1,5 +1,7 @@
 # Shop Maintenance Log
 
+![Walkthrough: a machine fault from report to fixed, floor map, preventive maintenance and statistics (example data)](docs/demo.gif)
+
 A mobile-first, offline-capable maintenance log for a garment factory: work
 orders, machines, parts inventory and preventive maintenance. Plain HTML + CSS
 + vanilla JavaScript ES modules. No build step, no framework, no dependencies.
