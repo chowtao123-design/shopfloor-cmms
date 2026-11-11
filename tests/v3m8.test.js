@@ -242,9 +242,9 @@ test('AI_STARTERS: the four starter suggestions', () => {
   assert.equal(AI_STARTERS[3], "Summarise this week's service orders");
 });
 
-test('MESSAGE_MAX_CHARS matches the server limit of 2000', () => {
-  assert.equal(MESSAGE_MAX_CHARS, 2000);
-  assert.equal(AI_PRIVACY_NOTICE, 'Questions and the records needed to answer them are sent to the configured AI provider.');
+test('MESSAGE_MAX_CHARS matches the server limit of 12000', () => {
+  assert.equal(MESSAGE_MAX_CHARS, 12000);
+  assert.equal(AI_PRIVACY_NOTICE, 'Questions and the records needed to answer them are sent to the configured AI provider; web searches go to DuckDuckGo.');
 });
 
 /* --- Browser wiring (static source checks) ---------------------------------- */

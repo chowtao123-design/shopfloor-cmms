@@ -397,7 +397,7 @@ test('db.js + sync.js: coworkers and contractors sync as record stores', () => {
   const dbSrc = read('db.js');
   // v4 (SPEC-v4.md section 4.1): 5 creates the libraryItems store.
   // v5 (SPEC-v5.md section 1): 6 creates floorMaps and floorStations.
-  assert.match(dbSrc, /const DB_VERSION = 6;/);
+  assert.match(dbSrc, /const DB_VERSION = 8;/); // v6 added workerProfiles, qcRecords
   assert.match(dbSrc, /'coworkers'/);
   assert.match(dbSrc, /'contractors'/);
   assert.match(dbSrc, /'purchaseRequests'/);

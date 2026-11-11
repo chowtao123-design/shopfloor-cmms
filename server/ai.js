@@ -5,7 +5,9 @@ import crypto from 'node:crypto';
 import { hashPassword } from './auth.js';
 import { ApiError, UUID_RE, putRecord } from './records.js';
 import { addMissingRolePermissions, can, normalizePermissions, storeArea } from './permissions.js';
-import { formatOrderNumber, normalizeModel, relatedLibraryItems } from '../logic.js';
+import { formatOrderNumber, formatRequestNumber, normalizeModel, relatedLibraryItems } from '../logic.js';
+import { describeToolCall, runTool, toolContext, toolDefinitions } from './aiTools.js';
+import { SKILL_GROUPS, skillUpdateFields, workerRoster } from '../logic-map.js';
 
 /**
  * AI assistant server parts (SPEC-v3.md section 9): provider
@@ -29,14 +31,31 @@ const providerError = (message) => bad(502, 'ai_provider_error', message);
 // ---------------------------------------------------------------------------
 
 export const AI_PROVIDERS = ['off', 'opencode', 'openai-compatible'];
-export const PROVIDER_TIMEOUT_MS = 60 * 1000;
-export const MESSAGE_MAX_CHARS = 2000;
+export const PROVIDER_TIMEOUT_MS = 90 * 1000;
+// v6: room to paste a table or a list for the assistant to analyse.
+export const MESSAGE_MAX_CHARS = 12000;
+// v6 tool use (aiTools.js): rounds of tool calls per question, and the whole
+// question's time budget, so one question can never loop or hang forever.
+export const TOOL_MAX_ROUNDS = 12;
+export const TOOL_MAX_CALLS = 20;
+export const TOOL_TIME_BUDGET_MS = 120 * 1000;
+export const CHAT_ATTACHMENTS_MAX = 5;
 export const MESSAGE_HISTORY_LIMIT = 10;
 export const MESSAGES_PER_MINUTE = 20;
 export const RATE_WINDOW_MS = 60 * 1000;
 export const CONTEXT_MAX_CHARS = 20000;
 /** Library budget inside the snapshot (SPEC-v4.md section 5, V4-M5). */
 export const LIBRARY_CONTEXT_MAX_CHARS = 7000;
+/** Catalog of openable library PDFs inside the snapshot. */
+export const LIBRARY_FILE_LIST_MAX_CHARS = 2500;
+/** Text one on-demand library file read may return to the model. */
+export const LIBRARY_READ_MAX_CHARS = 20000;
+/** Pages returned by one read when the model does not ask for a range. */
+export const LIBRARY_READ_PAGE_SPAN = 4;
+/** Page hits returned by one on-demand search. */
+export const LIBRARY_READ_MAX_MATCHES = 10;
+/** On-demand library reads per question (each read is one extra provider call). */
+export const LIBRARY_READ_MAX_ROUNDS = 2;
 /** Manual pages are split into chunks of roughly this many characters. */
 export const LIBRARY_CHUNK_MAX_CHARS = 1200;
 /** Prepared manual chunks kept in memory per process, oldest dropped first. */
@@ -293,27 +312,91 @@ function validateOpenAISection(section) {
 // ---------------------------------------------------------------------------
 
 export const SYSTEM_PROMPT = [
-  'You are the assistant inside Shopfloor CMMS, a maintenance log app for a garment workshop.',
-  'App vocabulary:',
-  '- Service Orders (the "workOrders" store) are the work tickets. Kinds: breakdown, pm, facility, install or other. Statuses: open, in-progress, waiting-parts, waiting-tech, done. Priorities: none, low, medium, high, urgent. Categories: mechanical, electrical, pneumatic, facility, safety, cleaning, other. Numbers look like "SO-261022-1" (the day it was opened, then that day\'s count; older ones look like "SO-0001") and are assigned by the app.',
-  '- Preventive Maintenance ("pmTasks") are recurring tasks per machine with an interval in days. The next due date is lastDoneAt + intervalDays; a task with no lastDoneAt is due today.',
-  '- Machines are the workshop devices (machine types include single-needle, double-needle, overlock-5/4/3, coverstitch, bartack, buttonhole, button-sew, snap-attach, feed-off-arm, blindstitch, cutter, pressing). Statuses: running, down, in-storage, retired.',
-  '- Parts is the spare-part inventory; a part is low stock when qtyOnHand is below its minQty.',
-  '- Coworkers are internal staff; Outside Contractors are external companies with a trade.',
-  '- Users are login accounts; service orders are reported by users or requested by staff.',
-  'The data below is a READ-ONLY snapshot of the shop taken for this question. You cannot write anything directly: you can only propose changes that the user applies with one click. Never claim something is saved, created or deleted by you.',
-  'You can propose changes to machines, service orders, preventive maintenance tasks and repair methods (Library). To propose up to 3 changes, end your answer with fenced JSON blocks exactly like this:',
+  'You are the assistant inside Shopfloor CMMS, a maintenance log for a garment workshop. Be practical and willing to help: answer the question, suggest useful next steps, and use general maintenance knowledge when the records are incomplete - just make clear which parts are general advice and which come from the shop data.',
+  'App:',
+  '- Service Orders ("workOrders") are the work tickets. Kinds: breakdown, pm, facility, install, other. Statuses: open, in-progress, waiting-parts, waiting-tech, done. Numbers: SO-261022-1.',
+  '- Preventive Maintenance ("pmTasks") repeats every intervalDays from lastDoneAt; no lastDoneAt means due today.',
+  '- Machines are the workshop devices (single-needle, overlock-5/4/3, coverstitch, bartack, cutter, pressing, etc.). Statuses: running, down, in-storage, retired.',
+  '- Parts are spares; low stock means qtyOnHand < minQty.',
+  '- Parts requests ("purchaseRequests") are the order list. Statuses: draft, sent, received, cancelled. Numbers: PR-261022-1.',
+  '- Coworkers are staff; contractors are outside companies.',
+  'The data below is a READ-ONLY snapshot for this question. You cannot write directly; propose changes for the user to Apply with one click and never claim you saved something yourself.',
+  'To propose up to 3 changes, end your answer with:',
   '```json',
-  '{"proposals": [{"store": "machines", "id": "<record id from the snapshot, or omit for a new record>", "summary": "one short sentence", "fields": {"status": "down", "notes": "..."}}]}',
+  '{"proposals": [{"store": "machines", "id": "<record id, or omit for new>", "summary": "one sentence", "fields": {"status": "down"}}]}',
   '```',
-  'In a proposal, store must be machines, workOrders, pmTasks or libraryItems; fields holds only the fields to change (for a new record, the fields it needs). A libraryItems proposal is create-only: give no id and set kind to "method" with title, symptom, cause, steps (an array of {"id", "text"}), toolsParts and safety, plus models (the model of that machine, e.g. ["DDL-8700-7"]) and machineIds (the id of that machine from the snapshot) so the method shows on that machine - typically to save a fix as a repair method after the user confirms the repair worked. Use real record ids from the snapshot and never invent one for an existing record. Never propose deletes and never send id, version, number, createdBy or updatedBy as fields. The user must press Apply: nothing is saved until they do, so say that. When you propose a change, do not tell the user to edit the record by hand - tell them to press Apply. Propose only when the user asks for a change or agrees to one.',
-  'Only state facts that appear in the snapshot. Do not guess causes, parts, people, dates or next steps that the records do not contain; if something is not recorded, say "not recorded" and suggest which field to fill in. When you give a reason, quote the record it comes from (service order number, title or problem text).',
-  'For every "how many" question use the "Shop totals" lines. The extract under them is capped and incomplete, so never count its rows; a record may legitimately appear once as a machine and again inside a PM task or service order. If a figure is not in the totals, say it is not recorded rather than estimating.',
-  'Questions like "what is most of the work", "which type is the majority" or "what do the PM tasks cover" are answered from the breakdown lines in "Shop totals" (machine types, PM task titles, priorities and categories, most common first). Quote those counts; do not answer "not recorded" when a breakdown line covers it.',
-  'For fault and repair questions, build the answer on the "Library" part of the snapshot first: the matching repair methods, the manual excerpts and the past fixes for that machine. Cite the source next to each fact exactly as it is labelled there - for example (Repair method: Thread breaks at high speed), (Manual: Juki DDL-8700 manual, p. 23) or (SO-261022-1). If the Library part has nothing for that machine, say so plainly and make clear your answer is general knowledge, not from the shop records.',
-  'Give step-by-step checks in the order a technician would do them: simple, non-invasive checks first (thread path, needle condition, threading, tension) before adjustments or disassembly. Always tell the user to power off and lock out the machine before any guard, belt or knife is removed, and say it before the first such step - never after.',
-  'Otherwise answer briefly and helpfully in plain text. Use **bold** and "- " bullet lists only; no other Markdown.',
+  'store may be machines, workOrders, pmTasks, parts, purchaseRequests or libraryItems; fields holds only the fields to change. Use real ids from the snapshot and never propose deletes. For a new part give name, partNumber, qtyOnHand, minQty, unit and optional location/supplier/machineIds. For a new parts request give title, supplier, neededBy, notes and lines as [{"description":"...","qty":1,"unit":"pcs","unitPrice":null,"partId":"...","partNumber":"..."}]; the app assigns the PR number, so never send number. A libraryItems proposal is create-only: no id, kind "method", with title, symptom, cause, steps (an array of {"id", "text"}), toolsParts, safety, models and machineIds - typically to save a fix as a repair method after the user confirms the repair worked. Tell the user to press Apply, and propose proactively when it would save them work.',
+  'For fault and repair questions, build the answer on the "Library" part of the snapshot first: matching repair methods, manual pages you opened, and past fixes for that machine. Cite the source next to each fact, e.g. (Repair method: ...), (Manual: ..., p. 23) or (SO-261022-1). If the Library has little or nothing, still give your best practical help and label general knowledge as such.',
+  'Library PDFs can be opened on demand. The snapshot lists readable PDFs and fileIds. To read pages, reply with ONLY:',
+  '```json',
+  '{"readLibrary": {"fileId": "<id>", "fromPage": 1, "toPage": 4}}',
+  '```',
+  'or use {"readLibrary": {"fileId": "<id>", "query": "thread trimmer solenoid"}} to search. Max 2 reads per question (4 pages each). Never invent a fileId, page or quotation; cite pages you actually received as (Manual: <title>, p. <n>).',
+  'Give repair steps in the order a technician would do them: simple, non-invasive checks first (thread path, needle, threading, tension) before adjustments or disassembly. Before removing a guard, belt or knife, tell the user to power off and lock out the machine.',
+  'Use "Shop totals" for how-many questions; do not count capped rows. For parts requests give the PR number, title, supplier, status, neededBy and the line items; do not say sent, ordered or received unless the status says so. You cannot browse websites, open e-mail or sign in to Amazon or supplier accounts - never claim you checked one; ask the user to paste the order text or add it under Parts requests. If a request is outside what you can do, say so in one sentence and offer the closest useful alternative instead of just refusing.',
+  'Answer in plain text; use **bold** and "- " bullets only. Be brief by default, and go longer when the user asks for detail.',
 ].join('\n');
+
+/**
+ * v6: the prompt for a provider with native tool calling. Same app knowledge
+ * and proposal format as SYSTEM_PROMPT; the snapshot becomes a starting point
+ * and the tools replace the readLibrary blocks and the "no web" rule.
+ */
+export const TOOLS_PROMPT = [
+  'Tools: you can call tools as often as a question needs; use them instead of guessing.',
+  '- query_records / aggregate_records / get_record: the live shop data (only what this user may see). The snapshot below is a shortened summary - when a question needs exact counts, older records, trends or details, query them. For analysis (top failing machines, breakdowns per month, MTBF, downtime, labour hours, spending, overdue PM, stock risk), aggregate first, then explain the result with the numbers and what to do about it.',
+  '- list_files / read_file: PDFs - repair manuals, attachments, and files the user attached to this chat. Search a PDF for the part or error first, then read the pages you need. Cite as (Manual: <name>, p. <n>).',
+  '- web_search / fetch_url (when available): public web for manufacturer manuals, part numbers, error codes, prices and suppliers. Prefer the manufacturer site; read the page before relying on it; cite the URL. Never put staff names or private shop data in a search query.',
+  'Be efficient: most questions need 1-6 tool calls; at most 20 are allowed. Stop as soon as you can answer well - do not keep searching for extra confirmation. Work step by step: plan which data you need, call tools (several at once when independent), check the results, then answer. If a tool returns an error, fix the arguments or try another way. Say clearly which facts come from shop records, which from manuals, which from the web, and which are general knowledge.',
+  'Formatting: plain text with **bold**, "- " bullets and simple tables written as "- item: value" lines. Lead with the answer, then the supporting numbers.',
+].join('\n');
+
+/**
+ * v6: worker skills. Only for users who can see the floor map. Production
+ * data (scanned bundle tickets) comes from an app in Simplified Chinese; the
+ * supervisors read English only, so the glossary maps the operation and
+ * machine words to the skill keys and every answer is in English.
+ */
+export const SKILLS_PROMPT = [
+  'Worker skills: list_worker_skills shows each floor worker (by empId) with skills per machine type at three levels - expert, good, learning - plus efficiency % (standard minutes earned / minutes worked x 100), dailyOutput (pieces per day), quality (excellent, good, fair, coaching) and notes.',
+  `Skill keys (use exactly these): ${SKILL_GROUPS.flatMap((g) => g.options.map(([key, label]) => `${key} = ${label}`)).join('; ')}.`,
+  'Production data, e.g. scanned bundle tickets, may be in Simplified Chinese. Glossary: 平车/单针 = single-needle; 双针 = double-needle; 拉条/包边/滚边 = binder; 打枣/打结 = bartack; 锁眼/开钮门 = buttonhole; 钉扣/钉钮 = button-sew; 啤钮/四合扣/撞钉 = snap-attach; 五线/五线拷边 = overlock-5; 四线/四线拷边/锁边 = overlock-4; 三线 = overlock-3; 冚车/绷缝/坎车 = coverstitch; 人字车/拼缝 = flatlock; 撬边/挑脚 = blindstitch; 埋夹 = feed-off-arm; 之字/人字 = zigzag; 绗缝 = quilting; 充绒/充棉 = down-filling; 裁床/裁剪 = cutter; 烫/压衬/粘衬 = pressing. Other words: 工号 = worker ID, 姓名 = name, 工序 = operation, 件数/数量 = pieces, 标准工时/SAM = standard minutes, 工时 = minutes worked, 效率 = efficiency, 返工/次品 = rework/defects, 扎号 = bundle no.',
+  'QC records: query_records with store "qcRecords" gives QC checks per worker (date, empId, style, po, operation, checked, defects, defectTypes, result pass/rework/fail, inspector); style and PO are optional and let you compare quality per garment style or order. Use the defect rate (defects / checked) in ratings: above 2% on an operation blocks "expert", above 5% means "learning" or coaching, and repeated defect types are worth naming.',
+  'ALWAYS answer in English, translate Chinese terms in brackets the first time, e.g. "binder (拉条)". Never leave Chinese untranslated for the supervisor.',
+  'Rating guide (unless the supervisor says otherwise): expert = efficiency >= 90% on that operation with rework under 2%; good = 70-90%; learning = under 70% or fewer than 5 working days on it. Base ratings on enough data (several days); say how much data each rating rests on and flag outliers instead of over-reacting to one bad day.',
+  'To propose skill or productivity changes, end your answer with ONE block (any number of workers):',
+  '```json',
+  '{"skillUpdates": [{"empId": "524", "skills": {"binder": "good", "bartack": "learning"}, "efficiency": 92, "dailyOutput": 450, "quality": "good", "note": "week 45 tickets: binder 88%, 0 rework"}]}',
+  '```',
+  'skills holds only the machine types to change ("" removes one); efficiency, dailyOutput, quality and note are optional; note is appended to the supervisor notes with today\'s date. Use empIds from list_worker_skills. The supervisor reviews the table and presses Apply all - never claim you saved anything.',
+].join('\n');
+
+/** SYSTEM_PROMPT for a tool-calling provider: the readLibrary and "no web" rules swapped for TOOLS_PROMPT. */
+export function toolsSystemPrompt(base, { web = true } = {}) {
+  const lines = base.split('\n').filter(
+    (line) =>
+      !line.startsWith('Library PDFs can be opened on demand') &&
+      !line.startsWith('{"readLibrary"') &&
+      !line.startsWith('or use {"readLibrary"')
+  );
+  // The fence pair that only wrapped the readLibrary example goes too.
+  const cleaned = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i] === '```json' && lines[i + 1] === '```') {
+      i += 1;
+      continue;
+    }
+    cleaned.push(lines[i]);
+  }
+  let text = cleaned.join('\n').replace(
+    /You cannot browse websites, open e-mail or sign in to Amazon or supplier accounts - never claim you checked one; ask the user to paste the order text or add it under Parts requests\./,
+    web
+      ? 'You can search the public web and read public pages, but you cannot open e-mail or sign in to Amazon or supplier accounts - never claim you checked an account; ask the user to paste the order text or add it under Parts requests.'
+      : 'Web access is turned off on this server: you cannot browse websites, open e-mail or sign in to Amazon or supplier accounts - never claim you checked one; ask the user to paste the order text or add it under Parts requests.'
+  );
+  text = text.replace(/Max 2 reads per question \(4 pages each\)\. /, '');
+  return `${text}\n${TOOLS_PROMPT}`;
+}
 
 /** Snapshot areas and the plain names used when telling the model one is hidden. */
 const CONTEXT_AREA_LABELS = [
@@ -321,6 +404,7 @@ const CONTEXT_AREA_LABELS = [
   ['pm', 'preventive maintenance'],
   ['machines', 'machines'],
   ['parts', 'parts and stock'],
+  ['purchasing', 'parts requests'],
   ['library', 'the repair library (manuals and repair methods)'],
   ['coworkers', 'coworkers'],
   ['contractors', 'outside contractors'],
@@ -339,12 +423,12 @@ export function aiSystemPrompt(store, user) {
   const notes = [];
   if (hidden.length > 0) {
     notes.push(
-      `The signed-in user does not have access to the following areas of the app: ${hidden.join(', ')}. Nothing from those areas appears in the data snapshot. If a question needs one of them, answer that the user does not have access to that area instead of guessing.`
+      `This user does not have access to: ${hidden.join(', ')}. Nothing from those areas is in the snapshot; if a question needs one, say the user does not have access to that area instead of guessing.`
     );
   }
   if (!can(who, 'contractorRates', 'read')) {
     notes.push(
-      'Contractor hourly rates and costs are not available to this user; if asked about them, answer that the user does not have access to contractor rates instead of guessing.'
+      'Contractor hourly rates are not available to this user; if asked, say the user does not have access to contractor rates.'
     );
   }
   return notes.length === 0 ? SYSTEM_PROMPT : `${SYSTEM_PROMPT}\n${notes.join('\n')}`;
@@ -426,6 +510,40 @@ function partEntry(record) {
     minQty: Number(data.minQty) || 0,
     unit: data.unit ?? null,
     location: clip(data.location, 60),
+  };
+}
+
+/**
+ * Parts request entry (SPEC-v4.md section 2): the order list for parts and
+ * supplies. Line items are capped; a request is overdue when its neededBy is
+ * before today and it is still draft or sent.
+ */
+function requestEntry(record, today) {
+  const data = record.data;
+  const status = data.status ?? 'draft';
+  const lines = Array.isArray(data.lines) ? data.lines : [];
+  return {
+    id: record.id,
+    number: data.number === undefined ? null : formatRequestNumber(data.number),
+    title: clip(data.title, 120),
+    status,
+    supplier: clip(data.supplier, 120),
+    requestedBy: clip(data.requestedBy, 80),
+    neededBy: data.neededBy ?? null,
+    overdue:
+      typeof data.neededBy === 'string' &&
+      data.neededBy !== '' &&
+      data.neededBy < today &&
+      (status === 'draft' || status === 'sent'),
+    lineCount: lines.length,
+    lines: lines.slice(0, 10).map((line) => ({
+      description: clip(line.description, 120),
+      qty: line.qty ?? null,
+      unit: line.unit ?? null,
+      unitPrice: line.unitPrice ?? null,
+      link: clip(line.link, 200),
+    })),
+    notes: clip(data.notes, 300),
   };
 }
 
@@ -558,6 +676,20 @@ export function overlapScore(text, questionTokens, specialTokens) {
 }
 
 /**
+ * True when `text` mentions `identifier` as a whole token. A numeric machine
+ * name or serial ("18") must not match inside another number ("CP-180"):
+ * otherwise every question with a model number looks like a machine match
+ * and the library snapshot drops the manual that was actually asked about.
+ */
+function mentionsIdentifier(text, identifier) {
+  if (identifier === '') return false;
+  if (/^\d+$/.test(identifier)) {
+    return new RegExp(`(?<![a-z0-9])${identifier}(?![a-z0-9])`).test(text);
+  }
+  return text.includes(identifier);
+}
+
+/**
  * The machines a question is about (SPEC-v4.md section 5): by machine name,
  * model number (through normalizeModel, so spacing never matters), serial
  * number, or the machine of a service order number mentioned in the
@@ -589,11 +721,11 @@ export function detectQuestionMachines(question, machinesList, workOrders) {
     const name = typeof data.name === 'string' ? data.name.trim().toLowerCase() : '';
     const serial = typeof data.serial === 'string' ? data.serial.trim().toLowerCase() : '';
     const modelKey = normalizeModel(data.model);
-    if (name !== '' && q.includes(name)) {
+    if (name !== '' && mentionsIdentifier(q, name)) {
       matched.push(record);
       continue;
     }
-    if (serial !== '' && q.includes(serial)) {
+    if (serial !== '' && mentionsIdentifier(q, serial)) {
       matched.push(record);
       continue;
     }
@@ -629,7 +761,9 @@ export function stripWatermarkLines(pages) {
       appearances.set(key, (appearances.get(key) ?? 0) + 1);
     }
   }
-  const threshold = list.length / 2;
+  // A single-page PDF has no boilerplate: every line appears once, so the
+  // threshold must never drop below 1 or the whole page would be stripped.
+  const threshold = Math.max(1, list.length / 2);
   return list.map((page) =>
     page
       .split(/\r?\n/)
@@ -699,6 +833,7 @@ export function manualChunksFor(fileId, pages) {
 /** Library block headers (SPEC-v4.md section 5). */
 export const LIBRARY_HEADERS = Object.freeze({
   block: 'Library (repair methods, manual excerpts and past fixes for this question; capped, not a complete list):',
+  files: 'Library files you can open on demand (copy the fileId into a readLibrary block to read pages or search):',
   methods: 'Repair methods that match (best match first):',
   manuals: 'Manual excerpts (best matches first; cite them by their bracketed labels):',
   pastFixes: 'Past fixes (last 5 completed service orders for these machines):',
@@ -754,6 +889,53 @@ function pdfAttachments(data) {
     : [];
 }
 
+/**
+ * Every library PDF whose text extraction succeeded, for the on-demand
+ * reader and its catalog in the snapshot. Library manuals come first; PDFs
+ * attached to the readable machines are added too. A file attached to more
+ * than one record appears once, with every model it belongs to.
+ *
+ * @param {object} store open store handle
+ * @param {{machinesList?: array}} data machines the user may read
+ * @returns {Array<{fileId: string, label: string, models: string[], pages: number}>}
+ */
+export function libraryFileList(store, { machinesList = [] } = {}) {
+  const files = new Map();
+  const add = (fileId, label, models) => {
+    if (typeof fileId !== 'string' || fileId === '') return;
+    const row = store.getFileText(fileId);
+    if (row === null || row.status !== 'ok') return;
+    let pageCount = 0;
+    try {
+      const pages = JSON.parse(row.pages_json);
+      if (Array.isArray(pages)) pageCount = pages.length;
+    } catch {
+      return;
+    }
+    if (pageCount === 0) return;
+    const modelsList = Array.isArray(models) ? models.filter((model) => typeof model === 'string' && model !== '') : [];
+    const current = files.get(fileId);
+    if (current === undefined) {
+      files.set(fileId, { fileId, label, models: [...new Set(modelsList)], pages: pageCount });
+      return;
+    }
+    for (const model of modelsList) {
+      if (!current.models.includes(model)) current.models.push(model);
+    }
+  };
+  for (const record of store.listRecords('libraryItems')) {
+    if (record.data.kind !== 'manual') continue;
+    const title = typeof record.data.title === 'string' && record.data.title.trim() !== '' ? record.data.title : null;
+    for (const att of pdfAttachments(record.data)) add(att.fileId, title ?? att.name, record.data.models);
+  }
+  for (const record of Array.isArray(machinesList) ? machinesList : []) {
+    for (const att of pdfAttachments(record.data)) add(att.fileId, att.name, [record.data.model]);
+  }
+  return [...files.values()].sort(
+    (a, b) => a.label.localeCompare(b.label) || a.fileId.localeCompare(b.fileId),
+  );
+}
+
 /** One completed service order as a past-fix line (SPEC-v4.md section 5, c). */
 function pastFixLine(record, machineNames, partsById) {
   const data = record.data;
@@ -788,6 +970,7 @@ export function buildLibrarySection(store, question, { machinesList = [], workOr
   const partsById = new Map(partsList.map((record) => [record.id, record.data]));
   const questionTokens = tokenSet(question);
   const specialTokens = specialQuestionTokens(question);
+  const squashedQuestion = normalizeModel(question);
   const matched = detectQuestionMachines(question, machinesList, workOrders);
   const hasMatch = matched.length > 0;
 
@@ -833,6 +1016,23 @@ export function buildLibrarySection(store, question, { machinesList = [], workOr
       for (const att of pdfAttachments(record.data)) manuals.push({ fileId: att.fileId, label: att.name });
       for (const item of relatedLibraryItems(libraryMachine(record), libraryItems)) {
         if (item.kind !== 'manual' || seenManualItems.has(item.id)) continue;
+        seenManualItems.add(item.id);
+        collectItemManual(item);
+      }
+    }
+    // A manual whose model is named in the question stays in the snapshot even
+    // when the machine match came from somewhere else (for example a panel
+    // model such as CP-180 next to a machine number): otherwise the very
+    // manual the user asked about would be dropped from the Library block.
+    for (const item of libraryItems) {
+      if (item.kind !== 'manual' || seenManualItems.has(item.id)) continue;
+      const models = Array.isArray(item.models) ? item.models : [];
+      if (
+        models.some((model) => {
+          const key = normalizeModel(model);
+          return key.length >= 3 && squashedQuestion.includes(key);
+        })
+      ) {
         seenManualItems.add(item.id);
         collectItemManual(item);
       }
@@ -939,6 +1139,188 @@ export function buildLibrarySection(store, question, { machinesList = [], workOr
   return lines;
 }
 
+/**
+ * The catalog of PDFs the assistant may open on demand (v4.6), as snapshot
+ * lines. It has its own budget so it never takes space from the repair
+ * methods and excerpts. Only files whose text extraction succeeded appear.
+ */
+export function buildLibraryFileCatalog(store, machinesList = []) {
+  const files = libraryFileList(store, { machinesList });
+  if (files.length === 0) return [];
+  const lines = [LIBRARY_HEADERS.files];
+  let used = LIBRARY_HEADERS.files.length + 1;
+  for (const file of files) {
+    const line = `- ${file.fileId} | ${file.label}${file.models.length > 0 ? ` | models: ${file.models.join(', ')}` : ''} | ${file.pages} pages`;
+    if (used + line.length + 1 > LIBRARY_FILE_LIST_MAX_CHARS) {
+      const listed = lines.length - 1;
+      lines.push(`- (+${files.length - listed} more files not listed)`);
+      break;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// On-demand library file reading: the model asks for pages or a search with
+// a fenced `{"readLibrary": {...}}` block, the server answers with the text,
+// and the model then writes the real reply (v4.6).
+// ---------------------------------------------------------------------------
+
+/** Every fenced JSON block in a reply, with its raw text and parsed value. */
+function fencedJsonBlocks(reply) {
+  const blocks = [];
+  const fence = /```(?:json)?[ \t]*\r?\n?([\s\S]*?)```/g;
+  let match = fence.exec(reply);
+  while (match !== null) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(match[1]);
+    } catch {
+      parsed = null;
+    }
+    blocks.push({ raw: match[0], parsed });
+    match = fence.exec(reply);
+  }
+  return blocks;
+}
+
+/**
+ * The first `{"readLibrary": {...}}` request in a reply, or null. Accepts a
+ * page range or a search query; invalid requests are ignored so a broken
+ * block never breaks the answer.
+ */
+export function parseLibraryRead(reply) {
+  if (typeof reply !== 'string') return null;
+  for (const block of fencedJsonBlocks(reply)) {
+    if (!isPlainObject(block.parsed) || !isPlainObject(block.parsed.readLibrary)) continue;
+    const request = block.parsed.readLibrary;
+    const fileId = typeof request.fileId === 'string' ? request.fileId.trim() : '';
+    if (fileId === '' || fileId.length > 100) continue;
+    const query = typeof request.query === 'string' ? request.query.trim().slice(0, 200) : '';
+    const fromPage = Number.isInteger(request.fromPage) && request.fromPage > 0 ? request.fromPage : null;
+    const toPage = Number.isInteger(request.toPage) && request.toPage > 0 ? request.toPage : null;
+    return { fileId, query: query === '' ? null : query, fromPage, toPage, raw: block.raw };
+  }
+  return null;
+}
+
+/** Remove readLibrary blocks from a reply (they are instructions, not prose). */
+export function stripLibraryRead(reply) {
+  if (typeof reply !== 'string') return reply;
+  return reply
+    .replace(/```(?:json)?[ \t]*\r?\n?([\s\S]*?)```/g, (raw, inner) => {
+      try {
+        const parsed = JSON.parse(inner);
+        return isPlainObject(parsed) && isPlainObject(parsed.readLibrary) ? '' : raw;
+      } catch {
+        return raw;
+      }
+    })
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** Search result for one query across the pages of one manual. */
+function searchLibraryPages(file, pages, query) {
+  const needle = query.toLowerCase();
+  const hits = [];
+  for (let index = 0; index < pages.length && hits.length < LIBRARY_READ_MAX_MATCHES; index += 1) {
+    const text = pages[index];
+    const at = text.toLowerCase().indexOf(needle);
+    if (at === -1) continue;
+    const start = Math.max(0, at - 120);
+    const snippet = text
+      .slice(start, at + query.length + 160)
+      .replace(/\s+/g, ' ')
+      .trim();
+    hits.push(`- p. ${index + 1}: ${snippet}`);
+  }
+  if (hits.length === 0) {
+    return {
+      ok: true,
+      text: `No page of [Manual: ${file.label}] contains "${query}". The file has ${pages.length} pages.`,
+    };
+  }
+  return {
+    ok: true,
+    text: [`Search results for "${query}" in [Manual: ${file.label}] (${pages.length} pages):`, ...hits].join('\n'),
+  };
+}
+
+/**
+ * Answer one readLibrary request from extracted manual text. `files` must be
+ * the catalog the signed-in user may read (libraryFileList); any other fileId
+ * is refused, so the model can never read outside the Library.
+ *
+ * @returns {{ok: boolean, text: string}}
+ */
+export function readLibraryFile(store, request, files) {
+  const list = Array.isArray(files) ? files : [];
+  const file = list.find((entry) => entry.fileId === request.fileId);
+  if (file === undefined) {
+    const available = list.map((entry) => `- ${entry.fileId} | ${entry.label} | ${entry.pages} pages`);
+    return {
+      ok: false,
+      text: [
+        'That fileId is not a readable library PDF for this user. Readable files:',
+        ...(available.length === 0 ? ['- none'] : available),
+      ].join('\n'),
+    };
+  }
+  const pages = store.getFileTextPages(file.fileId);
+  if (pages === null) {
+    return { ok: false, text: `The text of [Manual: ${file.label}] is not available (extraction failed or still running).` };
+  }
+  const cleanPages = stripWatermarkLines(pages);
+  if (request.query !== null && request.query !== undefined) {
+    return searchLibraryPages(file, cleanPages, request.query);
+  }
+  if (cleanPages.length === 0) {
+    return { ok: false, text: `[Manual: ${file.label}] has no extracted pages.` };
+  }
+  const first = Math.min(Math.max(1, request.fromPage ?? 1), cleanPages.length);
+  const wantedLast = request.toPage ?? first + LIBRARY_READ_PAGE_SPAN - 1;
+  const last = Math.min(
+    Math.max(first, wantedLast),
+    cleanPages.length,
+    first + LIBRARY_READ_PAGE_SPAN - 1,
+  );
+  const spanCapped = wantedLast > last;
+  const parts = [];
+  let used = 0;
+  let truncated = false;
+  for (let page = first; page <= last; page += 1) {
+    const header = `[Manual: ${file.label}, p. ${page}]`;
+    const body = cleanPages[page - 1].trim();
+    const cost = header.length + body.length + 2;
+    if (used + cost > LIBRARY_READ_MAX_CHARS) {
+      const room = LIBRARY_READ_MAX_CHARS - used - header.length - 2;
+      if (room > 200) {
+        parts.push(header, body.slice(0, room));
+        used = LIBRARY_READ_MAX_CHARS;
+      }
+      truncated = true;
+      break;
+    }
+    parts.push(header, body);
+    used += cost;
+  }
+  if (parts.length === 0) {
+    return { ok: false, text: `[Manual: ${file.label}] has no text on pages ${first}-${last}.` };
+  }
+  if (truncated) {
+    parts.push('(+ more text not shown; ask for the next pages)');
+  } else if (spanCapped && last < cleanPages.length) {
+    parts.push(
+      `(One read returns at most ${LIBRARY_READ_PAGE_SPAN} pages; ask for pages ${last + 1}-${Math.min(last + LIBRARY_READ_PAGE_SPAN, cleanPages.length)} next.)`,
+    );
+  }
+  return { ok: true, text: parts.join('\n') };
+}
+
 /** Counts records by a label, most common first: [[label, count], ...]. */
 function countEntries(records, labelFor) {
   const counts = new Map();
@@ -965,7 +1347,7 @@ function countEntries(records, labelFor) {
  * pre-extracted `file_texts` table). Capped at CONTEXT_MAX_CHARS.
  *
  * SPEC-v5.md section 1.3: floorMaps and floorStations (the floor roster)
- * never enter the AI context, whatever the user's role allows — staff names
+ * never enter the AI context, whatever the user's role allows �?staff names
  * must not reach any AI provider (see AI_EXCLUDED_STORES below).
  *
  * V4-M5 (SPEC-v4.md section 5): users with library Read also get a Library
@@ -980,9 +1362,9 @@ function countEntries(records, labelFor) {
  * Stores whose records are never read into the AI context (SPEC-v5.md
  * section 1.3): the floor map and its stations hold the staff roster, and
  * staff names must not reach any AI provider. buildContext refuses them
- * outright — even for an Administrator whose role could Read them.
+ * outright �?even for an Administrator whose role could Read them.
  */
-export const AI_EXCLUDED_STORES = Object.freeze(['floorMaps', 'floorStations']);
+export const AI_EXCLUDED_STORES = Object.freeze(['floorMaps', 'floorStations', 'workerProfiles']);
 const AI_EXCLUDED = new Set(AI_EXCLUDED_STORES);
 
 export function buildContext(store, user, question, { now = new Date() } = {}) {
@@ -999,6 +1381,7 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
   const pmTasks = read('pmTasks') ? store.listRecords('pmTasks') : [];
   const coworkers = read('coworkers') ? store.listRecords('coworkers') : [];
   const contractors = read('contractors') ? store.listRecords('contractors') : [];
+  const purchaseRequests = read('purchaseRequests') ? store.listRecords('purchaseRequests') : [];
 
   // Only machines the user can read: references to any other machine show
   // as 'a machine' in the entries below (machinesReadable).
@@ -1052,6 +1435,18 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
     .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
   addSection('PM tasks due within 7 days (including overdue)', pmDue, 30);
 
+  // Parts requests still open (draft or sent), overdue first.
+  const openRequests = purchaseRequests
+    .filter((record) => record.data.status !== 'received' && record.data.status !== 'cancelled')
+    .map((record) => requestEntry(record, today))
+    .sort(
+      (a, b) =>
+        Number(b.overdue) - Number(a.overdue) ||
+        String(a.neededBy ?? '9999').localeCompare(String(b.neededBy ?? '9999')) ||
+        String(a.number ?? '').localeCompare(String(b.number ?? '')),
+    );
+  addSection('Open parts requests (draft or sent; overdue first)', openRequests, 30);
+
   // Low-stock parts.
   const lowStock = parts.filter((record) => Number(record.data.qtyOnHand ?? 0) < Number(record.data.minQty ?? 0));
   addSection('Low-stock parts (qtyOnHand below minQty)', lowStock.map(partEntry), 30);
@@ -1066,6 +1461,7 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
       ...pmTasks.map((record) => ({ store: 'pm task', entry: pmTaskEntry(record, machines, readMachines) })),
       ...coworkers.map((record) => ({ store: 'coworker', entry: coworkerEntry(record) })),
       ...contractors.map((record) => ({ store: 'contractor', entry: contractorEntry(record, includeRate) })),
+      ...purchaseRequests.map((record) => ({ store: 'parts request', entry: requestEntry(record, today) })),
     ];
     const matches = [];
     const seenMatches = new Set();
@@ -1142,11 +1538,25 @@ export function buildContext(store, user, question, { now = new Date() } = {}) {
   if (read('parts')) totals.push(`Parts: ${parts.length} total, ${lowStock.length} low stock.`);
   if (read('coworkers')) totals.push(`Coworkers: ${coworkers.length}.`);
   if (read('contractors')) totals.push(`Contractors: ${contractors.length}.`);
+  if (read('purchaseRequests')) {
+    const countStatus = (status) =>
+      purchaseRequests.filter((record) => (record.data.status ?? 'draft') === status).length;
+    const overdueRequests = openRequests.filter((entry) => entry.overdue).length;
+    totals.push(
+      `Parts requests: ${purchaseRequests.length} total (${countStatus('draft')} draft, ${countStatus('sent')} sent, ${countStatus('received')} received, ${countStatus('cancelled')} cancelled), ${openRequests.length} open, ${overdueRequests} past their neededBy date.`,
+    );
+  } else {
+    totals.push('Parts requests: not visible to this user.');
+  }
   // V4-M5 (SPEC-v4.md section 5): the Library block comes right after the
   // shop totals; users without library Read get no block at all.
   const libraryLines = read('libraryItems')
     ? buildLibrarySection(store, question, { machinesList, workOrders, partsList: parts })
     : [];
+  // v4.6: the openable-file catalog sits next to the Library block, with its
+  // own budget, so the assistant knows which PDFs it can read on demand.
+  const libraryFileLines = read('libraryItems') ? buildLibraryFileCatalog(store, machinesList) : [];
+  if (libraryFileLines.length > 0) lines.unshift(...libraryFileLines);
   if (libraryLines.length > 0) lines.unshift(...libraryLines);
   lines.unshift(
     'Shop totals (authoritative counts - never count the extract below to answer "how many"):',
@@ -1278,6 +1688,36 @@ export async function callOpenAICompatible({ baseURL, apiKey, model }, messages,
     throw providerError('The AI provider sent an unexpected reply. Please try again later.');
   }
   return content;
+}
+
+/**
+ * One chat/completions call with tools: returns the assistant message
+ * ({content, tool_calls}) so the caller can run the tools and call again.
+ */
+export async function callOpenAIWithTools({ baseURL, apiKey, model }, messages, tools, { timeout = PROVIDER_TIMEOUT_MS } = {}) {
+  if (baseURL === null || baseURL === undefined) throw badRequest('openai.baseURL is not configured');
+  if (model === null || model === undefined) throw badRequest('openai.model is not configured');
+  const payload = await providerJsonRequest(
+    'chat/completions',
+    `${withoutTrailingSlash(baseURL)}/chat/completions`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
+      body: JSON.stringify({ model, messages, temperature: 0.2, ...(tools.length ? { tools, tool_choice: 'auto' } : {}) }),
+    },
+    timeout
+  );
+  const message = payload && Array.isArray(payload.choices) && payload.choices[0] ? payload.choices[0].message : null;
+  if (!message || typeof message !== 'object') {
+    throw providerError('The AI provider sent an unexpected reply. Please try again later.');
+  }
+  const toolCalls = Array.isArray(message.tool_calls)
+    ? message.tool_calls.filter((call) => call && call.function && typeof call.function.name === 'string')
+    : [];
+  if (typeof message.content !== 'string' && toolCalls.length === 0) {
+    throw providerError('The AI provider sent an unexpected reply. Please try again later.');
+  }
+  return { content: typeof message.content === 'string' ? message.content : '', toolCalls };
 }
 
 function basicAuthHeader(password) {
@@ -1466,34 +1906,42 @@ export function parseDraftServiceOrder(reply) {
 }
 
 // ---------------------------------------------------------------------------
-// Assistant edits: the model may propose changes to machines, service orders
-// and PM tasks. Nothing is written until the signed-in user presses Apply in
-// the chat; the write itself is made by the dedicated "AI Assistant" user, so
-// created_by/updated_by and the history row name the assistant.
+// Assistant edits: the model may propose changes to machines, service orders,
+// PM tasks, parts, parts requests and repair methods. Nothing is written until
+// the signed-in user presses Apply in the chat; the write itself is made by the
+// dedicated "AI Assistant" user, so created_by/updated_by and the history row
+// name the assistant.
 // ---------------------------------------------------------------------------
 
 export const AI_ASSISTANT_USERNAME = 'ai-assistant';
 export const AI_ASSISTANT_DISPLAY_NAME = 'AI Assistant';
 export const AI_ASSISTANT_ROLE_NAME = 'AI Assistant';
-export const AI_EDITABLE_STORES = Object.freeze(['machines', 'workOrders', 'pmTasks', 'libraryItems']);
+export const AI_EDITABLE_STORES = Object.freeze([
+  'machines',
+  'workOrders',
+  'pmTasks',
+  'parts',
+  'purchaseRequests',
+  'libraryItems',
+]);
 export const AI_MAX_PROPOSALS = 3;
 
 /** Fields the model may never set through a proposal. */
 const ASSISTANT_PROTECTED_FIELDS = new Set(['id', 'version', 'number', 'createdBy', 'updatedBy']);
 
-/** What the AI Assistant role may do (v4: read requests, write the library). */
+/** What the AI Assistant role may do (v4.6: also add parts and parts requests). */
 function assistantPermissions() {
   return normalizePermissions({
     serviceOrders: 'write',
     pm: 'write',
     machines: 'write',
-    parts: 'read',
+    parts: 'write',
     coworkers: 'read',
     contractors: 'read',
     statistics: 'read',
     files: 'read',
     aiAssistant: 'write',
-    purchasing: 'read',
+    purchasing: 'write',
     library: 'write',
   });
 }
@@ -1587,6 +2035,98 @@ export function parseProposals(reply) {
   return proposals;
 }
 
+export const SKILL_UPDATES_MAX = 300;
+
+/** `{"skillUpdates": [...]}` blocks in a reply (shape checked on apply). */
+export function parseSkillUpdates(reply) {
+  if (typeof reply !== 'string') return [];
+  const fence = /```(?:json)?[ \t]*\r?\n?([\s\S]*?)```/g;
+  const out = [];
+  for (let match = fence.exec(reply); match !== null; match = fence.exec(reply)) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(match[1]);
+    } catch {
+      parsed = null;
+    }
+    if (!isPlainObject(parsed) || !Array.isArray(parsed.skillUpdates)) continue;
+    for (const update of parsed.skillUpdates) {
+      if (isPlainObject(update) && typeof update.empId === 'string' && update.empId.trim()) out.push(update);
+      if (out.length >= SKILL_UPDATES_MAX) return out;
+    }
+  }
+  return out;
+}
+
+/**
+ * POST /api/ai/apply-skills {updates}: apply the skill updates the supervisor
+ * approved (the chat's "Apply all", or the Workers batch editor). Needs
+ * floorMap Write. Each worker's profile is created when missing; every
+ * change goes through putRecord as the approving user, so History shows who
+ * approved it. Returns one result per update; a bad one never stops the rest.
+ */
+export async function aiApplySkills(ctx, req, body) {
+  const { store, user } = ctx;
+  if (!isPlainObject(body) || !Array.isArray(body.updates)) throw badRequest('Expected {"updates": [...]}');
+  if (body.updates.length > SKILL_UPDATES_MAX) throw badRequest(`At most ${SKILL_UPDATES_MAX} updates at once`);
+  if (!can(user, 'floorMap', 'write')) {
+    throw bad(403, 'forbidden', 'You need write access to the floor map to change worker skills');
+  }
+  const norm = (value) => String(value ?? '').toUpperCase().replace(/\s+/g, '');
+  const profiles = new Map(store.listRecords('workerProfiles').map((r) => [norm(r.data.empId), r]));
+  const roster = workerRoster(store.listRecords('floorStations').map((r) => r.data), []);
+  const names = new Map(roster.filter((w) => w.empId).map((w) => [norm(w.empId), w.name]));
+  const results = [];
+  for (const update of body.updates) {
+    const empId = isPlainObject(update) ? String(update.empId ?? '').trim() : '';
+    try {
+      const current = profiles.get(norm(empId)) || null;
+      const fields = skillUpdateFields(current ? current.data : null, update);
+      if (typeof fields === 'string') {
+        results.push({ empId, ok: false, error: fields });
+        continue;
+      }
+      const data = current ? { ...current.data, ...fields } : { empId, name: names.get(norm(empId)) || '', ...fields };
+      const id = current ? current.id : crypto.randomUUID();
+      const saved = putRecord(store, {
+        storeName: 'workerProfiles',
+        id,
+        body: { data, baseVersion: current ? Number(current.version) : null },
+        user,
+        note: typeof body.source === 'string' ? body.source.slice(0, 60) : 'skill update',
+      });
+      profiles.set(norm(empId), saved.record);
+      results.push({ empId, ok: true });
+    } catch (error) {
+      results.push({ empId, ok: false, error: error && error.message ? error.message : 'could not save' });
+    }
+  }
+  return { status: 200, body: { results, applied: results.filter((r) => r.ok).length } };
+}
+
+/**
+ * A parts-request proposal may omit the per-line ids (the app editor needs
+ * one) and requestedBy. Fill both so the first Apply succeeds; other stores
+ * pass their fields through unchanged.
+ */
+function prepareProposalFields(storeName, fields, { current, approver }) {
+  if (storeName !== 'purchaseRequests') return fields;
+  const data = { ...fields };
+  if (Array.isArray(data.lines)) {
+    data.lines = data.lines.map((line) => {
+      if (!isPlainObject(line)) return line;
+      const copy = { ...line };
+      if (typeof copy.id !== 'string' || copy.id.trim() === '') copy.id = crypto.randomUUID();
+      if (copy.unit === undefined || copy.unit === null || copy.unit === '') copy.unit = 'pcs';
+      return copy;
+    });
+  }
+  if (current === null && (typeof data.requestedBy !== 'string' || data.requestedBy.trim() === '')) {
+    data.requestedBy = approver;
+  }
+  return data;
+}
+
 /**
  * POST /api/ai/apply: apply one proposal the user approved in the chat.
  * The requester needs Write on the target area, and so does the AI Assistant
@@ -1632,8 +2172,9 @@ export async function aiApplyProposal(ctx, req, body) {
   }
   const id = proposal.id ?? crypto.randomUUID();
   const current = store.getRecord(storeName, id);
-  const data = current === null ? proposal.fields : { ...JSON.parse(current.data), ...proposal.fields };
   const approver = store.displayName(user.id) ?? user.username;
+  const merged = current === null ? proposal.fields : { ...JSON.parse(current.data), ...proposal.fields };
+  const data = prepareProposalFields(storeName, merged, { current, approver });
   const applied = putRecord(store, {
     storeName,
     id,
@@ -1740,6 +2281,27 @@ export function aiDeleteHistory(ctx, req) {
   return { status: 200, body: { ok: true, deleted: ctx.store.deleteAiMessages(ctx.user.id, conversationId) } };
 }
 
+/** The library PDF catalog this user may read (same permission as the snapshot). */
+function readableLibraryFiles(store, user) {
+  const who = { ...user, store };
+  if (!can(who, 'library', 'read')) return [];
+  const machinesList = can(who, 'machines', 'read') ? store.listRecords('machines') : [];
+  return libraryFileList(store, { machinesList });
+}
+
+/** The message that carries one read result back to the model. */
+function libraryReadMessage(result, readsLeft) {
+  return [
+    result.ok ? 'Library file text you requested:' : 'Library file read failed:',
+    result.text,
+    '',
+    'Answer the user now using this text. Cite each fact as (Manual: <title>, p. <n>) with the labels above.',
+    readsLeft > 0
+      ? `You may request one more readLibrary block if you still need another page range or a search (${readsLeft} left).`
+      : 'You have used all library reads for this question; answer with what you have.',
+  ].join('\n');
+}
+
 /**
  * POST /api/ai/chat {conversationId?, message} (any signed-in user):
  * store the user message, build the read-only context, ask the provider,
@@ -1752,8 +2314,8 @@ export async function aiPostChat(ctx, req, body) {
   const { store, user } = ctx;
   if (!isPlainObject(body)) throw badRequest('Expected a JSON object body');
   for (const key of Object.keys(body)) {
-    if (!['conversationId', 'message'].includes(key)) {
-      throw badRequest(`Unknown field "${key}"; expected conversationId, message`);
+    if (!['conversationId', 'message', 'attachments'].includes(key)) {
+      throw badRequest(`Unknown field "${key}"; expected conversationId, message, attachments`);
     }
   }
   let conversationId = null;
@@ -1781,9 +2343,29 @@ export async function aiPostChat(ctx, req, body) {
     };
   }
 
+  // v6: PDFs the user uploaded for this question (their own uploads only).
+  const attached = [];
+  if (body.attachments !== undefined) {
+    if (!Array.isArray(body.attachments) || body.attachments.length > CHAT_ATTACHMENTS_MAX) {
+      throw badRequest(`attachments must be an array of at most ${CHAT_ATTACHMENTS_MAX} file ids`);
+    }
+    for (const fileId of body.attachments) {
+      const row = typeof fileId === 'string' ? store.getFileById(fileId) : null;
+      if (!row || row.uploaded_by !== user.id || row.mime !== 'application/pdf') {
+        throw badRequest('Each attachment must be a PDF you uploaded');
+      }
+      attached.push(row);
+    }
+  }
+
   const config = requireReadyProvider(getAiConfig(store));
   if (conversationId === null) conversationId = crypto.randomUUID();
   const context = buildContext(store, user, text);
+  const attachNote = attached.length
+    ? `\n\n[Attached PDF${attached.length > 1 ? 's' : ''}: ${attached.map((f) => `${f.name} (fileId: ${f.id})`).join('; ')}]`
+    : '';
+  const steps = [];
+  const libraryFiles = readableLibraryFiles(store, user);
 
   let reply;
   if (config.provider === 'openai-compatible') {
@@ -1796,16 +2378,64 @@ export async function aiPostChat(ctx, req, body) {
       conversationId,
       userId: user.id,
       role: 'user',
-      content: text,
+      content: `${text}${attachNote}`,
       at: aiAt(),
     });
-    const system = aiSystemPrompt(store, user);
+    // Files attached anywhere in this conversation stay readable in later turns.
+    const chatFileIds = [...new Set([...prior.map((m) => m.content), attachNote].join('\n').match(/fileId: ([0-9a-f-]{36})/g) || [])]
+      .map((m) => m.slice(8))
+      .filter((id) => {
+        const row = store.getFileById(id);
+        return row && row.uploaded_by === user.id;
+      });
+    const tctx = toolContext(store, user, { chatFileIds });
+    const tools = toolDefinitions(tctx.stores, { web: tctx.web, workers: tctx.workers });
+    const system = `${toolsSystemPrompt(aiSystemPrompt(store, user), { web: tctx.web })}${tctx.workers ? `\n${SKILLS_PROMPT}` : ''}`;
     const messages = [
-      { role: 'system', content: `${system}\n\nRead-only data snapshot:\n${context}` },
+      { role: 'system', content: `${system}\n\nToday is ${isoDate()}. Read-only data snapshot (a summary; use the tools for more):\n${context}` },
       ...prior,
-      { role: 'user', content: text },
+      { role: 'user', content: `${text}${attachNote}` },
     ];
-    reply = await callOpenAICompatible(config.openai, messages);
+    // Tool loop: the model asks for tools, the server runs them as this user,
+    // the results go back, until it answers (bounded in rounds and time).
+    const started = Date.now();
+    let answer = await callOpenAIWithTools(config.openai, messages, tools);
+    let calls = 0;
+    for (let round = 0; answer.toolCalls.length > 0; round += 1) {
+      calls += answer.toolCalls.length;
+      const outOfBudget = round >= TOOL_MAX_ROUNDS || calls > TOOL_MAX_CALLS || Date.now() - started > TOOL_TIME_BUDGET_MS;
+      messages.push({ role: 'assistant', content: answer.content || null, tool_calls: answer.toolCalls });
+      for (const call of answer.toolCalls) {
+        const result = outOfBudget
+          ? 'Error: the tool budget for this question is used up. Answer now with what you have.'
+          : await runTool(tctx, call.function.name, call.function.arguments);
+        if (!outOfBudget) steps.push(describeToolCall(call.function.name, call.function.arguments));
+        messages.push({ role: 'tool', tool_call_id: call.id, content: result });
+      }
+      answer = await callOpenAIWithTools(config.openai, messages, outOfBudget ? [] : tools);
+      if (outOfBudget) break;
+    }
+    reply = answer.content;
+    // On-demand library reads: answer the request, send the text back, ask
+    // again. Bounded so one question can never loop forever.
+    for (let round = 0; round < LIBRARY_READ_MAX_ROUNDS; round += 1) {
+      const request = parseLibraryRead(reply);
+      if (request === null) break;
+      const result = readLibraryFile(store, request, libraryFiles);
+      const readsLeft = LIBRARY_READ_MAX_ROUNDS - round - 1;
+      messages.push({ role: 'assistant', content: reply });
+      messages.push({ role: 'user', content: libraryReadMessage(result, readsLeft) });
+      reply = await callOpenAICompatible(config.openai, messages);
+    }
+    if (parseLibraryRead(reply) !== null) {
+      messages.push({ role: 'assistant', content: reply });
+      messages.push({
+        role: 'user',
+        content:
+          'You have used all library reads for this question. Answer now with the information you already have; do not request another file.',
+      });
+      reply = await callOpenAICompatible(config.openai, messages);
+    }
   } else {
     // opencode: one session per conversation, reused across messages.
     let sessionId = getOpencodeSessionId(store, conversationId);
@@ -1827,7 +2457,30 @@ export async function aiPostChat(ctx, req, body) {
         { type: 'text', text },
       ],
     });
+    for (let round = 0; round < LIBRARY_READ_MAX_ROUNDS; round += 1) {
+      const request = parseLibraryRead(reply);
+      if (request === null) break;
+      const result = readLibraryFile(store, request, libraryFiles);
+      const readsLeft = LIBRARY_READ_MAX_ROUNDS - round - 1;
+      reply = await sendOpencodeMessage(config.opencode, sessionId, {
+        system:
+          'You are continuing the same answer inside Shopfloor CMMS. Use the library file text in this message. Cite pages as (Manual: <title>, p. <n>).',
+        parts: [{ type: 'text', text: libraryReadMessage(result, readsLeft) }],
+      });
+    }
+    if (parseLibraryRead(reply) !== null) {
+      reply = await sendOpencodeMessage(config.opencode, sessionId, {
+        system: 'You are continuing the same answer inside Shopfloor CMMS.',
+        parts: [
+          {
+            type: 'text',
+            text: 'You have used all library reads for this question. Answer now with the information you already have; do not request another file.',
+          },
+        ],
+      });
+    }
   }
+  reply = stripLibraryRead(reply);
 
   const draftServiceOrder = parseDraftServiceOrder(reply);
   store.insertAiMessage({
@@ -1837,5 +2490,8 @@ export async function aiPostChat(ctx, req, body) {
     content: reply,
     at: aiAt(),
   });
-  return { status: 200, body: { conversationId, reply, draftServiceOrder, proposals: parseProposals(reply) } };
+  return {
+    status: 200,
+    body: { conversationId, reply, draftServiceOrder, proposals: parseProposals(reply), skillUpdates: parseSkillUpdates(reply), steps },
+  };
 }

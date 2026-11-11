@@ -159,6 +159,26 @@ export function machineTypeLabel(machine) {
 }
 
 /**
+ * Resolve the machine type <select> value to the stored pair (SPEC-v2.md
+ * 15.2). A built-in value is stored as-is; a "Your types" option stores its
+ * own value as the custom label; the "Other" option takes the free-text label
+ * the form shows next to the select. Shared by the machine form and the
+ * inline list editor so both save types exactly the same way.
+ *
+ * @param {string} selectedType <select> value
+ * @param {string} [customLabel] text typed beside the select for "Other"
+ * @returns {{type: string, typeLabel: string}}
+ */
+export function resolveMachineType(selectedType, customLabel = '') {
+  const selected = typeof selectedType === 'string' ? selectedType.trim() : '';
+  if (selected === 'other') {
+    return { type: 'other', typeLabel: String(customLabel || '').trim() };
+  }
+  if (MACHINE_TYPES.includes(selected)) return { type: selected, typeLabel: '' };
+  return { type: 'other', typeLabel: selected };
+}
+
+/**
  * Two-letter initials for a display name (SPEC-v2.md 15.4 item 2): the first
  * letters of the first two words ("Jane Cruz" -> "JC"), or the first two
  * letters of a single word ("Madeleine" -> "MA"). Returns '' for nothing.

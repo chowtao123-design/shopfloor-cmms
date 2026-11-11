@@ -280,6 +280,42 @@ async function createFixtures() {
     dueDate: daysAgo(1),
     problem: 'Lever snapped mid-shift; line stopped.',
   });
+  // Parts requests (SPEC-v4.md section 2): one overdue draft from Amazon, one
+  // sent with a future neededBy, and one already received (not "open").
+  await put(anna, 'purchaseRequests', crypto.randomUUID(), {
+    title: 'Belt order for Bernina',
+    status: 'draft',
+    supplier: 'Amazon',
+    neededBy: daysAgo(2),
+    requestedBy: 'Line 2',
+    hstRate: 13,
+    lines: [
+      {
+        description: 'Belt DIN 2',
+        qty: 4,
+        unit: 'pcs',
+        unitPrice: 12.5,
+        link: 'https://www.amazon.ca/dp/example',
+      },
+    ],
+    notes: 'Ordered after the belt failure.',
+  });
+  await put(anna, 'purchaseRequests', crypto.randomUUID(), {
+    title: 'Looper oil restock',
+    status: 'sent',
+    supplier: 'Juki Parts',
+    neededBy: daysAgo(-5),
+    hstRate: 13,
+    lines: [{ description: 'Looper oil', qty: 6, unit: 'bottle', unitPrice: 9 }],
+  });
+  await put(anna, 'purchaseRequests', crypto.randomUUID(), {
+    title: 'Needle plates (received)',
+    status: 'received',
+    supplier: 'Amazon',
+    neededBy: daysAgo(10),
+    hstRate: 13,
+    lines: [{ description: 'Needle plate', qty: 2, unit: 'pcs', unitPrice: 20 }],
+  });
 }
 
 before(async () => {
@@ -453,7 +489,7 @@ test('POST /api/ai/chat validation: message size, conversationId, unknown fields
   assert.equal(empty.res.status, 400);
   const tooLong = await api(ben, '/api/ai/chat', {
     method: 'POST',
-    body: { message: 'x'.repeat(2001) },
+    body: { message: 'x'.repeat(12001) }, // v6: 12000 characters allowed (pasted data)
   });
   assert.equal(tooLong.res.status, 400);
   const badConversation = await api(ben, '/api/ai/chat', {
@@ -797,6 +833,37 @@ test('buildContext: keyword matches find related records across stores', () => {
   assert.ok(context.includes('Belt DIN 2'));
 });
 
+test('buildContext: open parts requests, totals, overdue flag and PR numbers', () => {
+  const context = buildContext(handle.store, adminUser(), 'what is on order');
+  assert.ok(context.includes('Open parts requests'));
+  assert.ok(context.includes('Belt order for Bernina'));
+  assert.ok(context.includes('"supplier":"Amazon"'));
+  assert.ok(context.includes('"status":"draft"'));
+  assert.ok(context.includes('"overdue":true'));
+  assert.match(context, /"number":"PR-\d{6}-\d+"/);
+  assert.ok(context.includes('Belt DIN 2'), 'line items are included');
+  assert.ok(
+    context.includes(
+      'Parts requests: 3 total (1 draft, 1 sent, 1 received, 0 cancelled), 2 open, 1 past their neededBy date.',
+    ),
+  );
+  assert.ok(context.includes('Looper oil restock'), 'a sent request stays in the open section');
+  assert.equal(context.includes('Needle plates (received)'), false, 'a received request is not open');
+});
+
+test('buildContext: parts requests hidden without purchasing read', () => {
+  const context = buildContext(handle.store, contextUser('gina'), 'what is on order from Amazon?');
+  assert.equal(context.includes('Open parts requests'), false);
+  assert.equal(context.includes('Belt order for Bernina'), false);
+  assert.ok(context.includes('Parts requests: not visible to this user.'));
+});
+
+test('SYSTEM_PROMPT: parts request vocabulary and no web/Amazon access', () => {
+  assert.match(SYSTEM_PROMPT, /Parts requests/);
+  assert.match(SYSTEM_PROMPT, /cannot browse websites/);
+  assert.match(SYSTEM_PROMPT, /Amazon/);
+});
+
 test('buildContext: capped at CONTEXT_MAX_CHARS even with many records', async () => {
   for (let i = 0; i < 40; i += 1) {
     const { res } = await put(anna, 'machines', crypto.randomUUID(), {
@@ -973,23 +1040,47 @@ test('parseProposals: editable stores only, protected fields dropped, junk ignor
           summary: 'Mark it running',
           fields: { status: 'running', number: 9, updatedBy: 'x' },
         },
-        { store: 'parts', id: 'p-1', fields: { qtyOnHand: 1 } },
+        { store: 'parts', summary: 'New part', fields: { name: 'Bobbin case', qtyOnHand: 2, number: 4 } },
         { store: 'pmTasks', fields: { title: 'Oil', intervalDays: 45 } },
+        { store: 'coworkers', fields: { name: 'Nope' } },
       ],
     }),
     '```',
   ].join('\n');
   const proposals = parseProposals(reply);
-  assert.equal(proposals.length, 2);
+  assert.equal(proposals.length, 3);
   assert.deepEqual(proposals[0], {
     store: 'machines',
     id: machineDownId,
     summary: 'Mark it running',
     fields: { status: 'running' },
   });
+  assert.equal(proposals[1].store, 'parts');
   assert.equal(proposals[1].id, null);
-  assert.deepEqual(proposals[1].fields, { title: 'Oil', intervalDays: 45 });
+  assert.deepEqual(proposals[1].fields, { name: 'Bobbin case', qtyOnHand: 2 }, 'number is protected');
+  assert.deepEqual(proposals[2].fields, { title: 'Oil', intervalDays: 45 });
   assert.deepEqual(parseProposals('no json here'), []);
+
+  const requestReply = [
+    '```json',
+    JSON.stringify({
+      proposals: [
+        {
+          store: 'purchaseRequests',
+          summary: 'Order bobbins',
+          fields: {
+            title: 'Bobbins',
+            supplier: 'Juki Parts',
+            lines: [{ description: 'Bobbin', qty: 10, unit: 'pcs', unitPrice: 1.5 }],
+          },
+        },
+      ],
+    }),
+    '```',
+  ].join('\n');
+  const requests = parseProposals(requestReply);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].store, 'purchaseRequests');
 });
 
 test('POST /api/ai/apply: updates as the AI Assistant user with an approved-by note', async () => {
@@ -1058,6 +1149,60 @@ test('POST /api/ai/apply: a new service order gets its SO number and the bot as 
   assert.equal(created.body.record.createdBy, assistant.id);
 });
 
+test('POST /api/ai/apply: creates a part for the shop', async () => {
+  const created = await api(anna, '/api/ai/apply', {
+    method: 'POST',
+    body: {
+      store: 'parts',
+      summary: 'Add bobbins',
+      fields: {
+        name: 'Bobbin case',
+        partNumber: 'B-1',
+        qtyOnHand: 4,
+        minQty: 2,
+        unit: 'pcs',
+        location: 'Rack B2',
+      },
+    },
+  });
+  assert.equal(created.res.status, 200, JSON.stringify(created.body));
+  const assistant = handle.store.getUserByUsername(AI_ASSISTANT_USERNAME);
+  assert.equal(created.body.record.createdBy, assistant.id);
+  assert.equal(created.body.record.data.name, 'Bobbin case');
+  assert.equal(created.body.record.data.qtyOnHand, 4);
+});
+
+test('POST /api/ai/apply: creates a parts request with numbered lines', async () => {
+  const created = await api(anna, '/api/ai/apply', {
+    method: 'POST',
+    body: {
+      store: 'purchaseRequests',
+      summary: 'Order needles',
+      fields: {
+        title: 'Needles for line 1',
+        supplier: 'Juki Parts',
+        neededBy: '2026-12-01',
+        notes: 'Low stock',
+        lines: [
+          { description: 'DBx1 needle #14', qty: 50, unit: 'pcs', unitPrice: 0.4 },
+          { description: 'Bobbin', qty: 10, unit: 'pcs', unitPrice: null },
+        ],
+      },
+    },
+  });
+  assert.equal(created.res.status, 200, JSON.stringify(created.body));
+  const data = created.body.record.data;
+  assert.ok(Number.isInteger(data.number) && data.number >= 1, 'the server assigned the PR number');
+  assert.equal(data.status, 'draft');
+  assert.equal(data.requestedBy, 'Anna Admin');
+  assert.equal(data.lines.length, 2);
+  for (const line of data.lines) {
+    assert.ok(typeof line.id === 'string' && line.id.length > 0, 'each line gets an id');
+  }
+  const assistant = handle.store.getUserByUsername(AI_ASSISTANT_USERNAME);
+  assert.equal(created.body.record.createdBy, assistant.id);
+});
+
 test('POST /api/ai/apply: requires write on the area and rejects bad proposals', async () => {
   const noWrite = await api(ivan, '/api/ai/apply', {
     method: 'POST',
@@ -1067,7 +1212,7 @@ test('POST /api/ai/apply: requires write on the area and rejects bad proposals',
 
   const wrongStore = await api(anna, '/api/ai/apply', {
     method: 'POST',
-    body: { store: 'parts', fields: { name: 'x' } },
+    body: { store: 'coworkers', fields: { name: 'x' } },
   });
   assert.equal(wrongStore.res.status, 400);
 

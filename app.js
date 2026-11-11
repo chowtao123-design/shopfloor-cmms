@@ -6,7 +6,6 @@ import {
   LABELS,
   MACHINE_STATUSES,
   MACHINE_TYPE_GROUPS,
-  MACHINE_TYPES,
   PRIORITIES,
   SO_DUE_FILTERS,
   WORK_ORDER_CATEGORIES,
@@ -52,6 +51,7 @@ import {
   priorityValue,
   relatedLibraryItems,
   requestHstLabel,
+  resolveMachineType,
   requestSheetCSV,
   requestSheetHTML,
   requestSheetRows,
@@ -100,11 +100,15 @@ import {
 } from './chat.js';
 import { buildSampleData } from './seed.js';
 import { renderHelp } from './help.js';
+import { newRecordId } from './logic-ids.js';
 // v5 (SPEC-v5.md section 2): the Floor map view module (V5-M2). app.js only
 // routes to it and passes the shared UI helpers through mapPageContext().
 import { renderMapPage, stationForMachine, stopMapPrint } from './map.js';
 import * as sync from './sync.js';
 import { checkSession, logout, renderLogin } from './login.js';
+import { swipeToClose } from './gestures.js';
+import { renderWorkersPage } from './workers.js';
+import { renderQcPage } from './qc.js';
 import { AREAS, AREA_KEYS, allows } from './permissions.js';
 import * as adminUI from './admin.js';
 
@@ -139,6 +143,50 @@ const globalSearchBox = document.getElementById('global-search');
 const globalSearchInput = document.getElementById('global-search-input');
 const globalSearchResults = document.getElementById('global-search-results');
 const moreButton = document.getElementById('more-button');
+const themeButton = document.getElementById('theme-button');
+
+// Full-height pages (map, skill matrix) size themselves to the window minus
+// the top bar; its real height (wraps, font scaling) goes to --header-h.
+const appHeaderNode = document.querySelector('.app-header');
+if (appHeaderNode && typeof ResizeObserver === 'function') {
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty('--header-h', `${appHeaderNode.offsetHeight}px`);
+  }).observe(appHeaderNode);
+}
+const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
+const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+
+/* Light/dark switch (theme.js applies the saved choice before paint). */
+function currentTheme() {
+  const chosen = document.documentElement.dataset.theme;
+  if (chosen === 'light' || chosen === 'dark') return chosen;
+  return darkMedia.matches ? 'dark' : 'light';
+}
+
+function showThemeButton() {
+  if (!themeButton) return;
+  const dark = currentTheme() === 'dark';
+  const label = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  themeButton.setAttribute('aria-label', label);
+  themeButton.title = label;
+  // SVG elements have no .hidden property: toggle the attribute itself.
+  themeButton.querySelector('.theme-icon-moon').toggleAttribute('hidden', dark);
+  themeButton.querySelector('.theme-icon-sun').toggleAttribute('hidden', !dark);
+  if (themeColorMeta) themeColorMeta.setAttribute('content', dark ? '#0b1020' : '#0f172a');
+}
+
+if (themeButton) {
+  themeButton.addEventListener('click', () => {
+    const next = currentTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    storageSet('theme', next);
+    showThemeButton();
+    // Charts read their colours from the CSS tokens when drawn.
+    if (!loginActive) render();
+  });
+  darkMedia.addEventListener('change', showThemeButton);
+  showThemeButton();
+}
 
 const DESKTOP_QUERY = '(min-width: 1024px)';
 const desktopMedia = window.matchMedia(DESKTOP_QUERY);
@@ -163,6 +211,8 @@ const state = {
   // every record store; the map page renders them in V5-M2.
   floorMaps: [],
   floorStations: [],
+  workerProfiles: [],
+  qcRecords: [],
 };
 
 let fieldCounter = 0;
@@ -233,10 +283,11 @@ function appendChildren(node, children) {
 }
 
 function uid() {
-  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
-  }
-  return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  // The server only accepts UUID or `sample-*` record ids (SPEC-v2.md 7.1),
+  // so the id is always a UUID — the old `id-<time>-<rand>` fallback (used
+  // when `crypto.randomUUID` is missing, e.g. plain HTTP on the LAN) was
+  // refused by the server.
+  return newRecordId();
 }
 
 function nowISO() {
@@ -281,6 +332,17 @@ function applyBranding(payload) {
     logoUrl: typeof payload.logoUrl === 'string' ? payload.logoUrl : null,
   };
   const logoUrl = brandLogoUrl();
+
+  // Browser tab icon: the uploaded logo, else the built-in icon (made from it).
+  const favicon = document.querySelector('link[rel="icon"]');
+  if (favicon) {
+    const href = logoUrl || 'icons/icon-192.png';
+    if (favicon.getAttribute('href') !== href) {
+      favicon.setAttribute('href', href);
+      favicon.removeAttribute('sizes');
+      favicon.removeAttribute('type');
+    }
+  }
 
   if (sidebarAppName) sidebarAppName.textContent = brandName();
   if (sidebarMark) {
@@ -354,6 +416,8 @@ async function refreshState() {
     libraryItems,
     floorMaps,
     floorStations,
+    workerProfiles,
+    qcRecords,
   ] = await Promise.all([
     db.getAll('machines'),
     db.getAll('parts'),
@@ -368,6 +432,8 @@ async function refreshState() {
     // v5 (SPEC-v5.md section 1): the floor map stores, for the map page.
     db.getAll('floorMaps'),
     db.getAll('floorStations'),
+    db.getAll('workerProfiles'),
+    db.getAll('qcRecords'),
   ]);
   state.machines = machines;
   state.parts = parts;
@@ -379,6 +445,8 @@ async function refreshState() {
   state.libraryItems = libraryItems;
   state.floorMaps = floorMaps;
   state.floorStations = floorStations;
+  state.workerProfiles = workerProfiles;
+  state.qcRecords = qcRecords;
 }
 
 function routeInfo() {
@@ -652,7 +720,8 @@ function page(...children) {
 function pageHead(title, ...actions) {
   return h(
     'div',
-    { class: 'page-head' },
+    // Same text as the header title: the phone header already shows it (styles.css hides the copy there).
+    { class: `page-head${title === pageTitle.textContent ? ' page-head-dup' : ''}` },
     h('h2', {}, title),
     actions.length ? h('div', { class: 'button-row' }, ...actions) : null,
   );
@@ -1751,10 +1820,10 @@ function openSOFiltersPanel() {
     const sheetHost = h(
       'section',
       { class: 'sheet filter-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Filter service orders' },
-      h('div', { class: 'filter-sheet-grip', 'aria-hidden': 'true' }),
       h('h2', { class: 'sheet-title' }, 'Filters'),
       buildSOFilterControls(working, { machines }),
     );
+    swipeToClose(sheetHost, () => closeSOFiltersPanel(), backdrop);
     soFilterHost = h('div', { class: 'filter-host-wrap' }, backdrop, sheetHost);
     document.body.append(soFilterHost);
     host = sheetHost;
@@ -2846,6 +2915,29 @@ function renderJobDetail(route) {
       ? h('div', { class: 'card pre' }, order.actionTaken)
       : h('p', { class: 'muted' }, 'Nothing recorded yet.'),
     editSection,
+    // v6: comments the outside contractor left on his map page (read-only here).
+    Array.isArray(order.contractorComments) && order.contractorComments.length
+      ? h(
+          'section',
+          { class: 'contractor-comments' },
+          sectionTitle(`Contractor comments (${order.contractorComments.length})`),
+          h(
+            'div',
+            { class: 'list' },
+            ...order.contractorComments
+              .slice()
+              .reverse()
+              .map((c) =>
+                h(
+                  'div',
+                  { class: 'card contractor-comment' },
+                  h('p', { class: 'field-hint' }, `${c.by || 'Contractor'} · ${formatSyncTime(c.at)}`),
+                  h('p', { class: 'contractor-comment-text' }, c.text || ''),
+                ),
+              ),
+          ),
+        )
+      : null,
     canEditOrder
       ? h(
           'div',
@@ -3342,6 +3434,20 @@ function can(area, level = 'read') {
   return allows(teamUser.permissions, area, level);
 }
 
+/** v6: a page the user's role hides (Admin → role "hidden pages"); the data stays readable. */
+function pageHidden(page) {
+  return Boolean(teamUser && Array.isArray(teamUser.hiddenPages) && teamUser.hiddenPages.includes(page));
+}
+
+/** The page key of a route: the nav tab, or the floor map's view. */
+function pageKeyOf(root, params) {
+  if (root === 'map') {
+    const view = params ? params.get('view') : null;
+    return ['table', 'skills', 'wpfi', 'inspect'].includes(view) ? view : 'map';
+  }
+  return root || 'home';
+}
+
 function isReadOnly(area) {
   return can(area) && !can(area, 'write');
 }
@@ -3790,15 +3896,39 @@ const MACHINE_FILTERS = ['all', 'running', 'down', 'in-storage', 'retired'];
 function renderMachines(route) {
   setTitle('Machines');
   const requested = route.params.get('status') || 'all';
-  const statusFilter = MACHINE_FILTERS.includes(requested) ? requested : 'all';
+  let statusFilter = MACHINE_FILTERS.includes(requested) ? requested : 'all';
   const listHost = h('div', { class: 'list' });
   const tableHost = h('div', { class: 'table-wrap' });
+  const editHost = h('div', { class: 'machines-edit-wrap' });
+  const chipsHost = h('div', {
+    class: 'chips',
+    role: 'group',
+    'aria-label': 'Filter machines by status',
+  });
   let searchQuery = '';
+  let editing = false;
+  let editor = null;
+  const canWrite = can('machines', 'write');
 
-  function update(nextQuery) {
-    if (typeof nextQuery === 'string') searchQuery = nextQuery;
+  // Read-only roles get the View only badge here instead of either button.
+  const addButton = headActionFor('machines', h('a', { class: 'btn btn-primary btn-small', href: '#/machines/new' }, '+ Add machine'));
+  const editButton = h(
+    'button',
+    {
+      type: 'button',
+      class: 'btn btn-small',
+      'aria-pressed': 'false',
+      onclick: () => {
+        if (editing) finishEditing();
+        else setEditing(true);
+      },
+    },
+    'Edit list',
+  );
+
+  function visibleMachines() {
     const needle = searchQuery.trim().toLowerCase();
-    const machines = state.machines
+    return state.machines
       .filter((machine) => statusFilter === 'all' || machine.status === statusFilter)
       .filter((machine) => {
         if (!needle) return true;
@@ -3807,14 +3937,28 @@ function renderMachines(route) {
           .some((value) => String(value).toLowerCase().includes(needle));
       })
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }
+
+  function update(nextQuery) {
+    if (typeof nextQuery === 'string') searchQuery = nextQuery;
+    const machines = visibleMachines();
+    if (editing) {
+      listHost.replaceChildren();
+      tableHost.replaceChildren();
+      editor = buildMachinesInlineEditor(machines, { onDone: finishEditing });
+      editHost.replaceChildren(editor.node);
+      return;
+    }
+    editor = null;
+    editHost.replaceChildren();
     if (machines.length === 0) {
       listHost.replaceChildren(
         emptyState(
-          needle || statusFilter !== 'all' ? 'No matching machines' : 'No machines yet',
-          needle
+          searchQuery.trim() || statusFilter !== 'all' ? 'No matching machines' : 'No machines yet',
+          searchQuery.trim()
             ? 'Try a different search.'
             : 'Add sewing machines, cutters, building items and anything else you maintain.',
-          needle || statusFilter !== 'all'
+          searchQuery.trim() || statusFilter !== 'all'
             ? []
             : [h('a', { class: 'btn btn-primary', href: '#/machines/new' }, 'Add a machine')],
         ),
@@ -3836,33 +3980,565 @@ function renderMachines(route) {
     }
   }
 
-  update();
-  const chips = h(
-    'div',
-    { class: 'chips', role: 'group', 'aria-label': 'Filter machines by status' },
-    MACHINE_FILTERS.map((value) =>
-      h(
-        'a',
-        {
-          class: `chip${value === statusFilter ? ' is-active' : ''}`,
-          href: value === 'all' ? '#/machines' : `#/machines?status=${value}`,
-          'aria-pressed': value === statusFilter ? 'true' : 'false',
-        },
-        value === 'all' ? 'All' : LABELS.machineStatus[value],
+  function setEditing(next) {
+    editing = next;
+    editButton.textContent = editing ? 'Done' : 'Edit list';
+    editButton.classList.toggle('btn-primary', editing);
+    editButton.setAttribute('aria-pressed', editing ? 'true' : 'false');
+    addButton.hidden = editing;
+    update();
+  }
+
+  async function finishEditing() {
+    if (!editing) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && typeof active.blur === 'function') active.blur();
+    if (editor) await editor.saveAll();
+    if (editor && editor.hasInvalid()) {
+      toast('Fix the highlighted rows before leaving edit mode.', 'warn');
+      editor.focusFirstInvalid();
+      return;
+    }
+    setEditing(false);
+  }
+
+  function renderChips() {
+    chipsHost.replaceChildren(
+      ...MACHINE_FILTERS.map((value) =>
+        h(
+          'a',
+          {
+            class: `chip${value === statusFilter ? ' is-active' : ''}`,
+            href: value === 'all' ? '#/machines' : `#/machines?status=${value}`,
+            'aria-pressed': value === statusFilter ? 'true' : 'false',
+            // In edit mode the filter is applied in place: following the link
+            // would reload the page and leave the list editor.
+            onclick: (event) => {
+              if (!editing) return;
+              event.preventDefault();
+              statusFilter = value;
+              renderChips();
+              update();
+            },
+          },
+          value === 'all' ? 'All' : LABELS.machineStatus[value],
+        ),
       ),
-    ),
-  );
+    );
+  }
+
+  renderChips();
+  update();
+
+  const headerActions = addButton ? [addButton] : [];
+  if (canWrite) headerActions.push(editButton);
 
   return page(
-    pageHead(
-      'Machines',
-      headActionFor('machines', h('a', { class: 'btn btn-primary btn-small', href: '#/machines/new' }, '+ Add machine')),
-    ),
+    pageHead('Machines', ...headerActions),
     searchBox('Search machines', (value) => update(value)),
-    chips,
+    chipsHost,
     listHost,
     tableHost,
+    editHost,
   );
+}
+
+/**
+ * Excel-like editor for the Machines list (one row per machine, every field a
+ * cell). A row saves itself when focus leaves it, so editing all machines no
+ * longer means opening each machine form. Enter/Shift+Enter move down/up the
+ * same column, Esc reverts the row; Save all and Done cover keyboard-only
+ * edits and touch.
+ */
+function buildMachinesInlineEditor(machines, { onDone }) {
+  const tbody = h('tbody');
+  const rows = [];
+  const countNode = h('span', {
+    class: 'inline-edit-count',
+    role: 'status',
+    'aria-live': 'polite',
+  });
+  const customTypes = customTypeOptions(state.machines);
+
+  function refreshCount() {
+    const dirty = rows.filter((row) => row.dataset.dirty === 'true').length;
+    countNode.textContent = dirty
+      ? `${dirty} unsaved row${dirty === 1 ? '' : 's'}`
+      : 'All changes saved';
+    countNode.classList.toggle('is-dirty', dirty > 0);
+  }
+
+  for (const machine of machines) {
+    const { row, save } = inlineMachineEditRow(machine, {
+      customTypes,
+      onChange: refreshCount,
+    });
+    row.__saveInlineRow = save;
+    rows.push(row);
+    tbody.append(row);
+  }
+
+  async function saveAll() {
+    await Promise.allSettled(rows.map((row) => row.__saveInlineRow()));
+    refreshCount();
+  }
+
+  function hasInvalid() {
+    return rows.some((row) => row.dataset.invalid === 'true');
+  }
+
+  function focusFirstInvalid() {
+    const row = rows.find((candidate) => candidate.dataset.invalid === 'true');
+    if (!row) return;
+    const control = row.querySelector('input, select');
+    if (control) control.focus();
+  }
+
+  const saveAllButton = h(
+    'button',
+    {
+      type: 'button',
+      class: 'btn btn-small',
+      onclick: async () => {
+        saveAllButton.disabled = true;
+        await saveAll();
+        saveAllButton.disabled = false;
+        if (!hasInvalid()) toast('All machine changes saved.');
+      },
+    },
+    'Save all',
+  );
+
+  const doneButton = h(
+    'button',
+    { type: 'button', class: 'btn btn-primary btn-small', onclick: () => onDone() },
+    'Done',
+  );
+
+  const table = machines.length
+    ? h(
+        'div',
+        { class: 'machines-edit-scroll' },
+        h(
+          'table',
+          { class: 'machines-edit-table' },
+          h('caption', { class: 'sr-only' }, 'Edit all machines directly in the list'),
+          h(
+            'thead',
+            {},
+            h(
+              'tr',
+              {},
+              h('th', { scope: 'col', 'data-col': 'name' }, 'Name'),
+              h('th', { scope: 'col', 'data-col': 'type' }, 'Type'),
+              h('th', { scope: 'col', 'data-col': 'status' }, 'Status'),
+              h('th', { scope: 'col', 'data-col': 'model' }, 'Model'),
+              h('th', { scope: 'col', 'data-col': 'serial' }, 'Serial'),
+              h('th', { scope: 'col', 'data-col': 'location' }, 'Location'),
+              h('th', { scope: 'col', 'data-col': 'notes' }, 'Notes'),
+              h('th', { scope: 'col', 'data-col': 'files' }, 'Photos / manuals'),
+              h('th', { scope: 'col', 'data-col': 'state' }, 'State'),
+            ),
+          ),
+          tbody,
+        ),
+      )
+    : h(
+        'div',
+        { class: 'machines-edit-empty' },
+        emptyState(
+          'No matching machines',
+          'Change the search or status filter, or add a machine.',
+          [],
+        ),
+      );
+
+  // A real <form> is deliberate: app.js skips the sync-applied full-page
+  // re-render while a visible form is open, which is what keeps this edit
+  // session (and the scroll position) alive as each row saves.
+  const node = h(
+    'form',
+    {
+      class: 'machines-edit-card',
+      novalidate: true,
+      onsubmit: (event) => event.preventDefault(),
+    },
+    h(
+      'div',
+      { class: 'machines-edit-toolbar' },
+      h(
+        'div',
+        { class: 'machines-edit-copy' },
+        h('strong', {}, 'Editing machines'),
+        h(
+          'p',
+          { class: 'inline-edit-hint' },
+          'Click a cell to edit. A row saves when you leave it; Enter moves down, Esc undoes the row.',
+        ),
+      ),
+      h(
+        'div',
+        { class: 'button-row machines-edit-actions' },
+        countNode,
+        saveAllButton,
+        doneButton,
+      ),
+    ),
+    table,
+  );
+
+  refreshCount();
+  return { node, saveAll, hasInvalid, focusFirstInvalid };
+}
+
+/**
+ * One editable machine row. Every control lives in the table cell itself and
+ * writes the same fields as machineFormBody(); photos and manuals stay on the
+ * machine page, linked from their cell.
+ */
+function inlineMachineEditRow(machine, { customTypes = [], onChange = () => {} } = {}) {
+  // Last saved values; updated after each successful save so Undo/Esc reverts
+  // to the current saved row rather than to the page's first render.
+  const savedState = { ...machine };
+  const selectedType =
+    machine.type === 'other' && machine.typeLabel
+      ? machine.typeLabel
+      : machine.type || DEFAULT_MACHINE_TYPE;
+  const label = `machine ${machine.name || ''}`.trim();
+
+  const nameInput = h('input', {
+    type: 'text',
+    required: true,
+    autocomplete: 'off',
+    value: machine.name || '',
+    'aria-label': `Name for ${label}`,
+    dataset: { col: 'name' },
+  });
+  const typeSelect = machineTypeSelect(selectedType, customTypes);
+  typeSelect.setAttribute('aria-label', `Type for ${label}`);
+  typeSelect.dataset.col = 'type';
+  const typeLabelInput = h('input', {
+    type: 'text',
+    maxlength: '40',
+    autocomplete: 'off',
+    placeholder: 'Type name',
+    value: machine.type === 'other' ? machine.typeLabel || '' : '',
+    'aria-label': `Custom type name for ${label}`,
+    dataset: { col: 'typeLabel' },
+  });
+  const typeLabelWrap = h('div', { class: 'inline-type-label' }, typeLabelInput);
+  const statusSelect = selectFrom(
+    MACHINE_STATUSES,
+    machine.status || 'running',
+    (value) => LABELS.machineStatus[value],
+  );
+  statusSelect.setAttribute('aria-label', `Status for ${label}`);
+  statusSelect.dataset.col = 'status';
+  const modelInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    value: machine.model || '',
+    'aria-label': `Model for ${label}`,
+    dataset: { col: 'model' },
+  });
+  const serialInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    value: machine.serial || '',
+    'aria-label': `Serial number for ${label}`,
+    dataset: { col: 'serial' },
+  });
+  const locationInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    value: machine.location || '',
+    'aria-label': `Location for ${label}`,
+    dataset: { col: 'location' },
+  });
+  const notesInput = h('input', {
+    type: 'text',
+    autocomplete: 'off',
+    value: machine.notes || '',
+    'aria-label': `Notes for ${label}`,
+    dataset: { col: 'notes' },
+  });
+
+  const statusText = h('span', { class: 'inline-edit-status' }, '');
+  const undoButton = h(
+    'button',
+    { type: 'button', class: 'inline-edit-revert', hidden: true },
+    'Undo',
+  );
+
+  const photos = machinePhotos(machine).length;
+  const manuals = machineManuals(machine).length;
+  const filesSummary =
+    [photos ? `${photos} photo${photos === 1 ? '' : 's'}` : '', manuals ? `${manuals} manual${manuals === 1 ? '' : 's'}` : '']
+      .filter(Boolean)
+      .join(' · ') || 'None';
+
+  const row = h(
+    'tr',
+    {
+      class: 'inline-edit-row',
+      dataset: { machineId: machine.id, dirty: 'false', invalid: 'false', saving: 'false' },
+    },
+    h('td', { dataset: { col: 'name' } }, nameInput),
+    h('td', { dataset: { col: 'type' } }, typeSelect, typeLabelWrap),
+    h('td', { dataset: { col: 'status' } }, statusSelect),
+    h('td', { dataset: { col: 'model' } }, modelInput),
+    h('td', { dataset: { col: 'serial' } }, serialInput),
+    h('td', { dataset: { col: 'location' } }, locationInput),
+    h('td', { dataset: { col: 'notes' } }, notesInput),
+    h(
+      'td',
+      { dataset: { col: 'files' } },
+      h(
+        'div',
+        { class: 'inline-edit-files' },
+        h('span', { class: 'muted' }, filesSummary),
+        h(
+          'a',
+          {
+            class: 'inline-link',
+            href: `#/machines/${encodeURIComponent(machine.id)}`,
+            title: 'Photos and manuals are edited on the machine page',
+          },
+          'Edit',
+        ),
+      ),
+    ),
+    h('td', { dataset: { col: 'state' } }, statusText, undoButton),
+  );
+
+  let savePromise = null;
+  let saveAgain = false;
+  let statusTimer = null;
+
+  function setStatus(text, className = '') {
+    if (statusTimer) {
+      clearTimeout(statusTimer);
+      statusTimer = null;
+    }
+    statusText.textContent = text;
+    statusText.className = `inline-edit-status${className ? ` ${className}` : ''}`;
+    if (className === 'is-saved') {
+      statusTimer = setTimeout(() => {
+        if (row.dataset.dirty !== 'true') setStatus('');
+      }, 2200);
+    }
+  }
+
+  function syncTypeLabel() {
+    typeLabelWrap.hidden = typeSelect.value !== 'other';
+  }
+
+  function markDirty() {
+    row.dataset.invalid = 'false';
+    row.classList.remove('is-invalid');
+    nameInput.classList.remove('is-invalid');
+    typeLabelInput.classList.remove('is-invalid');
+    undoButton.hidden = false;
+    if (row.dataset.dirty !== 'true') {
+      row.dataset.dirty = 'true';
+      row.classList.add('is-dirty');
+      onChange();
+    }
+    setStatus('Unsaved', 'is-dirty');
+  }
+
+  function patchFromControls() {
+    const resolved = resolveMachineType(typeSelect.value, typeLabelInput.value);
+    return {
+      name: nameInput.value.trim(),
+      type: resolved.type,
+      typeLabel: resolved.typeLabel,
+      model: modelInput.value.trim(),
+      serial: serialInput.value.trim(),
+      location: locationInput.value.trim(),
+      status: statusSelect.value,
+      notes: notesInput.value.trim(),
+    };
+  }
+
+  function changedFromSaved(patch) {
+    return ['name', 'type', 'typeLabel', 'model', 'serial', 'location', 'status', 'notes'].some(
+      (key) => String(savedState[key] ?? '') !== String(patch[key] ?? ''),
+    );
+  }
+
+  function showValidation(patch) {
+    const nameBad = patch.name.length === 0;
+    const typeBad =
+      patch.type === 'other' && (patch.typeLabel.length < 2 || patch.typeLabel.length > 40);
+    nameInput.classList.toggle('is-invalid', nameBad);
+    typeLabelInput.classList.toggle('is-invalid', typeBad);
+    row.dataset.invalid = nameBad || typeBad ? 'true' : 'false';
+    row.classList.toggle('is-invalid', nameBad || typeBad);
+    if (nameBad) setStatus('Name is required', 'is-error');
+    else if (typeBad) setStatus('Type name needs 2–40 characters', 'is-error');
+    return nameBad || typeBad;
+  }
+
+  function revert() {
+    nameInput.value = savedState.name || '';
+    const savedType =
+      savedState.type === 'other' && savedState.typeLabel
+        ? savedState.typeLabel
+        : savedState.type || DEFAULT_MACHINE_TYPE;
+    typeSelect.value = savedType;
+    typeLabelInput.value = savedState.type === 'other' ? savedState.typeLabel || '' : '';
+    syncTypeLabel();
+    modelInput.value = savedState.model || '';
+    serialInput.value = savedState.serial || '';
+    locationInput.value = savedState.location || '';
+    statusSelect.value = savedState.status || 'running';
+    notesInput.value = savedState.notes || '';
+    row.dataset.dirty = 'false';
+    row.dataset.invalid = 'false';
+    row.classList.remove('is-dirty', 'is-invalid');
+    nameInput.classList.remove('is-invalid');
+    typeLabelInput.classList.remove('is-invalid');
+    undoButton.hidden = true;
+    setStatus('Undone', 'is-saved');
+    onChange();
+  }
+
+  async function saveOnce() {
+    const patch = patchFromControls();
+    if (showValidation(patch)) {
+      onChange();
+      return;
+    }
+    if (!changedFromSaved(patch)) {
+      row.dataset.dirty = 'false';
+      row.classList.remove('is-dirty');
+      undoButton.hidden = true;
+      setStatus('');
+      onChange();
+      return;
+    }
+    row.dataset.saving = 'true';
+    setStatus('Saving…', 'is-saving');
+    try {
+      // Read the freshest local copy first: a sync push may have replaced the
+      // version while this edit session was open.
+      const fresh = (await db.get('machines', machine.id)) || machine;
+      const record = {
+        ...fresh,
+        id: machine.id,
+        ...patch,
+        createdAt: fresh.createdAt || machine.createdAt,
+        updatedAt: nowISO(),
+      };
+      const saved = await sync.saveRecord('machines', record, fresh.version ?? null);
+      Object.assign(machine, saved || record);
+      Object.assign(savedState, patch);
+      row.dataset.dirty = 'false';
+      row.classList.remove('is-dirty');
+      undoButton.hidden = true;
+      setStatus('Saved', 'is-saved');
+    } catch (error) {
+      console.error('Could not save machine from the list:', error);
+      row.dataset.saving = 'false';
+      row.dataset.invalid = 'true';
+      row.classList.add('is-invalid');
+      setStatus('Not saved — try again', 'is-error');
+      onChange();
+      return;
+    }
+    row.dataset.saving = 'false';
+    onChange();
+  }
+
+  function save() {
+    if (savePromise) {
+      saveAgain = true;
+      return savePromise;
+    }
+    savePromise = (async () => {
+      do {
+        saveAgain = false;
+        await saveOnce();
+      } while (saveAgain);
+      savePromise = null;
+    })();
+    return savePromise;
+  }
+
+  function focusSameColumn(direction, column) {
+    const allRows = [...(row.parentElement ? row.parentElement.querySelectorAll('tr.inline-edit-row') : [])];
+    const nextRow = allRows[allRows.indexOf(row) + direction];
+    if (!nextRow) return false;
+    // The cells carry data-col too, so ask for the focusable control itself.
+    let control = nextRow.querySelector(
+      `input[data-col="${column}"], select[data-col="${column}"], textarea[data-col="${column}"]`,
+    );
+    if (control && (control.hidden || control.closest('[hidden]'))) control = null;
+    if (!control && column === 'typeLabel') {
+      control = nextRow.querySelector('select[data-col="type"]');
+    }
+    if (!control) return false;
+    control.focus();
+    if (typeof control.select === 'function') control.select();
+    return true;
+  }
+
+  for (const control of [
+    nameInput,
+    typeLabelInput,
+    modelInput,
+    serialInput,
+    locationInput,
+    notesInput,
+  ]) {
+    control.addEventListener('input', markDirty);
+    // The browser fires change when a text field loses focus, the same moment
+    // the row would save anyway; this also covers keyboards/browsers where the
+    // focusout pairing is unreliable.
+    control.addEventListener('change', save);
+  }
+  for (const control of [typeSelect, statusSelect]) {
+    control.addEventListener('change', () => {
+      syncTypeLabel();
+      markDirty();
+      save();
+    });
+  }
+
+  for (const control of [
+    nameInput,
+    typeSelect,
+    typeLabelInput,
+    statusSelect,
+    modelInput,
+    serialInput,
+    locationInput,
+    notesInput,
+  ]) {
+    control.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        // Commit this row first, then move like Excel; the focused row still
+        // saves on focusout for mouse/touch users.
+        save();
+        focusSameColumn(event.shiftKey ? -1 : 1, control.dataset.col);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        revert();
+      }
+    });
+  }
+
+  // Save when focus leaves the whole row, not when moving between its cells.
+  row.addEventListener('focusout', (event) => {
+    if (event.relatedTarget && row.contains(event.relatedTarget)) return;
+    save();
+  });
+  undoButton.addEventListener('click', revert);
+
+  syncTypeLabel();
+  return { row, save };
 }
 
 function machineFormTitle(existing) {
@@ -3962,23 +4638,17 @@ function machineFormBody(existing) {
       nameInput.focus();
       return;
     }
-    const selectedType = typeSelect.value;
-    let type = selectedType;
-    let typeLabel = '';
-    if (!MACHINE_TYPES.includes(selectedType)) {
-      // A "Your types" option: its value is the custom type label.
-      type = 'other';
-      typeLabel = selectedType.trim();
-    }
+    // Built-in values, a "Your types" option (its value is the label) and the
+    // Other option (label from the text field) all resolve the same way here
+    // and in the inline list editor.
+    let { type, typeLabel } = resolveMachineType(typeSelect.value, typeLabelInput.value);
     if (type === 'other') {
-      const label = type === selectedType ? typeLabelInput.value.trim() : typeLabel;
-      if (label.trim().length < 2 || label.trim().length > 40) {
+      if (typeLabel.length < 2 || typeLabel.length > 40) {
         errorBox.textContent = 'Enter a machine type (2 to 40 characters).';
         if (typeLabelField.hidden) typeSelect.focus();
         else typeLabelInput.focus();
         return;
       }
-      typeLabel = label.trim();
     }
     const now = nowISO();
     const record = {
@@ -7702,7 +8372,13 @@ function contractorsTableColumns() {
     );
   }
   const columns = [
-    { key: 'company', label: 'Company', value: (contractor) => contractor.company },
+    {
+      key: 'company',
+      label: 'Company',
+      value: (contractor) => contractor.company,
+      // v6: the contractor map link right under the name (no need to open the record).
+      cell: (contractor) => h('div', { class: 'company-cell' }, h('span', {}, contractor.company || '—'), contractorMapButtons(contractor)),
+    },
     { key: 'trade', label: 'Trade', value: (contractor) => contractor.trade },
     { key: 'contactName', label: 'Contact', value: (contractor) => contractor.contactName },
     { key: 'phone', label: 'Phone', value: (contractor) => contractor.phone },
@@ -7769,7 +8445,48 @@ function contractorCard(contractor) {
           contractor.email ? contactValue('mailto', contractor.email) : null,
         )
       : null,
+    contractorMapButtons(contractor),
   );
+}
+
+/**
+ * "Copy map link" / "Open map" for a contractor's login-free map page
+ * (contractorPortalCard has the full controls). The first click makes the
+ * link when there is none yet and the user may (contractors Write).
+ */
+function contractorMapButtons(contractor) {
+  if (!teamUser || contractor.active === false) return null;
+  const linkFor = (token) => `${location.origin}${location.pathname.replace(/[^/]*$/, '')}contractor.html#t=${token}`;
+  async function getLink() {
+    const path = `/api/contractors/${encodeURIComponent(contractor.id)}/portal`;
+    let response = await sync.api('GET', path);
+    if (response.ok && !response.data.token && can('contractors', 'write')) response = await sync.api('POST', path);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.data.token) throw new Error('no link');
+    return linkFor(response.data.token);
+  }
+  const act = (handler) => async (event) => {
+    event.preventDefault();
+    event.stopPropagation(); // the row itself opens the contractor
+    try {
+      await handler(await getLink());
+    } catch (error) {
+      toast(error.message === 'no link' ? 'No map link yet; ask someone who can edit contractors.' : 'The map link needs the team server and a connection.', 'warn');
+    }
+  };
+  const copy = h('button', { class: 'btn btn-small', type: 'button', title: 'Copy the contractor map link to send it' }, 'Copy map link');
+  copy.addEventListener('click', act(async (url) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast(`Map link for ${contractor.company} copied.`);
+    } catch {
+      window.prompt('Copy the map link:', url);
+    }
+  }));
+  const open = h('button', { class: 'btn btn-small', type: 'button', title: 'Open the page the contractor sees' }, 'Open map');
+  open.addEventListener('click', act((url) => window.open(url, '_blank', 'noopener')));
+  for (const node of [copy, open]) node.addEventListener('keydown', (event) => event.stopPropagation());
+  return h('div', { class: 'contractor-map-buttons' }, copy, open);
 }
 
 function renderContractors(route) {
@@ -8078,6 +8795,75 @@ function renderContractorForm(route) {
   return page(pageHead(contractorFormTitle(existing)), node);
 }
 
+/**
+ * v6: the contractor's login-free map page (contractor.html). A secret link
+ * shows only the machines with his open service orders and lets him comment;
+ * the link is made, copied and revoked here (contractors Write).
+ */
+function contractorPortalCard(contractor) {
+  const card = h('div', { class: 'card portal-card' }, h('p', { class: 'muted' }, 'Loading…'));
+  const linkFor = (token) => `${location.origin}${location.pathname.replace(/[^/]*$/, '')}contractor.html#t=${token}`;
+  const canWrite = can('contractors', 'write');
+  const call = async (method) => {
+    try {
+      const response = await sync.api(method, `/api/contractors/${encodeURIComponent(contractor.id)}/portal`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      fill(response.data.token);
+    } catch {
+      card.replaceChildren(h('p', { class: 'form-error' }, 'The link needs the team server and a connection.'));
+    }
+  };
+  const fill = (token) => {
+    const intro = h(
+      'p',
+      { class: 'field-hint' },
+      'A page without login, in English and Chinese, showing only the machines with open service orders assigned to this contractor, with a box to leave comments (they appear on the service order). One refresh per 5 seconds.',
+    );
+    if (!token) {
+      card.replaceChildren(
+        intro,
+        canWrite
+          ? h('button', { class: 'btn btn-primary btn-small', type: 'button', onclick: () => call('POST') }, 'Create link')
+          : h('p', { class: 'muted' }, 'No link yet.'),
+      );
+      return;
+    }
+    const url = linkFor(token);
+    const input = h('input', { type: 'text', readonly: true, value: url, 'aria-label': 'Contractor map link' });
+    input.addEventListener('focus', () => input.select());
+    const copy = h('button', { class: 'btn btn-small', type: 'button' }, 'Copy');
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('Link copied. Send it to the contractor (WhatsApp, e-mail…).');
+      } catch {
+        input.focus();
+        toast('Select the link and copy it.');
+      }
+    });
+    card.replaceChildren(
+      intro,
+      h('div', { class: 'portal-link' }, input, copy, h('a', { class: 'btn btn-small', href: url, target: '_blank', rel: 'noopener' }, 'Open')),
+      canWrite
+        ? h(
+            'div',
+            { class: 'button-row' },
+            h('button', { class: 'btn btn-small', type: 'button', onclick: async () => {
+              if (await showConfirm({ title: 'Make a new link?', message: 'The current link stops working.', confirmText: 'New link' })) call('POST');
+            } }, 'New link'),
+            h('button', { class: 'btn btn-small btn-danger', type: 'button', onclick: async () => {
+              if (await showConfirm({ title: 'Revoke the link?', message: 'The contractor can no longer open the page.', confirmText: 'Revoke', danger: true })) call('DELETE');
+            } }, 'Revoke'),
+          )
+        : null,
+      h('p', { class: 'field-hint' }, 'Anyone with this link can see those jobs and comment, so send it only to the contractor.'),
+    );
+  };
+  if (teamUser) call('GET');
+  else card.replaceChildren(h('p', { class: 'muted' }, 'The contractor link needs the team server.'));
+  return card;
+}
+
 function renderContractorDetail(route) {
   const contractor = contractorById(route.segments[1]);
   setTitle(contractor ? contractor.company : 'Contractor not found');
@@ -8184,6 +8970,8 @@ function renderContractorDetail(route) {
       : h('p', { class: 'muted' }, 'No service orders for this contractor yet.'),
     sectionTitle('Labour hours'),
     h('div', { class: 'card' }, personHoursGrid(hours)),
+    sectionTitle('Contractor map link'),
+    contractorPortalCard(contractor),
     h(
       'div',
       { class: 'form-actions', style: { marginTop: '1.5rem' } },
@@ -8949,6 +9737,29 @@ function backupReminder(today) {
   );
 }
 
+/** Big Home buttons for the floor jobs done on a phone: the WPFI inspection first. */
+function homeShortcuts() {
+  if (!can('floorMap')) return null;
+  const tile = (href, title, sub, primary, paths) =>
+    h(
+      'a',
+      { class: `home-shortcut${primary ? ' is-primary' : ''}`, href },
+      menuIcon(paths),
+      h('span', { class: 'home-shortcut-text' }, h('strong', {}, title), h('span', {}, sub)),
+      h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+    );
+  return h(
+    'nav',
+    { class: 'home-shortcuts', 'aria-label': 'Shortcuts' },
+    tile('#/map?view=inspect', 'Inspect a worker', 'Fill in the WPFI form from the map', true, [
+      'M9 2.25h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1Z',
+      'M16 4.5h2A1.5 1.5 0 0 1 19.5 6v13A1.5 1.5 0 0 1 18 20.5H6A1.5 1.5 0 0 1 4.5 19V6A1.5 1.5 0 0 1 6 4.5h2',
+      'm9 14 2 2 4-4',
+    ]),
+    tile('#/map?view=wpfi', 'Safety results', 'Who failed in the last 2 months', false, NAV_ICONS.admin),
+  );
+}
+
 function renderHome() {
   setTitle('Home');
   const today = todayISO();
@@ -9020,7 +9831,9 @@ function renderHome() {
 
   return page(
     pageHead('Today'),
-    backupReminder(today),
+    homeShortcuts(),
+    // Only roles that can make backups are nagged about them.
+    can('backups', 'write') || !teamUser ? backupReminder(today) : null,
     h(
       'div',
       { class: 'counters' },
@@ -9031,15 +9844,19 @@ function renderHome() {
         '#/jobs?filter=waiting',
         counts.waiting > 0 ? 'is-warn' : '',
       ),
-      counterTile('PM overdue', counts.pmOverdue, '#/pm', counts.pmOverdue > 0 ? 'is-alert' : ''),
-      counterTile('PM due soon', counts.pmDueSoon, '#/pm', counts.pmDueSoon > 0 ? 'is-warn' : ''),
-      counterTile('Low stock', counts.lowStock, '#/parts?low=1', counts.lowStock > 0 ? 'is-alert' : ''),
+      ...(can('pm') && !pageHidden('pm')
+        ? [
+            counterTile('PM overdue', counts.pmOverdue, '#/pm', counts.pmOverdue > 0 ? 'is-alert' : ''),
+            counterTile('PM due soon', counts.pmDueSoon, '#/pm', counts.pmDueSoon > 0 ? 'is-warn' : ''),
+          ]
+        : []),
+      can('parts') && !pageHidden('parts') ? counterTile('Low stock', counts.lowStock, '#/parts?low=1', counts.lowStock > 0 ? 'is-alert' : '') : null,
     ),
     h(
       'div',
       { class: 'home-columns' },
       h('section', { class: 'home-column' }, sectionTitle('Needs attention'), attentionHost),
-      h('section', { class: 'home-column' }, sectionTitle('PM due this week'), pmWeekHost),
+      can('pm') && !pageHidden('pm') ? h('section', { class: 'home-column' }, sectionTitle('PM due this week'), pmWeekHost) : null,
     ),
   );
 }
@@ -9928,7 +10745,28 @@ function lockIconNode() {
   return svg;
 }
 
-function rolesMatrixNode({ roles, draft, onChangeLevel }) {
+/** v6: pages a role can hide while keeping its data access (server HIDEABLE_PAGES). */
+const HIDEABLE_PAGE_LABELS = [
+  ['jobs', 'Service Orders'],
+  ['pm', 'Preventive Maintenance'],
+  ['statistics', 'Statistics'],
+  ['machines', 'Machines'],
+  ['map', 'Floor map'],
+  ['table', 'Name table'],
+  ['skills', 'Skill map'],
+  ['workers', 'Workers & skills'],
+  ['qc', 'QC records'],
+  ['wpfi', 'Safety (WPFI)'],
+  ['inspect', 'Inspect (WPFI form)'],
+  ['mapEdit', 'Floor map: "Edit map" button'],
+  ['library', 'Library'],
+  ['parts', 'Parts'],
+  ['requests', 'Parts requests'],
+  ['coworkers', 'Coworkers'],
+  ['contractors', 'Outside Contractors'],
+];
+
+function rolesMatrixNode({ roles, draft, onChangeLevel, hiddenDraft = null, onToggleHidden = null }) {
   const headRow = h('tr', {}, h('th', { scope: 'col', class: 'matrix-area' }, 'Area'));
   for (const role of roles) {
     const locked = adminUI.isAdministratorRole(role);
@@ -9973,6 +10811,26 @@ function rolesMatrixNode({ roles, draft, onChangeLevel }) {
     }
     bodyRows.push(row);
   }
+  if (hiddenDraft) {
+    bodyRows.push(
+      h(
+        'tr',
+        { class: 'matrix-section' },
+        h('th', { scope: 'rowgroup', colspan: String(roles.length + 1) }, 'Hidden pages — removed from the menus; the data above stays usable (e.g. machines for new service orders)'),
+      ),
+    );
+    for (const [page, label] of HIDEABLE_PAGE_LABELS) {
+      const row = h('tr', {}, h('th', { scope: 'row', class: 'matrix-area' }, label));
+      for (const role of roles) {
+        const locked = adminUI.isAdministratorRole(role);
+        const box = h('input', { type: 'checkbox', disabled: locked, 'aria-label': `Hide ${label} for ${role.name}` });
+        box.checked = hiddenDraft[role.id].has(page);
+        box.addEventListener('change', () => onToggleHidden(role.id, page, box.checked));
+        row.append(h('td', { class: 'matrix-hide' }, box));
+      }
+      bodyRows.push(row);
+    }
+  }
   return h(
     'div',
     { class: 'table-wrap matrix-scroll' },
@@ -10013,11 +10871,18 @@ function openRoleHistoryDrawer(role) {
 
 function rolesTabSection({ roles, users, dirty, errorBox = h('div', { class: 'form-error', role: 'alert' }) }) {
   const draft = adminUI.draftFromRoles(roles);
+  const hiddenDraft = Object.fromEntries(roles.map((role) => [role.id, new Set(role.hiddenPages || [])]));
+  const hiddenChanged = () =>
+    roles.filter((role) => {
+      const before = new Set(role.hiddenPages || []);
+      const after = hiddenDraft[role.id];
+      return before.size !== after.size || [...after].some((page) => !before.has(page));
+    });
   const unsavedBar = h('div', { class: 'unsaved-bar', hidden: true });
   const matrixHost = h('div');
 
   function refreshUnsaved() {
-    const changed = adminUI.changedRolePatches(roles, draft);
+    const changed = [...adminUI.changedRolePatches(roles, draft), ...hiddenChanged()];
     unsavedBar.hidden = changed.length === 0;
   }
 
@@ -10028,6 +10893,12 @@ function rolesTabSection({ roles, users, dirty, errorBox = h('div', { class: 'fo
         draft,
         onChangeLevel: (roleId, area, level) => {
           draft[roleId][area] = level;
+          refreshUnsaved();
+        },
+        hiddenDraft,
+        onToggleHidden: (roleId, page, hidden) => {
+          if (hidden) hiddenDraft[roleId].add(page);
+          else hiddenDraft[roleId].delete(page);
           refreshUnsaved();
         },
       }),
@@ -10065,8 +10936,24 @@ function rolesTabSection({ roles, users, dirty, errorBox = h('div', { class: 'fo
         return;
       }
     }
+    for (const role of hiddenChanged()) {
+      try {
+        const response = await sync.api('PATCH', `/api/roles/${encodeURIComponent(role.id)}`, {
+          hiddenPages: [...hiddenDraft[role.id]],
+        });
+        if (!response.ok) {
+          errorBox.textContent = adminApiError(response, 'The server rejected the hidden pages.');
+          saveButton.disabled = false;
+          return;
+        }
+      } catch {
+        errorBox.textContent = 'Could not reach the server. Try again.';
+        saveButton.disabled = false;
+        return;
+      }
+    }
     saveButton.disabled = false;
-    if (patches.length > 0) toast('Role permissions saved.');
+    toast('Role permissions saved.');
     dirty();
   }
 
@@ -10219,6 +11106,7 @@ function rolesTabSection({ roles, users, dirty, errorBox = h('div', { class: 'fo
   discardButton.addEventListener('click', () => {
     for (const role of roles) {
       if (draft[role.id]) draft[role.id] = adminUI.fullPermissions(role.permissions);
+      hiddenDraft[role.id] = new Set(role.hiddenPages || []);
     }
     errorBox.textContent = '';
     renderMatrix();
@@ -10922,6 +11810,7 @@ function updateNavCounts() {
 function mapPageContext() {
   return {
     h,
+    pageHidden,
     appendChildren,
     field,
     toast,
@@ -10972,8 +11861,11 @@ async function render() {
   // aiAssistant permission and the server's provider status.
   updateAiChatButton();
 
+  // The Safety (WPFI) link is the map page with ?view=wpfi.
+  const navView = tab === 'map' ? /[?&]view=(wpfi|inspect|skills|table)\b/.exec(location.hash) : null;
+  const navTab = navView ? navView[1] : tab;
   for (const link of document.querySelectorAll('.tab, .sidebar a[data-tab]')) {
-    if (link.dataset.tab === tab) link.setAttribute('aria-current', 'page');
+    if (link.dataset.tab === navTab) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
   // The phone "More" button lights up while a sheet page is shown.
@@ -10992,7 +11884,9 @@ async function render() {
   let splitListRoot = null;
   let machineDrawer = false;
 
-  if (!root || root === 'home') {
+  if (pageHidden(pageKeyOf(root, route.params))) {
+    content = noAccessPage('This page', 'this page');
+  } else if (!root || root === 'home') {
     content = renderHome();
   } else if (root === 'jobs') {
     let jobDrawer = false;
@@ -11051,6 +11945,12 @@ async function render() {
     } else {
       content = renderMapPage(mapPageContext(), route);
     }
+  } else if (root === 'qc') {
+    // v6: QC inspections of each worker's output (qc.js).
+    content = can('floorMap') ? renderQcPage(mapPageContext(), route) : noAccessPage('QC records', 'Floor map & stations');
+  } else if (root === 'workers') {
+    // v6: skills, specialty and productivity per floor worker (workers.js).
+    content = can('floorMap') ? renderWorkersPage(mapPageContext(), route) : noAccessPage('Workers', 'Floor map & stations');
   } else if (root === 'parts') {
     if (!can('parts')) {
       content = noAccessPage('Parts', 'Parts & Stock');
@@ -11648,6 +12548,12 @@ function openMoreSheet() {
     // Machines), only with the floorMap permission; the roster stays private
     // to the shop (never in AI context, SPEC-v5.md 1.3).
     can('floorMap') && { label: 'Floor map', icon: NAV_ICONS.map, href: '#/map' },
+    can('floorMap') && { label: 'Name table', icon: NAV_ICONS.requests, href: '#/map?view=table', page: 'table' },
+    can('floorMap') && { label: 'Skill map', icon: NAV_ICONS.map, href: '#/map?view=skills', page: 'skills' },
+    can('floorMap') && { label: 'Workers & skills', icon: NAV_ICONS.coworkers, href: '#/workers', page: 'workers' },
+    can('floorMap') && { label: 'QC records', icon: NAV_ICONS.requests, href: '#/qc', page: 'qc' },
+    can('floorMap') && { label: 'Safety (WPFI)', icon: NAV_ICONS.admin, href: '#/map?view=wpfi', page: 'wpfi' },
+    can('floorMap') && { label: 'Inspect (WPFI form)', icon: NAV_ICONS.requests, href: '#/map?view=inspect', page: 'inspect' },
     // Statistics follows its own permission (SPEC-v3.md 13.3).
     can('statistics') && { label: 'Statistics', icon: NAV_ICONS.stats, href: '#/statistics' },
     // People follow the coworkers/contractors permissions (SPEC-v3.md 13.3).
@@ -11661,7 +12567,7 @@ function openMoreSheet() {
     canAdminUI() && { label: 'Admin', icon: NAV_ICONS.admin, href: '#/admin' },
     { label: 'Help', icon: NAV_ICONS.help, href: '#/help' },
     { label: 'Settings', icon: NAV_ICONS.settings, href: '#/settings' },
-  ].filter(Boolean);
+  ].filter((item) => item && !pageHidden(item.page || pageKeyOf(item.href.replace(/^#\/?/, '').split(/[/?]/)[0], null)));
   const backdrop = h('div', { class: 'sheet-backdrop' });
   moreSheetBackdrop = backdrop;
   moreSheetRoot = h(
@@ -11678,6 +12584,7 @@ function openMoreSheet() {
     ),
   );
   moreSheetRoot._morePreviousFocus = previousFocus;
+  swipeToClose(moreSheetRoot, () => closeMoreSheet({ refocus: true }), backdrop);
   backdrop.addEventListener('click', (event) => {
     if (event.target === backdrop) closeMoreSheet({ refocus: true });
   });
@@ -11729,6 +12636,8 @@ function globalSearchMatches(query) {
 
   let machineMatches = 0;
   for (const machine of can('machines') ? state.machines : []) {
+    // A hidden Machines page (Supervisor) keeps machines out of the results too.
+    if (pageHidden('machines')) break;
     if (machineMatches >= 3) break;
     const fits = [machine.name, machine.model, machine.serial, machine.location]
       .filter(Boolean)
@@ -11948,6 +12857,12 @@ const NAV_TAB_AREAS = {
   // v5 (SPEC-v5.md sections 1.3 and 2): the Floor map view, after Machines.
   // Muse Agent / AI Assistant roles carry floorMap: none and hide it.
   map: 'floorMap',
+  wpfi: 'floorMap',
+  inspect: 'floorMap',
+  table: 'floorMap',
+  skills: 'floorMap',
+  workers: 'floorMap',
+  qc: 'floorMap',
   coworkers: 'coworkers',
   contractors: 'contractors',
   statistics: 'statistics',
@@ -11960,11 +12875,15 @@ function applyNavPermissions() {
   for (const link of document.querySelectorAll('.tab, .sidebar a[data-tab]')) {
     const area = NAV_TAB_AREAS[link.dataset.tab];
     if (area) link.hidden = area === 'admin' ? !canAdminUI() : !can(area);
+    if (pageHidden(link.dataset.tab)) link.hidden = true;
   }
   const showCoworkers = can('coworkers');
   const showContractors = can('contractors');
-  const peopleGroup = document.querySelector('.sidebar-group');
+  const peopleGroup = document.getElementById('sidebar-people');
   if (peopleGroup) peopleGroup.hidden = !(showCoworkers || showContractors);
+  // v6: the Shop floor group disappears when none of its links is left.
+  const floorGroup = document.getElementById('sidebar-floor');
+  if (floorGroup) floorGroup.hidden = ![...floorGroup.querySelectorAll('a[data-tab]')].some((link) => !link.hidden);
 }
 
 setUpSidebarRail();
@@ -12601,7 +13520,9 @@ function showLoginScreen() {
   registerServiceWorker();
   renderLogin(appMain, async (user) => {
     loginActive = false;
-    document.body.classList.remove('logged-out');
+    // Start from the server's copy: what this browser cached may belong to
+    // another database or user. Queued edits are kept and still push.
+    await sync.resetLocalCopy();
     await enterTeamMode(user);
   });
   decorateLoginCard();
@@ -12635,9 +13556,11 @@ function restoreLastTab() {
   }
 }
 
+/** Bump to make every browser reload all records from the server once. */
+const CACHE_EPOCH = 2;
+
 async function enterTeamMode(user) {
   teamUser = user;
-  document.body.classList.remove('logged-out');
   bindSyncEvents();
   setupTeamHeader();
   await loadTeamUsers();
@@ -12646,10 +13569,24 @@ async function enterTeamMode(user) {
   await refreshAiStatus();
   updateAiChatButton();
   refreshBranding();
+  // Once per cache format: rebuild this browser's copy from the server, so a
+  // device left with records from another database (old test runs) heals
+  // without anyone signing out. Queued edits are kept.
+  if ((await db.getMeta('cacheEpoch')) !== CACHE_EPOCH) {
+    await sync.resetLocalCopy();
+    await db.setMeta('cacheEpoch', CACHE_EPOCH);
+  }
   await sync.start(user);
-  await sync.pull();
+  try {
+    await sync.pull();
+  } catch (error) {
+    // Show the cached data rather than leaving the login card on screen.
+    console.warn('First sync after sign-in failed:', error);
+  }
   restoreLastTab();
   await refreshState();
+  // Drop the login layout only now, so the app chrome never shows around the login card.
+  document.body.classList.remove('logged-out');
   await render();
   registerServiceWorker();
   window.__maintLogReady = true;
@@ -12666,6 +13603,17 @@ async function startLocalMode() {
 async function start() {
   try {
     await db.open();
+    // Re-key the local records the server would refuse (a map station added
+    // with the old `st-…` id, for example) before anything is pushed, so the
+    // queued and failed changes can sync again.
+    try {
+      const repaired = await sync.repairIds();
+      if (repaired > 0) {
+        toast(`Repaired ${repaired} change${repaired === 1 ? '' : 's'} that could not sync.`);
+      }
+    } catch (error) {
+      console.warn('Could not repair the local record ids:', error);
+    }
     // Branding (SPEC-v3.md section 8): cached value first, then a fresh
     // public GET so the login card and shell match the server.
     await loadCachedBranding();

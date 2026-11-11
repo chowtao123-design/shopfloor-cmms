@@ -48,10 +48,22 @@ import {
   RESIZE_HANDLES,
   stationState,
   personLine,
+  twoMonthsBefore,
   UNDO_LIMIT,
+  wpfiFormUrl,
+  wpfiGroups,
+  workerRoster,
+  lineAreas,
+  zoneColor,
+  SKILL_GROUPS,
+  skillLevelKey,
 } from './logic-map.js';
 import { LABELS } from './logic.js';
+import { newRecordId } from './logic-ids.js';
 import * as sync from './sync.js';
+import { swipeToClose } from './gestures.js';
+// Circular with workers.js on purpose: both only call each other on clicks.
+import { openWorker } from './workers.js';
 
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 /** Zoom range (SPEC-v5.md section 2: 0.5×–8× relative to the whole map). */
@@ -290,10 +302,34 @@ export function stationForMachine(machineId, stations = []) {
 // "keeps the zoom while data refreshes").
 // ---------------------------------------------------------------------------
 
+/** WPFI findings from GET /api/wpfi, loaded once per visit to the Safety view. */
+const wpfi = { status: 'idle', data: null, selectedKey: null };
+
+async function loadWpfi(ctx, { refresh = false } = {}) {
+  wpfi.status = 'loading';
+  try {
+    const response = await sync.api(refresh ? 'POST' : 'GET', refresh ? '/api/wpfi/refresh' : '/api/wpfi');
+    if (!response.ok) throw new Error(response.data?.message || `HTTP ${response.status}`);
+    wpfi.data = response.data;
+    wpfi.status = 'ok';
+  } catch (error) {
+    console.error(error);
+    wpfi.status = 'error';
+    wpfi.error = error.message;
+  }
+  ctx.render();
+}
+
 const mapView = {
   mapId: null,
   viewBox: null,
   names: true,
+  // 'map' (the drawing) or 'table' (one row per station: code, staff, machine).
+  mode: 'map',
+  // Skill map: the machine type shown (logic-map.js SKILL_KEYS).
+  skill: 'single-needle',
+  // Line A / Line B outlines: off unless "Show lines" is on (the contractor map always shows them).
+  areas: false,
   // 1 = Auto: the largest ONE size that shows every line of a slot (code and
   // person line) inside it; other steps multiply it for the whole slot.
   textScale: 1,
@@ -404,7 +440,7 @@ function isOffMapStation(map, station) {
 }
 
 /** Which floor is shown: the ?map= URL wins, then the last one used. */
-function activeMap(maps, route) {
+function activeMap(maps, route, stations = []) {
   const wanted = route && route.params ? route.params.get('map') : null;
   if (wanted) {
     const found = maps.find((map) => map.id === wanted);
@@ -414,7 +450,10 @@ function activeMap(maps, route) {
     const found = maps.find((map) => map.id === mapView.mapId);
     if (found) return found;
   }
-  return maps[0];
+  // Default: the floor with the most stations, so a stray empty copy (same
+  // name, re-sent by an old browser cache) never hides the real layout.
+  const count = (map) => stationsOfMap(stations, map.id).length;
+  return maps.reduce((best, map) => (count(map) > count(best) ? map : best), maps[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +495,14 @@ export function renderMapPage(ctx, route) {
     return renderMapEditor(ctx, editSessionMap);
   }
 
-  const map = activeMap(maps, route);
+  const viewParam = route && route.params ? route.params.get('view') : null;
+  // The sidebar's "Floor map" (#/map, no view) always opens the plain map.
+  mapView.mode = ['map', 'table', 'wpfi', 'inspect', 'skills'].includes(viewParam) ? viewParam : 'map';
+  const skillParam = route && route.params ? route.params.get('skill') : null;
+  if (skillParam) mapView.skill = skillParam;
+  // The Safety and Inspect views both read GET /api/wpfi (findings + the form settings).
+  if (mapView.mode !== 'wpfi' && mapView.mode !== 'inspect') wpfi.status = wpfi.status === 'ok' ? 'stale' : wpfi.status;
+  const map = activeMap(maps, route, ctx.state.floorStations || []);
   if (mapView.mapId !== map.id) {
     // New floor: the zoom of another map means nothing here.
     mapView.mapId = map.id;
@@ -576,6 +622,18 @@ export function renderMapPage(ctx, route) {
     }
   }
 
+  // --- name table (mode 'table'): every station of this floor, one row each.
+  const machineById = new Map(machines.filter((m) => m && m.id).map((m) => [m.id, m]));
+  const tableRows = mapView.mode === 'table'
+    ? stations
+        .slice()
+        .sort((a, b) => String(a.code || '').localeCompare(String(b.code || ''), undefined, { numeric: true }))
+        .map((station) => ({ station, node: nameTableRow(ctx, station, liveFor(station), machineById, canWrite) }))
+    : [];
+
+  // --- area marks: an outline + label around each production line --------
+  if (mapView.areas) layers.append(areaMarks(lineAreas(stations, map)));
+
   // --- search highlight / chip dim --------------------------------------
   const searchStatus = h('span', { class: 'field-hint fm-search-status', role: 'status' }, '');
 
@@ -592,6 +650,11 @@ export function renderMapPage(ctx, route) {
       const passes = stationMatchesChip(station, liveFor(station), mapView.filter);
       node.classList.toggle('fm-dim', !passes);
       if (passes) visible += 1;
+    }
+    for (const row of tableRows) {
+      row.node.hidden =
+        !stationMatchesChip(row.station, liveFor(row.station), mapView.filter) ||
+        (Boolean(query) && !matchIds.has(row.station.id));
     }
     searchStatus.textContent = query
       ? matches && matches.length > 0
@@ -828,7 +891,7 @@ export function renderMapPage(ctx, route) {
       if (movedPx <= CLICK_SLOP_PX && pressTarget) {
         const station = stationFromElement(pressTarget);
         if (station && !mapView.pickStationId) {
-          scheduleClick(() => showStationPanel(ctx, station));
+          scheduleClick(() => openStation(station));
         } else {
           const empty = emptySlotFromElement(pressTarget);
           if (empty && mapView.pickStationId) {
@@ -890,7 +953,7 @@ export function renderMapPage(ctx, route) {
     if (station) {
       event.preventDefault();
       cancelClick();
-      showStationPanel(ctx, station);
+      openStation(station);
       return;
     }
     const empty = emptySlotFromElement(event.target);
@@ -941,10 +1004,25 @@ export function renderMapPage(ctx, route) {
     'Show names',
   );
 
+  const areasToggle = h(
+    'button',
+    {
+      class: `btn btn-small${mapView.areas ? ' is-active' : ''}`,
+      type: 'button',
+      'aria-pressed': mapView.areas ? 'true' : 'false',
+      title: 'Outline and label the production lines (Line A, Line B) on the map',
+      onclick: () => {
+        mapView.areas = !mapView.areas;
+        ctx.render();
+      },
+    },
+    'Show lines',
+  );
+
   // V5-M3 (SPEC-v5.md section 2 + 3): Edit map opens the canvas. Desktop
   // (≥ 1024 px) and floorMap write only — a phone never shows this button.
   const editButton =
-    canWrite && ctx.desktopMedia.matches
+    canWrite && ctx.desktopMedia.matches && !(ctx.pageHidden && ctx.pageHidden('mapEdit'))
       ? h(
           'button',
           {
@@ -1032,6 +1110,25 @@ export function renderMapPage(ctx, route) {
     legendItem(h, 'fm-swatch fm-swatch-dot', 'PM overdue', counts.pmOverdue),
     legendItem(h, 'fm-swatch fm-swatch-plain', 'Stations', stations.length),
   );
+  // Zone key: one swatch per zone on this floor, most stations first.
+  const zoneCounts = new Map();
+  for (const station of stations) {
+    const zone = String(station.zone || '').trim();
+    if (zone) zoneCounts.set(zone, (zoneCounts.get(zone) || 0) + 1);
+  }
+  const zoneLegend = zoneCounts.size
+    ? h(
+        'div',
+        { class: 'fm-legend fm-zone-legend', 'aria-label': 'Zone colours' },
+        ...[...zoneCounts]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .map(([zone, count]) => {
+            const swatch = h('span', { class: 'fm-swatch fm-swatch-zone', 'aria-hidden': 'true' });
+            swatch.style.background = zoneColor(zone);
+            return h('span', { class: 'fm-legend-item' }, swatch, h('span', {}, `${zone} ${count}`));
+          }),
+      )
+    : null;
 
   // --- off-map stations ------------------------------------------------------
   const offMap = stations.filter((station) => isOffMapStation(map, station));
@@ -1045,19 +1142,35 @@ export function renderMapPage(ctx, route) {
           { class: 'list' },
           ...offMap.map((station) =>
             h(
-              'button',
-              {
-                class: 'row fm-offmap-row',
-                type: 'button',
-                onclick: () => showStationPanel(ctx, station),
-              },
+              'div',
+              { class: 'fm-offmap-item' },
               h(
-                'div',
-                { class: 'row-main' },
-                h('div', { class: 'row-title' }, station.code || 'Untitled station'),
-                h('div', { class: 'row-sub' }, station.zone || 'No zone'),
+                'button',
+                {
+                  class: 'row fm-offmap-row',
+                  type: 'button',
+                  onclick: () => showStationPanel(ctx, station),
+                },
+                h(
+                  'div',
+                  { class: 'row-main' },
+                  h('div', { class: 'row-title' }, station.code || personLine(station) || 'Untitled station'),
+                  h('div', { class: 'row-sub' }, [station.zone || 'No zone', personLine(station)].filter(Boolean).join(' · ')),
+                ),
+                h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
               ),
-              h('span', { class: 'row-chevron', 'aria-hidden': 'true' }, '›'),
+              canWrite
+                ? h(
+                    'button',
+                    {
+                      class: 'btn btn-small btn-danger',
+                      type: 'button',
+                      'aria-label': `Delete ${station.code || 'station'}`,
+                      onclick: () => deleteOffMapStation(ctx, station),
+                    },
+                    'Delete',
+                  )
+                : null,
             ),
           ),
         )
@@ -1072,40 +1185,822 @@ export function renderMapPage(ctx, route) {
   // part of the rendered view — rebuilt whenever it re-renders (data, names,
   // text size), never on zoom/pan. Ctrl+P while the map page is shown prints
   // the same whole layout.
-  const printOnly = buildPrintCopy(svg, map);
-  setPrintPageStyle(map);
-  const svgWrap = h('div', { class: 'fm-svg-wrap' }, svg, printOnly);
+  const tableMode = mapView.mode === 'table';
+  const wpfiMode = mapView.mode === 'wpfi';
+  const inspectMode = mapView.mode === 'inspect';
+  // Skill map: one machine type picked, every worker's station coloured by level.
+  const skillsMode = mapView.mode === 'skills';
+  const skillWorkerByStation = new Map();
+  const skillCounts = { expert: 0, good: 0, learning: 0 };
+  if (skillsMode) {
+    for (const worker of workerRoster(allStations, ctx.state.workerProfiles || [])) {
+      for (const st of worker.stations) skillWorkerByStation.set(st.id, worker);
+    }
+    for (const { station, node } of slotNodes) {
+      const worker = skillWorkerByStation.get(station.id);
+      const level = worker ? skillLevelKey(worker.profile, mapView.skill) : '';
+      node.classList.remove('fm-skill-expert', 'fm-skill-good', 'fm-skill-learning');
+      if (level) {
+        node.classList.add(`fm-skill-${level}`);
+        skillCounts[level] += 1;
+      }
+    }
+  }
+  svg.classList.toggle('fm-skills', skillsMode);
+  if (inspectMode) {
+    // Enter in the search box opens the form panel when one station matches.
+    // An exact Worker ID or station code wins over partial matches ("524" vs "5245").
+    searchInput.querySelector('input').addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      // Without this the same Enter "clicks" the panel's close button once it takes focus.
+      event.preventDefault();
+      const query = event.target.value.trim();
+      const matches = query ? searchStations(stations, query, machines) : [];
+      const key = (value) => String(value ?? '').toUpperCase().replace(/\s+/g, '');
+      const exact = matches.filter((st) => key(st.empId) === key(query) || key(st.code) === key(query));
+      const pick = exact.length === 1 ? exact[0] : matches.length === 1 ? matches[0] : null;
+      if (pick) showInspectPanel(ctx, pick);
+      else if (matches.length > 1) ctx.toast(`${matches.length} stations match; tap the one you mean on the map.`);
+    });
+  }
+  if ((wpfiMode || inspectMode) && (wpfi.status === 'idle' || wpfi.status === 'stale')) loadWpfi(ctx);
+  const since = twoMonthsBefore(ctx.todayISO());
+  const groups = wpfiMode && wpfi.data ? wpfiGroups(wpfi.data.records, stations, since) : [];
+  const groupByStation = new Map(groups.filter((g) => g.station).map((g) => [g.station.id, g]));
+  svg.classList.toggle('fm-wpfi', wpfiMode);
+  for (const { station, node } of slotNodes) {
+    node.classList.toggle('fm-wpfi-fail', groupByStation.has(station.id));
+  }
+  const wpfiPanel = wpfiMode ? wpfiSection(ctx, groups, since, canWrite, selectGroup) : null;
+
+  function selectGroup(group, { open = true } = {}) {
+    wpfi.selectedKey = group.key;
+    for (const { station, node } of slotNodes) {
+      node.classList.toggle('fm-selected', Boolean(group.station && station.id === group.station.id));
+    }
+    if (wpfiPanel) wpfiPanel.markRow(group);
+    if (!open) return;
+    if (group.station) centreOnStation(group.station);
+    if (wpfiPanel) wpfiPanel.showGroup(group);
+  }
+
+  function openStation(station) {
+    if (inspectMode) return showInspectPanel(ctx, station);
+    if (skillsMode) {
+      const worker = skillWorkerByStation.get(station.id);
+      if (worker) return openWorker(ctx, worker);
+    }
+    const group = wpfiMode ? groupByStation.get(station.id) : null;
+    if (group) selectGroup(group);
+    else showStationPanel(ctx, station);
+  }
+
+  const printOnly = tableMode ? null : buildPrintCopy(svg, map);
+  if (!tableMode) setPrintPageStyle(map);
+  const svgWrap = tableMode
+    ? h(
+        // A <form>: app.js skips the sync re-render while one is on screen,
+        // so typing in the table is never interrupted by another device's save.
+        canWrite ? 'form' : 'div',
+        { class: 'table-scroll fm-name-table-wrap', novalidate: canWrite, onsubmit: (event) => event.preventDefault() },
+        h(
+          'table',
+          { class: 'stats-table fm-name-table' },
+          h(
+            'thead',
+            {},
+            h(
+              'tr',
+              {},
+              ...[...NAME_TABLE_FIELDS.map(([, label]) => label), 'Vacant', 'Machine', 'Status', ''].map((label) =>
+                h('th', { scope: 'col' }, label),
+              ),
+            ),
+          ),
+          h('tbody', {}, ...tableRows.map((row) => row.node)),
+        ),
+      )
+    : h('div', { class: 'fm-svg-wrap' }, svg, printOnly);
+  if (tableMode && canWrite) attachGridKeys(svgWrap.querySelector('table'));
+  if (wpfiPanel && wpfi.selectedKey) {
+    const again = groups.find((g) => g.key === wpfi.selectedKey);
+    // A re-render (sync, refresh) keeps the highlight; only a click opens the side panel.
+    if (again) requestAnimationFrame(() => selectGroup(again, { open: false }));
+  }
+  const modeSwitch = h(
+    'div',
+    { class: 'view-switch fm-mode-switch', role: 'group', 'aria-label': 'Floor map view' },
+    ...[['map', 'Map'], ['table', 'Name table'], ['skills', 'Skills'], ['wpfi', 'Safety (WPFI)'], ['inspect', 'Inspect']]
+      .filter(([value]) => !(ctx.pageHidden && ctx.pageHidden(value)))
+      .map(([value, label]) =>
+      h(
+        'button',
+        {
+          class: `view-switch-btn${mapView.mode === value ? ' is-active' : ''}`,
+          type: 'button',
+          'aria-pressed': mapView.mode === value ? 'true' : 'false',
+          onclick: () => ctx.navigate(`#/map?view=${value}`),
+        },
+        label,
+      ),
+    ),
+  );
   const printButton = h(
     'button',
     {
       class: 'btn btn-small',
       type: 'button',
-      title: 'The whole layout auto-fitted on one Letter page (6 mm margin, no header text). Choose “Save as PDF” as the printer for a PDF',
+      title: tableMode
+        ? 'Print the name table. Choose “Save as PDF” as the printer for a PDF'
+        : 'The whole layout auto-fitted on one Letter page (6 mm margin, no header text). Choose “Save as PDF” as the printer for a PDF',
       onclick: () => window.print(),
     },
     'Print / PDF',
   );
 
-  return ctx.page(
+  const pageNode = ctx.page(
     ctx.pageHead('Floor map'),
     h(
       'div',
       { class: 'fm-toolbar' },
-      searchInput,
-      searchStatus,
-      chipBar,
-      h('div', { class: 'fm-zoom' }, zoomOut, zoomIn, zoomFit),
-      textSizeControl(ctx),
-      namesToggle,
-      printButton,
-      editButton,
+      modeSwitch,
+      wpfiMode ? null : searchInput,
+      wpfiMode ? null : searchStatus,
+      wpfiMode || inspectMode || skillsMode ? null : chipBar,
+      tableMode ? null : h('div', { class: 'fm-zoom' }, zoomOut, zoomIn, zoomFit),
+      tableMode ? null : textSizeControl(ctx),
+      tableMode ? null : namesToggle,
+      tableMode || wpfiMode ? null : areasToggle,
+      inspectMode ? null : printButton,
+      tableMode && canWrite
+        ? h('button', { class: 'btn btn-small btn-primary fm-add-worker-btn', type: 'button', onclick: () => showAddWorkerPanel(ctx, map) }, '+ Add worker')
+        : null,
+      wpfiMode || inspectMode || skillsMode ? null : editButton,
       mapSelect,
     ),
     hintBar,
-    legend,
-    svgWrap,
-    offMapList,
+    ...(wpfiMode
+      ? [wpfiPanel.head, svgWrap, wpfiPanel.body]
+      : [
+          // Map + a side column (legends, skill picker, off-map list): beside
+          // the map on desktop, stacked around it on the phone (styles.css).
+          h(
+            'div',
+            { class: `fm-main${tableMode ? ' is-table' : ''}` },
+            svgWrap,
+            tableMode
+              ? null
+              : h(
+                  'aside',
+                  { class: 'fm-side' },
+                  skillsMode
+                    ? skillPicker(ctx, skillCounts)
+                    : inspectMode
+                      ? h('p', { class: 'fm-inspect-hint' }, 'Tap a worker’s station (or search and press Enter) to fill in the WPFI form for them.')
+                      : legend,
+                  inspectMode || skillsMode ? null : zoneLegend,
+                  inspectMode ? null : offMapList,
+                ),
+          ),
+        ]),
   );
+  // Desktop: the page fills the window and the map takes the rest (no page
+  // scroll). The Safety view keeps its worker list under the map, so it scrolls.
+  if (!wpfiMode) pageNode.classList.add('fit-page', 'fm-fit');
+  return pageNode;
+}
+
+/** Dashed outline + label tag per line (logic-map.js lineAreas); clicks pass through. */
+export function areaMarks(areas) {
+  const group = svgEl('g', { class: 'fm-areas', 'aria-hidden': 'true' });
+  for (const area of areas) {
+    // Big enough to read with the whole floor on screen (map ~600 units wide).
+    const size = 18;
+    const tagW = round2(area.label.length * size * 0.62 + 10);
+    group.append(
+      svgEl('rect', { class: 'fm-area', x: round2(area.x), y: round2(area.y), width: round2(area.w), height: round2(area.h), rx: 3, stroke: area.color }),
+      svgEl('rect', { class: 'fm-area-tag', x: round2(area.x + 4), y: round2(area.y - size * 0.8), width: tagW, height: round2(size * 1.45), rx: 4, fill: area.color }),
+    );
+    const text = svgEl('text', { class: 'fm-area-label', x: round2(area.x + 9), y: round2(area.y - size * 0.07), 'font-size': size });
+    text.textContent = area.label;
+    group.append(text);
+  }
+  return group;
+}
+
+/** Skill map header: one tap per machine type, the level key and the counts. */
+function skillPicker(ctx, counts) {
+  const { h } = ctx;
+  const chips = SKILL_GROUPS.flatMap((group) =>
+    group.options.map(([type, label]) =>
+      h(
+        'button',
+        {
+          class: `chip${mapView.skill === type ? ' is-active' : ''}`,
+          type: 'button',
+          'aria-pressed': String(mapView.skill === type),
+          onclick: () => {
+            mapView.skill = type;
+            ctx.render();
+          },
+        },
+        label,
+      ),
+    ),
+  );
+  const swatch = (level, text, n) =>
+    h('span', { class: 'fm-legend-item' }, h('span', { class: `fm-swatch fm-swatch-skill-${level}`, 'aria-hidden': 'true' }), `${text} ${n}`);
+  return h(
+    'div',
+    { class: 'fm-skill-head' },
+    // Counts first: in the desktop side column they stay in view above the list.
+    mapView.skill
+      ? h(
+          'div',
+          { class: 'fm-legend' },
+          swatch('expert', 'Expert', counts.expert),
+          swatch('good', 'Good', counts.good),
+          swatch('learning', 'Learning', counts.learning),
+          h('span', { class: 'field-hint' }, 'Tap a coloured station for the worker’s profile.'),
+        )
+      : h('p', { class: 'field-hint' }, 'Pick a machine type to see who can run it.'),
+    h('div', { class: 'chips fm-skill-chips', role: 'group', 'aria-label': 'Machine type' }, ...chips),
+  );
+}
+
+const INSPECTORS_KEY = 'wpfi-inspectors';
+
+/**
+ * Inspect: the WPFI form for one station, filled from the map. Date, station,
+ * worker ID and name come from the station (all editable); the inspector
+ * taps the finding and their own name (remembered on this device), then
+ * opens the Google Form with every answer filled in and presses Submit there.
+ */
+function showInspectPanel(ctx, station) {
+  const { h } = ctx;
+  // The shop's form settings are private (local-config.json), sent by GET /api/wpfi.
+  const form = wpfi.data && wpfi.data.form;
+  if (!form) {
+    showPanelWithBody(
+      ctx,
+      'Inspect',
+      h(
+        'p',
+        { class: 'muted' },
+        wpfi.status === 'loading' ? 'Loading the form settings… try again in a moment.' : 'The WPFI form is not set up on this server: add "wpfiForm" to local-config.json (see local-config.example.json) and restart the server.',
+      ),
+    );
+    return;
+  }
+  const text = (label, value, type = 'text') => {
+    const input = h('input', { type, value: value || '' });
+    return { input, field: ctx.field(label, input) };
+  };
+  const date = text('Date', ctx.todayISO(), 'date');
+  const code = text('Station No.', station.code);
+  const workerId = text('Worker ID', station.empId);
+  const workerName = text('Worker name', station.name || station.nameCn);
+
+  let issue = '';
+  const other = h('input', { type: 'text', placeholder: 'Other finding', 'aria-label': 'Other finding' });
+  const issueChips = form.issues.map((label) =>
+    h(
+      'button',
+      {
+        class: 'chip',
+        type: 'button',
+        'aria-pressed': 'false',
+        onclick: (event) => {
+          issue = issue === label ? '' : label;
+          for (const chip of issueChips) {
+            const on = chip.textContent === issue;
+            chip.classList.toggle('is-active', on);
+            chip.setAttribute('aria-pressed', String(on));
+          }
+          if (issue) other.value = '';
+          event.currentTarget.blur();
+        },
+      },
+      label,
+    ),
+  );
+  other.addEventListener('input', () => {
+    if (!other.value.trim()) return;
+    issue = '';
+    for (const chip of issueChips) {
+      chip.classList.remove('is-active');
+      chip.setAttribute('aria-pressed', 'false');
+    }
+  });
+
+  let remembered = [];
+  try {
+    remembered = JSON.parse(localStorage.getItem(INSPECTORS_KEY) || '[]');
+  } catch {
+    remembered = [];
+  }
+  const inspectorBoxes = form.inspectors.map((name) => {
+    const box = h('input', { type: 'checkbox', value: name });
+    box.checked = remembered.includes(name);
+    return { name, box, label: h('label', { class: 'fm-inspector' }, box, name) };
+  });
+
+  const open = h(
+    'button',
+    {
+      class: 'btn btn-primary fm-inspect-open',
+      type: 'button',
+      onclick: () => {
+        const inspectors = inspectorBoxes.filter((entry) => entry.box.checked).map((entry) => entry.name);
+        try {
+          localStorage.setItem(INSPECTORS_KEY, JSON.stringify(inspectors));
+        } catch {
+          // Only a convenience: the names are ticked again next time.
+        }
+        const url = wpfiFormUrl(form, {
+          date: date.input.value,
+          station: code.input.value,
+          workerId: workerId.input.value,
+          workerName: workerName.input.value,
+          issue: issue || other.value,
+          inspectors,
+        });
+        window.open(url, '_blank', 'noopener');
+        ctx.toast('Form opened with the answers filled in. Check it and press Submit.');
+      },
+    },
+    'Open filled-in form',
+  );
+
+  const body = h(
+    'div',
+    { class: 'fm-panel fm-inspect' },
+    station.vacant === true || (!station.empId && !station.name)
+      ? h('p', { class: 'field-hint text-overdue' }, 'No worker is listed at this station; type the worker in below.')
+      : null,
+    date.field,
+    h('div', { class: 'fm-inspect-row' }, code.field, workerId.field),
+    workerName.field,
+    h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Improvement area'), h('div', { class: 'fm-inspect-chips' }, ...issueChips), other),
+    h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Inspector'), h('div', { class: 'fm-inspect-chips' }, ...inspectorBoxes.map((entry) => entry.label))),
+    open,
+    h('p', { class: 'field-hint' }, 'Opens the Google Form in a new tab with these answers. Nothing is sent until you press Submit there.'),
+  );
+  showPanelWithBody(ctx, `Inspect ${station.code || 'station'}`, body);
+}
+
+/**
+ * The Safety (WPFI) view under the map: when the sheet was last read, the
+ * workers who failed an inspection in the last two months (red on the map)
+ * and, for the one clicked, every finding — date, what was wrong, inspector.
+ */
+function wpfiSection(ctx, groups, since, canWrite, onSelect) {
+  const { h } = ctx;
+  const data = wpfi.data || {};
+  const findings = groups.reduce((sum, g) => sum + g.records.length, 0);
+  const fetched = data.fetchedAt ? new Date(data.fetchedAt).toLocaleString() : 'never';
+  const status =
+    wpfi.status === 'loading' && !wpfi.data
+      ? 'Loading the inspection sheet…'
+      : wpfi.status === 'error'
+        ? `Could not load the inspections: ${wpfi.error}`
+        : `${groups.length} worker${groups.length === 1 ? '' : 's'} failed · ${findings} finding${findings === 1 ? '' : 's'} since ${since}`;
+  const refresh = canWrite
+    ? h(
+        'button',
+        {
+          class: 'btn btn-small',
+          type: 'button',
+          disabled: wpfi.status === 'loading',
+          title: 'Read the Google Form sheet now instead of waiting for the weekly update',
+          onclick: () => loadWpfi(ctx, { refresh: true }),
+        },
+        wpfi.status === 'loading' ? 'Refreshing…' : 'Refresh now',
+      )
+    : null;
+  const head = h(
+    'div',
+    { class: 'fm-wpfi-head' },
+    h('span', { class: 'fm-legend-item' }, h('span', { class: 'fm-swatch fm-swatch-wpfi', 'aria-hidden': 'true' }), status),
+    h('span', { class: 'field-hint' }, `Sheet updated weekly · last read ${fetched}`),
+    data.error ? h('span', { class: 'field-hint text-overdue' }, `Last update failed: ${data.error}`) : null,
+    refresh,
+  );
+
+  const rows = groups.map((group) =>
+    h(
+      'tr',
+      {
+        class: 'fm-name-row',
+        tabindex: '0',
+        dataset: { key: group.key },
+        onclick: () => onSelect(group),
+        onkeydown: (event) => {
+          if (event.key === 'Enter') onSelect(group);
+        },
+      },
+      h('th', { scope: 'row' }, group.workerId || '—'),
+      h('td', {}, group.workerName || (group.station ? group.station.name || '' : '')),
+      h('td', {}, group.station ? group.station.code || '' : h('span', { class: 'muted' }, 'Not on the map')),
+      h('td', { class: 'tabular' }, String(group.records.length)),
+      h('td', { class: 'tabular' }, group.records[0].date),
+      h('td', {}, group.records[0].issue || '—'),
+    ),
+  );
+  const table = groups.length
+    ? h(
+        'div',
+        { class: 'table-scroll fm-name-table-wrap fm-wpfi-list' },
+        h(
+          'table',
+          { class: 'stats-table fm-name-table' },
+          h(
+            'thead',
+            {},
+            h('tr', {}, ...['Worker ID', 'Name', 'Station', 'Times', 'Last', 'Latest finding'].map((label) => h('th', { scope: 'col' }, label))),
+          ),
+          h('tbody', {}, ...rows),
+        ),
+      )
+    : wpfi.status === 'ok'
+      ? h('p', { class: 'muted' }, 'Nobody failed a safety inspection in the last two months.')
+      : null;
+
+  function markRow(group) {
+    for (const row of rows) row.classList.toggle('is-selected', row.dataset.key === group.key);
+  }
+
+  /** The worker's findings in the side panel (drawer on desktop, sheet on the phone). */
+  function showGroup(group) {
+    const title = `${group.workerId || ''} ${group.workerName || ''}`.trim() || 'Worker';
+    const content = h(
+      'div',
+      { class: 'fm-panel fm-wpfi-detail' },
+      h(
+        'p',
+        { class: 'field-hint' },
+        `${group.records.length} failed inspection${group.records.length === 1 ? '' : 's'} since ${since}`,
+        group.station ? ` · station ${group.station.code || ''}` : ' · not on the map',
+      ),
+      h(
+        'table',
+        { class: 'stats-table fm-name-table' },
+        h('thead', {}, h('tr', {}, ...['Date', 'Finding', 'Station on form', 'Inspector'].map((label) => h('th', { scope: 'col' }, label)))),
+        h(
+          'tbody',
+          {},
+          ...group.records.map((record) =>
+            h(
+              'tr',
+              {},
+              h('td', { class: 'tabular' }, record.date),
+              h('td', {}, record.issue || '—'),
+              h('td', {}, record.station || ''),
+              h('td', {}, record.inspector || ''),
+            ),
+          ),
+        ),
+      ),
+      group.station
+        ? h(
+            'button',
+            { class: 'btn btn-small', type: 'button', onclick: () => showStationPanel(ctx, group.station) },
+            'Open station',
+          )
+        : null,
+    );
+    showPanelWithBody(ctx, title, content);
+  }
+
+  return { head, body: h('div', { class: 'fm-wpfi-body' }, table), showGroup, markRow };
+}
+
+/** Delete one off-map station after a confirm (a synced soft delete, kept in History). */
+async function deleteOffMapStation(ctx, station) {
+  const label = station.code || 'this station';
+  const yes = await ctx.showConfirm({
+    title: `Delete ${label}?`,
+    message: `${label}${personLine(station) ? ` (${personLine(station)})` : ''} is not on the map. Deleting removes it for everyone.`,
+    confirmText: 'Delete station',
+    danger: true,
+  });
+  if (!yes) return;
+  try {
+    await sync.deleteRecord('floorStations', station.id, station.version);
+    await ctx.refreshState();
+    ctx.toast(`${label} deleted.`);
+    ctx.render();
+  } catch (error) {
+    console.error(error);
+    ctx.toast(`Could not delete ${label}. Please try again.`, 'warn');
+  }
+}
+
+/** Editable name-table columns: [field, header, maxlength] (same limits as the station panel). */
+const NAME_TABLE_FIELDS = [
+  ['code', 'Station', 40],
+  ['empId', 'Emp ID', 20],
+  ['name', 'Name', 80],
+  ['nameCn', 'Chinese name', 80],
+  ['zone', 'Zone', 60],
+];
+
+/**
+ * One row of the name table. Writers get spreadsheet cells that save on
+ * change (one save at a time per row, so versions never race); readers get
+ * plain text. The › button opens the same station panel as the map.
+ */
+function nameTableRow(ctx, station, live, machineById, canWrite) {
+  const { h } = ctx;
+  const machine = station.machineId ? machineById.get(station.machineId) : null;
+  const status = [];
+  if (live.down) status.push(h('span', { class: 'pill status-down' }, 'Down'));
+  if (live.openOrders > 0) status.push(h('span', { class: 'pill status-in-progress' }, `${live.openOrders} open`));
+  if (live.pmOverdue) status.push(h('span', { class: 'pill status-overdue' }, 'PM overdue'));
+  let current = { ...station };
+  let queue = Promise.resolve();
+  const save = (changes, revert) => {
+    queue = queue.then(async () => {
+      const next = { ...current, ...changes, updatedAt: ctx.nowISO() };
+      delete next.pendingSync;
+      try {
+        await sync.saveRecord('floorStations', next, current.version);
+        const before = current;
+        current = next;
+        await syncProfileWithStation(ctx, before, next);
+      } catch (error) {
+        console.error(error);
+        revert();
+        ctx.toast(`Could not save ${current.code || 'the station'}. Please try again.`, 'warn');
+      }
+    });
+    return queue;
+  };
+  const cells = NAME_TABLE_FIELDS.map(([key, label, maxlength], index) => {
+    const tag = index === 0 ? 'th' : 'td';
+    if (!canWrite) return h(tag, index === 0 ? { scope: 'row' } : {}, current[key] || (index === 0 ? '—' : ''));
+    const input = h('input', {
+      type: 'text',
+      class: 'fm-cell',
+      value: current[key] || '',
+      maxlength,
+      'aria-label': `${label} of ${current.code || 'station'}`,
+      dataset: { col: String(index) },
+    });
+    input.addEventListener('change', () => {
+      const value = input.value.trim();
+      if (value === (current[key] || '')) return;
+      input.classList.add('is-saving');
+      save({ [key]: value }, () => {
+        input.value = current[key] || '';
+      }).then(() => input.classList.remove('is-saving'));
+    });
+    return h(tag, index === 0 ? { scope: 'row' } : {}, input);
+  });
+  const vacant = h('input', {
+    type: 'checkbox',
+    class: 'fm-cell-check',
+    disabled: !canWrite,
+    'aria-label': `${current.code || 'Station'} is vacant`,
+  });
+  vacant.checked = current.vacant === true;
+  vacant.addEventListener('change', () => {
+    save({ vacant: vacant.checked }, () => {
+      vacant.checked = current.vacant === true;
+    });
+  });
+  // The worker's skills profile (Workers & skills), looked up when clicked so
+  // an ID typed a moment ago is used.
+  const skillsButton = h(
+    'button',
+    {
+      class: 'btn btn-small',
+      type: 'button',
+      title: 'Skills, productivity and contact (Workers & skills)',
+      onclick: () => {
+        // The roster also lists profile-only workers: take the one on this row.
+        const worker = workerRoster([{ ...current, vacant: false }], ctx.state.workerProfiles || []).find((w) => w.stations.length > 0);
+        if (worker) openWorker(ctx, worker);
+        else ctx.toast('Type a Worker ID or name first.');
+      },
+    },
+    'Skills',
+  );
+  return h(
+    'tr',
+    { class: 'fm-name-row', dataset: { station: station.id } },
+    ...cells,
+    h('td', { class: 'fm-cell-center' }, vacant),
+    h('td', {}, machine ? machine.name || '' : current.boxId ? '' : h('span', { class: 'muted' }, 'Not on map')),
+    h('td', {}, ...status),
+    h(
+      'td',
+      { class: 'fm-row-actions' },
+      // A wrapper, not a flex <td>: a flex cell leaves the table grid.
+      h(
+        'div',
+        { class: 'fm-row-actions-inner' },
+      skillsButton,
+      h(
+        'button',
+        {
+          class: 'btn btn-small btn-ghost',
+          type: 'button',
+          'aria-label': `Open ${current.code || 'station'}`,
+          title: 'Open the station panel (machine link, service orders)',
+          onclick: () => showStationPanel(ctx, current),
+        },
+        '›',
+      ),
+      ),
+    ),
+  );
+}
+
+const empKey = (value) => String(value ?? '').toUpperCase().replace(/\s+/g, '');
+
+/**
+ * Keep the Workers & skills profile with its person when the name table
+ * changes them: a new Worker ID moves the profile to it (unless the person
+ * still sits at another station, or the new ID already has a profile), and
+ * a new name is copied onto the profile.
+ */
+async function syncProfileWithStation(ctx, before, after) {
+  const profiles = ctx.state.workerProfiles || [];
+  const oldId = empKey(before.empId);
+  const newId = empKey(after.empId);
+  const save = async (profile, changes) => {
+    const next = { ...profile, ...changes, updatedAt: ctx.nowISO() };
+    delete next.pendingSync;
+    await sync.saveRecord('workerProfiles', next, profile.version);
+  };
+  if (oldId && oldId !== newId) {
+    const profile = profiles.find((p) => empKey(p.empId) === oldId);
+    const stillThere = (ctx.state.floorStations || []).some((st) => st.id !== after.id && empKey(st.empId) === oldId);
+    const taken = profiles.some((p) => empKey(p.empId) === newId);
+    if (profile && newId && !stillThere && !taken) {
+      await save(profile, { empId: String(after.empId).trim(), name: after.name || profile.name || '' });
+      ctx.toast(`Skills profile moved to ID ${String(after.empId).trim()}.`);
+    }
+  } else if (newId && (before.name || '') !== (after.name || '')) {
+    const profile = profiles.find((p) => empKey(p.empId) === newId);
+    if (profile && profile.name !== after.name) await save(profile, { name: after.name || '' });
+  }
+  await ctx.refreshState();
+}
+
+/**
+ * "+ Add worker": a person who is not on the map yet becomes an off-map
+ * entry of this floor (no box), so the name table, Workers & skills and the
+ * AI all see them; "Place on map" from the station panel seats them later.
+ * Workers known only from a skills profile can be added with one tap.
+ */
+function showAddWorkerPanel(ctx, map) {
+  const { h } = ctx;
+  const stations = ctx.state.floorStations || [];
+  const onTable = new Set(stations.map((st) => empKey(st.empId)).filter(Boolean));
+  const profileOnly = (ctx.state.workerProfiles || []).filter((p) => p.empId && !onTable.has(empKey(p.empId)));
+  const text = (label, maxlength, hint) => {
+    const input = h('input', { type: 'text', maxlength });
+    return { input, field: ctx.field(label, input, hint) };
+  };
+  const empId = text('Worker ID', 20);
+  const name = text('Name', 80);
+  const nameCn = text('Chinese name', 80);
+  const zone = text('Zone', 60);
+  const code = text('Station code', 40, 'Optional: where they usually sit.');
+  const error = h('p', { class: 'form-error', role: 'alert' });
+
+  const add = async (values) => {
+    const id = String(values.empId || '').trim();
+    if (!id && !String(values.name || '').trim()) {
+      error.textContent = 'Give at least a Worker ID or a name.';
+      return false;
+    }
+    const clash = id ? stations.find((st) => empKey(st.empId) === empKey(id)) : null;
+    if (clash) {
+      error.textContent = `ID ${id} is already in the table${clash.code ? ` at ${clash.code}` : ''} (${clash.name || 'no name'}).`;
+      return false;
+    }
+    const record = {
+      id: newStationId(),
+      mapId: map.id,
+      boxId: null,
+      slot: 0,
+      code: String(values.code || '').trim(),
+      zone: String(values.zone || '').trim(),
+      name: String(values.name || '').trim(),
+      nameCn: String(values.nameCn || '').trim(),
+      empId: id,
+      vacant: false,
+      remark: '',
+      machineId: null,
+      createdAt: ctx.nowISO(),
+      updatedAt: ctx.nowISO(),
+    };
+    try {
+      await sync.saveRecord('floorStations', record);
+      await ctx.refreshState();
+      ctx.toast(`${record.name || record.empId} added to the name table.`);
+      ctx.render();
+      return true;
+    } catch (err) {
+      console.error(err);
+      error.textContent = 'Could not add the worker. Please try again.';
+      return false;
+    }
+  };
+
+  const form = h(
+    'form',
+    { class: 'fm-panel fm-add-worker', novalidate: true },
+    h('p', { class: 'field-hint' }, 'For people who are not on the map yet. They appear in the name table and in Workers & skills; seat them later with “Place on map”.'),
+    h('div', { class: 'fm-inspect-row' }, empId.field, code.field),
+    name.field,
+    h('div', { class: 'fm-inspect-row' }, nameCn.field, zone.field),
+    error,
+    h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add worker'),
+    profileOnly.length
+      ? h(
+          'div',
+          { class: 'fm-profile-only' },
+          h('h3', { class: 'section-title' }, `In Workers & skills, not in the table (${profileOnly.length})`),
+          ...profileOnly.map((p) =>
+            h(
+              'div',
+              { class: 'fm-profile-only-row' },
+              h('span', {}, `${p.empId} ${p.name || ''}`.trim()),
+              h('button', { class: 'btn btn-small', type: 'button', onclick: async () => {
+                if (await add({ empId: p.empId, name: p.name })) showAddWorkerPanel(ctx, map);
+              } }, 'Add'),
+            ),
+          ),
+        )
+      : null,
+  );
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    error.textContent = '';
+    const ok = await add({ empId: empId.input.value, name: name.input.value, nameCn: nameCn.input.value, zone: zone.input.value, code: code.input.value });
+    if (ok) {
+      for (const f of [empId, name, nameCn, zone, code]) f.input.value = '';
+      empId.input.focus();
+    }
+  });
+  showPanelWithBody(ctx, 'Add worker', form);
+}
+
+/**
+ * Spreadsheet keys for the name table: Enter / ↓ and ↑ move down and up the
+ * same column (visible rows only), Esc puts the cell back, and pasting a
+ * block copied from Excel fills the cells right and down from the one in
+ * focus — each filled cell saves like a typed one.
+ */
+function attachGridKeys(table) {
+  const cellsOf = (col) =>
+    [...table.querySelectorAll(`tbody tr:not([hidden]) input.fm-cell[data-col="${col}"]`)];
+  const move = (input, step) => {
+    const column = cellsOf(input.dataset.col);
+    const target = column[column.indexOf(input) + step];
+    if (target) {
+      target.focus();
+      target.select();
+    }
+  };
+  table.addEventListener('focusin', (event) => {
+    if (event.target.matches('input.fm-cell')) event.target.dataset.before = event.target.value;
+  });
+  table.addEventListener('keydown', (event) => {
+    const input = event.target;
+    if (!input.matches('input.fm-cell')) return;
+    if (event.key === 'Enter' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      move(input, event.shiftKey && event.key === 'Enter' ? -1 : 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      move(input, -1);
+    } else if (event.key === 'Escape') {
+      input.value = input.dataset.before ?? input.value;
+    }
+  });
+  table.addEventListener('paste', (event) => {
+    const input = event.target;
+    if (!input.matches('input.fm-cell')) return;
+    const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+    if (!/[\t\n]/.test(text.replace(/\r?\n$/, ''))) return; // one value: normal paste
+    event.preventDefault();
+    const rows = text.replace(/\r/g, '').replace(/\n$/, '').split('\n').map((line) => line.split('\t'));
+    const startCol = Number(input.dataset.col);
+    const startRow = cellsOf(startCol).indexOf(input);
+    rows.forEach((values, r) => {
+      values.forEach((value, c) => {
+        const cell = cellsOf(startCol + c)[startRow + r];
+        if (!cell) return;
+        cell.value = value.trim();
+        cell.dispatchEvent(new Event('change'));
+      });
+    });
+  });
 }
 
 const TEXT_SCALES = [0.6, 0.75, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2];
@@ -1324,7 +2219,8 @@ function stationNode(ctx, station, rect, live, machines, box = null) {
       y: round2(rect.y),
       width: round2(rect.w),
       height: round2(rect.h),
-      fill: down ? DOWN_FILL : '#ffffff',
+      // Zone tint (pale, safe for black-and-white printing); red wins when down.
+      fill: down ? DOWN_FILL : zoneColor(station.zone),
       stroke: down ? DOWN_BORDER : '#c9cedb',
       'stroke-width': down ? '1.1' : '0.6',
     }),
@@ -1612,6 +2508,7 @@ function openStationSheet(ctx, station, body) {
     ctx.h('div', { class: 'fm-sheet-body' }, body),
   );
   stationSheet = { root, backdrop, previousFocus, ctx };
+  swipeToClose(root, () => closeStationSheet({ refocus: true }), backdrop);
   closeButton.addEventListener('click', () => closeStationSheet({ refocus: true }));
   backdrop.addEventListener('click', (event) => {
     if (event.target === backdrop) closeStationSheet({ refocus: true });
@@ -1625,7 +2522,7 @@ function openStationSheet(ctx, station, body) {
 }
 
 /** Show a station panel body: drawer on desktop, bottom sheet on the phone. */
-function showPanelWithBody(ctx, title, body) {
+export function showPanelWithBody(ctx, title, body) {
   if (ctx.desktopMedia.matches) {
     ctx.openDrawer({ title, content: body });
   } else {
@@ -1649,13 +2546,16 @@ function showNewStationPanel(ctx, mapId, box, slot) {
   showPanelWithBody(ctx, `New station (slot ${slot + 1})`, body);
 }
 
-/** A station id for the new-station create (client-generated, ≤ 40 chars). */
-function newStationId() {
-  const random =
-    globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
-      ? globalThis.crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `st-${random}`.slice(0, 40);
+/**
+ * A station id for the new-station create.
+ *
+ * The server only accepts a UUID or a `sample-*` id (SPEC-v2.md 7.1), so this
+ * must be a plain UUID: the prefixed `st-<uuid>` this used to mint was
+ * refused with `Invalid record id`, and every station added from the map
+ * landed in the failed-changes list.
+ */
+export function newStationId() {
+  return newRecordId();
 }
 
 function newStationBody(ctx, mapId, box, slot) {
@@ -2079,10 +2979,25 @@ function stationPanelBody(ctx, station) {
         )
       : null;
 
+  // The worker sitting here: their skills and productivity (workers.js).
+  const worker = current.vacant === true || (!current.empId && !current.name)
+    ? null
+    : workerRoster(ctx.state.floorStations || [], ctx.state.workerProfiles || []).find((entry) =>
+        entry.stations.some((st) => st.id === current.id),
+      );
+  const profileButton = worker
+    ? h(
+        'button',
+        { class: 'btn btn-small fm-worker-profile', type: 'button', onclick: () => openWorker(ctx, worker) },
+        'Worker skills & profile',
+      )
+    : null;
+
   const body = h(
     'div',
     { class: 'fm-panel' },
     readOnly ? h('p', { class: 'field-hint' }, 'View only — your role cannot edit stations.') : null,
+    profileButton,
     fieldsHost,
     machineHost,
     placeNote,

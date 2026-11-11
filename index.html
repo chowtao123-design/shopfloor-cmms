@@ -3,9 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#d9541a" />
+    <meta name="theme-color" content="#0f172a" />
     <meta name="description" content="Offline shop maintenance app for service orders, machines, parts and preventive maintenance." />
     <title>Shopfloor CMMS</title>
+    <script src="theme.js"></script>
     <link rel="stylesheet" href="styles.css" />
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
@@ -40,6 +41,15 @@
       </div>
       <div class="header-sync" id="sync-pill" role="status" aria-live="polite" hidden></div>
       <button id="user-menu-button" class="icon-button user-button" type="button" aria-haspopup="menu" aria-expanded="false" hidden></button>
+      <button id="theme-button" class="icon-button theme-button" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
+        <svg class="theme-icon-moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a6.5 6.5 0 0 0 11 11Z" />
+        </svg>
+        <svg class="theme-icon-sun" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden>
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+        </svg>
+      </button>
       <a class="icon-button" href="#/help" id="help-link" aria-label="Help">
         <span aria-hidden="true">?</span>
       </a>
@@ -100,15 +110,67 @@
           </svg>
           <span class="sidebar-label">Machines</span>
         </a>
-        <!-- v5 (SPEC-v5.md section 2): Floor map after Machines, hidden without the floorMap permission. -->
-        <a class="sidebar-link" href="#/map" data-tab="map" title="Floor map">
-          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <!-- v6: everything about the shop floor in one group (floorMap permission). -->
+        <div class="sidebar-group" id="sidebar-floor">
+          <h3 class="sidebar-group-title">Shop floor</h3>
+          <a class="sidebar-link sidebar-sublink" href="#/map" data-tab="map" title="Floor map">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M8.5 3.75 3 5.25v14.5l5.5-1.5 7 3 5.5-1.5v-14.5l-5.5 1.5-7-3Z" />
             <path d="M8.5 3.75v14.5" />
             <path d="M15.5 6.75v14.5" />
           </svg>
-          <span class="sidebar-label">Floor map</span>
-        </a>
+            <span class="sidebar-label">Floor map</span>
+          </a>
+          <a class="sidebar-link sidebar-sublink" href="#/map?view=table" data-tab="table" title="Name table">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" />
+              <path d="M3.5 9.5h17" />
+              <path d="M3.5 14.5h17" />
+              <path d="M9 4.5v15" />
+            </svg>
+            <span class="sidebar-label">Name table</span>
+          </a>
+          <a class="sidebar-link sidebar-sublink" href="#/map?view=skills" data-tab="skills" title="Skill map">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8.5 3.75 3 5.25v14.5l5.5-1.5 7 3 5.5-1.5v-14.5l-5.5 1.5-7-3Z" />
+              <circle cx="12" cy="11" r="2.5" />
+              <path d="m14 13 2.5 2.5" />
+            </svg>
+            <span class="sidebar-label">Skill map</span>
+          </a>
+          <a class="sidebar-link sidebar-sublink" href="#/workers" data-tab="workers" title="Workers & skills">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="9" cy="8" r="3.5" />
+            <path d="M3 20c.6-3.4 3-5.2 6-5.2s5.4 1.8 6 5.2" />
+            <path d="m15.5 12.5 1.5 1.5 3.5-3.5" />
+          </svg>
+            <span class="sidebar-label">Workers &amp; skills</span>
+          </a>
+          <a class="sidebar-link sidebar-sublink" href="#/qc" data-tab="qc" title="QC records">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m20.5 20.5-4.8-4.8" />
+              <path d="m8.3 11 1.9 1.9 3.6-3.7" />
+            </svg>
+            <span class="sidebar-label">QC records</span>
+          </a>
+          <a class="sidebar-link sidebar-sublink" href="#/map?view=wpfi" data-tab="wpfi" title="Safety (WPFI)">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2.5 4 5.5v5c0 5 3.4 8.4 8 10.5 4.6-2.1 8-5.5 8-10.5v-5l-8-3Z" />
+            <path d="M12 8v5" />
+            <path d="M12 16.5h.01" />
+          </svg>
+            <span class="sidebar-label">Safety (WPFI)</span>
+          </a>
+          <a class="sidebar-link sidebar-sublink" href="#/map?view=inspect" data-tab="inspect" title="Inspect (WPFI form)">
+            <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 2.25h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1Z" />
+            <path d="M16 4.5h2A1.5 1.5 0 0 1 19.5 6v13A1.5 1.5 0 0 1 18 20.5H6A1.5 1.5 0 0 1 4.5 19V6A1.5 1.5 0 0 1 6 4.5h2" />
+            <path d="m9 14 2 2 4-4" />
+          </svg>
+            <span class="sidebar-label">Inspect (WPFI form)</span>
+          </a>
+        </div>
         <!-- v4 (SPEC-v4.md section 1): Library after Machines, hidden without the library permission. -->
         <a class="sidebar-link" href="#/library" data-tab="library" title="Library">
           <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -135,7 +197,7 @@
           </svg>
           <span class="sidebar-label">Parts requests</span>
         </a>
-        <div class="sidebar-group">
+        <div class="sidebar-group" id="sidebar-people">
           <h3 class="sidebar-group-title">People</h3>
           <a class="sidebar-link sidebar-sublink" href="#/coworkers" data-tab="coworkers" title="Coworkers">
             <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -192,11 +254,11 @@
 
     <!-- Phone bottom bar (SPEC-v3.md section 10): Home · Orders · Prev. Maint. · Machines · More. -->
     <nav class="tabbar" aria-label="Main navigation">
-      <a class="tab" href="#/home" data-tab="home">Home</a>
-      <a class="tab" href="#/jobs" data-tab="jobs">Orders</a>
-      <a class="tab" href="#/pm" data-tab="pm">Prev. Maint.</a>
-      <a class="tab" href="#/machines" data-tab="machines">Machines</a>
-      <button class="tab tab-button" id="more-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="more-sheet">More</button>
+      <a class="tab" href="#/home" data-tab="home"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5" /><path d="M5 9v11.5h14V9" /><path d="M10 20.5v-6h4v6" /></svg><span>Home</span></a>
+      <a class="tab" href="#/jobs" data-tab="jobs"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5h8v4H8Z" /><path d="M16 4.5h2A1.5 1.5 0 0 1 19.5 6v13A1.5 1.5 0 0 1 18 20.5H6A1.5 1.5 0 0 1 4.5 19V6A1.5 1.5 0 0 1 6 4.5h2" /><path d="M9 11.5h6" /><path d="M9 15.5h4" /></svg><span>Orders</span></a>
+      <a class="tab" href="#/pm" data-tab="pm"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v3" /><path d="M16 2.5v3" /><path d="M3 4.5h18v18H3Z" /><path d="M3 10.5h18" /><path d="m9 16 2 2 4-4" /></svg><span>Prev. Maint.</span></a>
+      <a class="tab" href="#/machines" data-tab="machines"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" /><path d="M12 2v3" /><path d="M12 19v3" /><path d="M4.9 4.9l2.1 2.1" /><path d="M17 17l2.1 2.1" /><path d="M2 12h3" /><path d="M19 12h3" /><path d="M4.9 19.1 7 17" /><path d="M17 7l2.1-2.1" /></svg><span>Machines</span></a>
+      <button class="tab tab-button" id="more-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="more-sheet"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h.01" /><path d="M12 12h.01" /><path d="M19 12h.01" /></svg><span>More</span></button>
     </nav>
 
     <div id="dialog-root"></div>

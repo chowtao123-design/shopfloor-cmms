@@ -1,5 +1,6 @@
 'use strict';
 
+import { createDecipheriv, createHash } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
 
 /**
@@ -22,6 +23,9 @@ import { inflateSync } from 'node:zlib';
  * arrays are adjusted spacing, not separators, so words stay together.
  */
 
+// Bump when the reader can open more files: PDFs that failed with an older
+// reader are extracted again once at the next server start (fileTexts.js).
+export const PDF_READER_VERSION = 2; // 2: encrypted (owner-password) manuals
 export const PDF_MAX_PAGES = 1500;
 export const PDF_MAX_CHARS = 2000000;
 export const PDF_TIME_LIMIT_MS = 20000;
@@ -41,9 +45,12 @@ class PdfRef {
 
 /** A stream object: its dictionary plus the raw (still encoded) bytes. */
 class PdfStream {
-  constructor(dict, raw) {
+  constructor(dict, raw, num = 0, gen = 0) {
     this.dict = dict;
     this.raw = raw;
+    // Object number and generation: the per-object key of encrypted files.
+    this.num = num;
+    this.gen = gen;
   }
 }
 
@@ -357,7 +364,7 @@ function scanObjects(text) {
         if (text[dataStart] === '\n') dataStart += 1;
         const raw = streamBytes(text, parsed.value, dataStart);
         if (raw !== null) {
-          objects.set(num, new PdfStream(parsed.value, raw.bytes));
+          objects.set(num, new PdfStream(parsed.value, raw.bytes, num, Number(match[2]) || 0));
           const closeIdx = text.indexOf('endstream', raw.end);
           objRe.lastIndex = closeIdx === -1 ? raw.end : closeIdx + 9;
           continue;
@@ -389,15 +396,21 @@ function resolve(objects, value) {
  */
 function decodeStream(objects, stream) {
   if (!(stream instanceof PdfStream)) return null;
+  let raw = stream.raw;
+  // Encrypted file: every stream but the cross-reference ones is encrypted.
+  if (objects.decrypt && stream.dict['/Type'] !== '/XRef') {
+    raw = objects.decrypt(stream.num, stream.gen, raw);
+    if (raw === null) return null;
+  }
   let filter = resolve(objects, stream.dict['/Filter']);
   if (filter === null) filter = undefined;
   let names = [];
   if (isName(filter)) names = [filter];
   else if (Array.isArray(filter)) names = filter.filter(isName);
-  if (names.length === 0) return stream.raw;
+  if (names.length === 0) return raw;
   if (names.length > 1 || names[0] !== '/FlateDecode') return null;
   try {
-    return inflateSync(stream.raw);
+    return inflateSync(raw);
   } catch {
     return null;
   }
@@ -884,6 +897,88 @@ function extractPageText(objects, page) {
 // Entry point
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Standard security handler (PDF 1.7, 7.6.3): empty user password, RC4 or
+// AES-128 (V 1/2/4, R 2–4). AES-256 (V5) files are not supported.
+// ---------------------------------------------------------------------------
+
+const PASSWORD_PAD = Buffer.from('28bf4e5e4e758a4164004e56fffa01082e2e00b6d0683e802f0ca9fe6453697a', 'hex');
+
+function rc4(key, data) {
+  const S = new Uint8Array(256);
+  for (let i = 0; i < 256; i += 1) S[i] = i;
+  for (let i = 0, j = 0; i < 256; i += 1) {
+    j = (j + S[i] + key[i % key.length]) & 255;
+    [S[i], S[j]] = [S[j], S[i]];
+  }
+  const out = Buffer.alloc(data.length);
+  for (let n = 0, i = 0, j = 0; n < data.length; n += 1) {
+    i = (i + 1) & 255;
+    j = (j + S[i]) & 255;
+    [S[i], S[j]] = [S[j], S[i]];
+    out[n] = data[n] ^ S[(S[i] + S[j]) & 255];
+  }
+  return out;
+}
+
+const md5 = (...parts) => {
+  const hash = createHash('md5');
+  for (const part of parts) hash.update(part);
+  return hash.digest();
+};
+
+/** The first file identifier: the last `/ID [<..> <..>]` that parses. */
+function firstFileId(text) {
+  let at = text.lastIndexOf('/ID');
+  while (at >= 0) {
+    const parsed = parseValueAt(text, skipWhitespaceAndComments(text, at + 3));
+    if (parsed && Array.isArray(parsed.value) && parsed.value[0] instanceof PdfString) {
+      return Buffer.from(parsed.value[0].bytes);
+    }
+    at = text.lastIndexOf('/ID', at - 1);
+  }
+  return Buffer.alloc(0);
+}
+
+/** (objNum, gen, bytes) → decrypted bytes, or null when this file cannot be opened. */
+function standardDecryptor(text, objects) {
+  const ref = /\/Encrypt\s+(\d+)\s+\d+\s+R/.exec(text);
+  const enc = ref ? resolve(objects, new PdfRef(Number(ref[1]))) : null;
+  if (!isDict(enc) || enc['/Filter'] !== '/Standard') return null;
+  const V = Number(enc['/V']) || 0;
+  const R = Number(enc['/R']) || 0;
+  if (![1, 2, 4].includes(V) || R < 2 || R > 4) return null;
+  if (!(enc['/O'] instanceof PdfString)) return null;
+  let aes = false;
+  let bytes = V === 1 ? 5 : (Number(enc['/Length']) || 40) / 8;
+  if (V === 4) {
+    const cf = isDict(enc['/CF']) ? enc['/CF'][enc['/StmF'] || '/StdCF'] : null;
+    const method = isDict(cf) ? cf['/CFM'] : null;
+    if (method === '/AESV2') aes = true;
+    else if (method !== '/V2') return null;
+    bytes = 16;
+  }
+  if (!Number.isInteger(bytes) || bytes < 5 || bytes > 16) return null;
+  const P = Buffer.alloc(4);
+  P.writeInt32LE(Number(enc['/P']) | 0);
+  const parts = [PASSWORD_PAD, Buffer.from(enc['/O'].bytes.slice(0, 32)), P, firstFileId(text)];
+  if (R >= 4 && enc['/EncryptMetadata'] === false) parts.push(Buffer.from([255, 255, 255, 255]));
+  let key = md5(...parts).subarray(0, R >= 3 ? bytes : 5);
+  if (R >= 3) for (let i = 0; i < 50; i += 1) key = md5(key).subarray(0, bytes);
+  return (num, gen, data) => {
+    const id = Buffer.from([num & 255, (num >> 8) & 255, (num >> 16) & 255, gen & 255, (gen >> 8) & 255]);
+    const objectKey = md5(key, id, aes ? Buffer.from('sAlT') : Buffer.alloc(0)).subarray(0, Math.min(key.length + 5, 16));
+    if (!aes) return rc4(objectKey, data);
+    if (data.length < 32 || data.length % 16 !== 0) return null;
+    try {
+      const decipher = createDecipheriv('aes-128-cbc', objectKey, data.subarray(0, 16));
+      return Buffer.concat([decipher.update(data.subarray(16)), decipher.final()]);
+    } catch {
+      return null;
+    }
+  };
+}
+
 function extractInternal(buffer) {
   if (!Buffer.isBuffer(buffer)) throw new Error('extractPdfText needs a Buffer');
   const text = latin1(buffer);
@@ -891,10 +986,15 @@ function extractInternal(buffer) {
   // the first kilobyte); anything else is not a PDF we can read.
   const headerAt = text.indexOf('%PDF-');
   if (headerAt < 0 || headerAt > 1024) return { status: 'error', pages: [], chars: 0 };
-  // Encrypted PDFs are unreadable here (SPEC-v4.md 4.2 → 'error').
-  if (text.includes('/Encrypt')) return { status: 'error', pages: [], chars: 0 };
-
   const objects = scanObjects(text);
+  // Encrypted PDFs: manuals are usually "owner-password" protected (they open
+  // without a password), which the standard handler decrypts with an empty
+  // user password. Anything else stays unreadable ('error').
+  if (/\/Encrypt\s/.test(text)) {
+    const decrypt = standardDecryptor(text, objects);
+    if (decrypt === null) return { status: 'error', pages: [], chars: 0 };
+    objects.decrypt = decrypt;
+  }
   expandObjectStreams(objects);
 
   const pages = [];

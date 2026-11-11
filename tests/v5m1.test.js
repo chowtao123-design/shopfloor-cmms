@@ -743,7 +743,8 @@ test('HTTP: a role without floorMap gets neither store in feed, history or write
 // ---------------------------------------------------------------------------
 
 test('AI: floorMaps/floorStations are excluded stores; the context never carries a station', () => {
-  assert.deepEqual(AI_EXCLUDED_STORES, ['floorMaps', 'floorStations']);
+  // v6: worker profiles are roster data too.
+  assert.deepEqual(AI_EXCLUDED_STORES, ['floorMaps', 'floorStations', 'workerProfiles']);
 
   const anna = handle.store.getUserByUsername('anna');
   const user = { id: anna.id, roleId: adminRoleId };

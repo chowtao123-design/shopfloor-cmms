@@ -3,23 +3,25 @@
 
 :root {
   color-scheme: light dark;
-  --bg: #eef0f3;
+  --bg: #f3f5f9;
   --surface: #ffffff;
-  --surface-2: #e6e9ed;
-  --surface-3: #f6f7f9;
-  --text: #15181d;
-  --muted: #58616d;
-  --border: #cbd1d8;
-  --border-strong: #9aa4b0;
-  --accent: #d9541a;
-  --accent-strong: #b9420e;
-  --accent-soft: #fff0e8;
+  --surface-2: #eef1f6;
+  --surface-3: #f8fafc;
+  --text: #0f172a;
+  --muted: #5b6578;
+  --border: #dde3ec;
+  --border-strong: #b4bdcb;
+  --accent: #2451c9;
+  --accent-strong: #1b3fa3;
+  --accent-soft: #eaf0fe;
   --on-accent: #ffffff;
-  --focus: #0b63c5;
-  --danger: #b42318;
-  --shadow: 0 8px 24px rgb(16 24 40 / 12%);
-  --tabbar-height: 4.25rem;
-  --radius: 12px;
+  --focus: #2451c9;
+  --danger: #c0262d;
+  --shadow: 0 1px 2px rgb(15 23 42 / 6%), 0 6px 18px rgb(15 23 42 / 8%);
+  --shadow-sm: 0 1px 2px rgb(15 23 42 / 6%);
+  --nav-bg: #0f172a;
+  --tabbar-height: 4rem;
+  --radius: 10px;
   --tap: 48px;
 
   --open-bg: #e2eefc;
@@ -37,8 +39,8 @@
 
   /* Statistics charts (SPEC-v3.md section 7): series colours from tokens so
      light and dark themes both stay readable. */
-  --chart-c1: #d9541a;
-  --chart-c2: #0b63c5;
+  --chart-c1: #2451c9;
+  --chart-c2: #e07a1f;
   --chart-c3: #15622e;
   --chart-c4: #744500;
   --chart-c5: #562b8d;
@@ -48,22 +50,24 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #101317;
-    --surface: #1a1e23;
-    --surface-2: #252b32;
-    --surface-3: #20252b;
-    --text: #f0f3f6;
-    --muted: #aeb7c1;
-    --border: #3a434d;
-    --border-strong: #5e6975;
-    --accent: #f07a3e;
-    --accent-strong: #ff8f57;
-    --accent-soft: #38241b;
-    --on-accent: #1c1009;
-    --focus: #76bdff;
+  :root:not([data-theme="light"]) {
+    --bg: #0b1020;
+    --surface: #131a2b;
+    --surface-2: #1c2539;
+    --surface-3: #172034;
+    --text: #e8edf6;
+    --muted: #9ba7bb;
+    --border: #2a3550;
+    --border-strong: #46536e;
+    --accent: #7c9cff;
+    --accent-strong: #a3baff;
+    --accent-soft: #1d2a4d;
+    --on-accent: #0b1020;
+    --focus: #8fb0ff;
     --danger: #ff8d82;
-    --shadow: 0 8px 24px rgb(0 0 0 / 45%);
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 35%);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+    --nav-bg: #080c18;
 
     --open-bg: #173a63;
     --open-fg: #cce3ff;
@@ -78,8 +82,8 @@
     --neutral-bg: #303740;
     --neutral-fg: #d4dbe3;
 
-    --chart-c1: #f07a3e;
-    --chart-c2: #76bdff;
+    --chart-c1: #7c9cff;
+    --chart-c2: #f0a35e;
     --chart-c3: #b8f0c9;
     --chart-c4: #ffe08b;
     --chart-c5: #e4d2ff;
@@ -87,6 +91,54 @@
     --chart-text: #aeb7c1;
     --chart-grid: #3a434d;
   }
+}
+
+/* The header's light/dark button (theme.js) overrides the device setting. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --surface: #131a2b;
+  --surface-2: #1c2539;
+  --surface-3: #172034;
+  --text: #e8edf6;
+  --muted: #9ba7bb;
+  --border: #2a3550;
+  --border-strong: #46536e;
+  --accent: #7c9cff;
+  --accent-strong: #a3baff;
+  --accent-soft: #1d2a4d;
+  --on-accent: #0b1020;
+  --focus: #8fb0ff;
+  --danger: #ff8d82;
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 35%);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --nav-bg: #080c18;
+
+  --open-bg: #173a63;
+  --open-fg: #cce3ff;
+  --progress-bg: #4a3508;
+  --progress-fg: #ffe08b;
+  --waiting-bg: #3c2a58;
+  --waiting-fg: #e4d2ff;
+  --done-bg: #16412a;
+  --done-fg: #b8f0c9;
+  --danger-bg: #4d1d19;
+  --danger-fg: #ffc0b9;
+  --neutral-bg: #303740;
+  --neutral-fg: #d4dbe3;
+
+  --chart-c1: #7c9cff;
+  --chart-c2: #f0a35e;
+  --chart-c3: #b8f0c9;
+  --chart-c4: #ffe08b;
+  --chart-c5: #e4d2ff;
+  --chart-c6: #cce3ff;
+  --chart-text: #aeb7c1;
+  --chart-grid: #3a434d;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 *,
@@ -104,8 +156,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, "Noto Sans", "Microsoft YaHei", "PingFang SC", Helvetica, Arial, sans-serif;
   line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
   padding-bottom: calc(var(--tabbar-height) + env(safe-area-inset-bottom) + 1.5rem);
 }
 
@@ -5554,5 +5607,2388 @@ body.logged-out .ai-chat-fab {
   .page,
   .split {
     max-width: 1720px;
+  }
+}
+
+/* ==========================================================================
+   Machines list: Excel-like inline edit mode.
+   Each machine is one row of live inputs, so every parameter can be changed
+   without opening the machine form. The table scrolls horizontally on phones
+   and keeps the Name column pinned while doing so.
+   ========================================================================== */
+
+.machines-edit-wrap {
+  margin-bottom: 1rem;
+}
+
+.machines-edit-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.machines-edit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 0.9rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.machines-edit-copy {
+  flex: 1 1 18rem;
+  min-width: 12rem;
+}
+
+.machines-edit-copy strong {
+  font-size: 0.95rem;
+}
+
+.inline-edit-hint {
+  margin: 0.1rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.machines-edit-actions {
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.machines-edit-actions .btn {
+  min-height: 38px;
+}
+
+.inline-edit-count {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.inline-edit-count.is-dirty {
+  color: var(--accent-strong);
+}
+
+.machines-edit-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.machines-edit-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.machines-edit-table th {
+  padding: 0.5rem;
+  border-bottom: 2px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.machines-edit-table td {
+  padding: 0.4rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.machines-edit-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.machines-edit-table input,
+.machines-edit-table select {
+  width: 100%;
+  min-height: 38px;
+  padding: 0.32rem 0.42rem;
+  border-radius: 7px;
+  font-size: 0.88rem;
+}
+
+.machines-edit-table input:hover,
+.machines-edit-table select:hover {
+  border-color: var(--border-strong);
+}
+
+.machines-edit-table [data-col="name"] {
+  min-width: 13rem;
+}
+
+.machines-edit-table [data-col="type"] {
+  min-width: 12rem;
+}
+
+.machines-edit-table [data-col="status"] {
+  min-width: 7.5rem;
+}
+
+.machines-edit-table [data-col="model"],
+.machines-edit-table [data-col="serial"] {
+  min-width: 8rem;
+}
+
+.machines-edit-table [data-col="location"] {
+  min-width: 9rem;
+}
+
+.machines-edit-table [data-col="notes"] {
+  min-width: 14rem;
+}
+
+.machines-edit-table [data-col="files"] {
+  min-width: 9.5rem;
+}
+
+.machines-edit-table [data-col="state"] {
+  min-width: 7rem;
+}
+
+/* Keep the machine name visible while the grid scrolls sideways. */
+.machines-edit-table th[data-col="name"],
+.machines-edit-table td[data-col="name"] {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+.machines-edit-table th[data-col="name"] {
+  z-index: 2;
+  background: var(--surface-2);
+}
+
+.machines-edit-table tr.is-dirty td,
+.machines-edit-table tr.is-dirty td[data-col="name"] {
+  background: var(--accent-soft);
+}
+
+.machines-edit-table tr.is-invalid td,
+.machines-edit-table tr.is-invalid td[data-col="name"] {
+  background: var(--danger-bg);
+}
+
+.machines-edit-table tr.is-invalid input,
+.machines-edit-table tr.is-invalid select {
+  border-color: var(--danger);
+}
+
+.inline-type-label {
+  margin-top: 0.3rem;
+}
+
+.inline-type-label input {
+  min-height: 32px;
+  font-size: 0.82rem;
+}
+
+.inline-edit-files {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.8rem;
+}
+
+.inline-edit-files .inline-link {
+  font-size: 0.8rem;
+}
+
+.inline-edit-status {
+  display: block;
+  min-height: 1.1rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.inline-edit-status.is-dirty {
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.inline-edit-status.is-saved {
+  color: var(--done-fg);
+}
+
+.inline-edit-status.is-error {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.inline-edit-revert {
+  margin-top: 0.15rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--focus);
+  font: inherit;
+  font-size: 0.75rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.machines-edit-empty {
+  padding: 1rem;
+}
+
+@media (max-width: 640px) {
+  .machines-edit-toolbar {
+    padding: 0.6rem 0.65rem;
+  }
+
+  .machines-edit-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .machines-edit-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .machines-edit-table td,
+  .machines-edit-table th {
+    padding: 0.35rem;
+  }
+}
+
+/* ==========================================================================
+   v6 visual refresh (2026-11-10): calmer blue palette, card tables, a real
+   sign-in page, a phone layout with icon tabs, and crisp floor-map text.
+   Overrides only — the rules above keep the layout logic.
+   ========================================================================== */
+
+h1, h2, h3, .page-head h2, .section-title {
+  letter-spacing: -0.01em;
+}
+
+/* --- Sign-in page --------------------------------------------------------- */
+body.logged-out {
+  margin-left: 0 !important;
+  padding-bottom: 0;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgb(36 81 201 / 18%), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgb(36 81 201 / 12%), transparent 60%),
+    var(--bg);
+}
+
+body.logged-out .app-header,
+body.logged-out .ai-chat-fab {
+  display: none !important;
+}
+
+body.logged-out #app-main {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 1.5rem 1rem;
+}
+
+.login-card {
+  width: min(25rem, 100%);
+  margin: 0;
+  gap: 0.25rem;
+  padding: 2.2rem 2rem 1.6rem;
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 6%), 0 24px 48px rgb(15 23 42 / 12%);
+}
+
+.login-card h2 {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: center;
+  font-size: 1.45rem;
+  font-weight: 700;
+}
+
+.login-card .login-logo {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+}
+
+.login-sub {
+  text-align: center;
+  margin-bottom: 1.1rem;
+}
+
+.login-form input {
+  min-height: 46px;
+}
+
+.login-form .btn-primary {
+  min-height: 48px;
+  margin-top: 0.4rem;
+  font-size: 1rem;
+}
+
+.login-foot {
+  margin: 1.4rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* --- Header ----------------------------------------------------------------- */
+.app-header {
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border-bottom-color: var(--border);
+}
+
+h1 {
+  font-weight: 700;
+}
+
+/* The page heading repeats the header title on list pages: show it once. */
+.page-head-dup h2 {
+  display: none;
+}
+
+.page-head-dup {
+  justify-content: flex-end;
+}
+
+.page-head-dup:not(:has(.button-row)) {
+  display: none;
+}
+
+/* --- Buttons, chips, segmented switches --------------------------------------- */
+.btn {
+  border-color: var(--border);
+  border-radius: 8px;
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-primary {
+  border-color: var(--accent);
+  box-shadow: 0 1px 2px rgb(36 81 201 / 25%);
+}
+
+.btn-ghost {
+  box-shadow: none;
+}
+
+.chip {
+  border-color: var(--border);
+  font-weight: 600;
+}
+
+.chip[aria-pressed="true"],
+.chip.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.chip[aria-pressed="true"] .chip-count,
+.chip.is-active .chip-count {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.view-switch {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.view-switch-btn.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not(.fm-cell),
+select,
+textarea {
+  border-color: var(--border);
+  border-radius: 8px;
+}
+
+input:not(.fm-cell):focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(36 81 201 / 18%);
+}
+
+/* --- Cards, rows, counters --------------------------------------------------- */
+.card,
+.row,
+.counter,
+.attention-item {
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+a.row:hover,
+button.row:hover {
+  border-color: var(--border-strong);
+}
+
+.counter {
+  padding: 0.85rem 1rem;
+}
+
+.counter-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.counter-label {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.counter.is-alert {
+  border-left-width: 4px;
+}
+
+.pill {
+  font-weight: 650;
+  font-size: 0.74rem;
+}
+
+/* --- Desktop: sidebar, header, card tables ------------------------------------- */
+@media (min-width: 1024px) {
+  .sidebar {
+    background: var(--nav-bg);
+    border-right: 1px solid rgb(255 255 255 / 6%);
+  }
+
+  .sidebar .brand-mark {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .sidebar-new.btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    box-shadow: none;
+  }
+
+  .sidebar-link {
+    color: #b8c2d3;
+    font-weight: 500;
+  }
+
+  .sb-icon {
+    color: #7f8aa0;
+  }
+
+  .sidebar-link[aria-current="page"] {
+    background: rgb(124 156 255 / 14%);
+    color: #ffffff;
+    box-shadow: inset 3px 0 0 #7c9cff;
+  }
+
+  .sidebar-link[aria-current="page"] .sb-icon {
+    color: #a9bcff;
+  }
+
+  .sidebar .sidebar-link[aria-current="page"] .nav-count {
+    background: #7c9cff;
+    color: #0b1020;
+  }
+
+  .sidebar .nav-count {
+    background: rgb(255 255 255 / 10%);
+  }
+
+  /* Help and Settings live in the sidebar; the header copies were noise. */
+  #help-link,
+  #settings-link {
+    display: none;
+  }
+
+  .app-header {
+    min-height: 60px;
+  }
+
+  .app-header,
+  .page,
+  .split {
+    max-width: none;
+  }
+
+  .page {
+    padding: 1.4rem 1.75rem 2rem;
+  }
+
+  .app-header {
+    padding-inline: 1.75rem;
+  }
+
+  /* Tables sit on a card instead of floating on the page background. */
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .data-table thead th {
+    background: var(--surface-3);
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding-block: 0.7rem;
+    vertical-align: middle;
+  }
+
+  .data-table tbody tr:hover td {
+    background: var(--surface-3);
+  }
+
+  /* Dates, numbers and owners read on one line instead of four. */
+  .data-table [data-col="due"],
+  .data-table [data-col="number"],
+  .data-table [data-col="status"],
+  .data-table [data-col="priority"],
+  .data-table [data-col="created"],
+  .data-table [data-col="age"],
+  .data-table [data-col="hours"] {
+    white-space: nowrap;
+  }
+
+  .data-table [data-col="title"],
+  .data-table [data-col="task"] {
+    min-width: 13rem;
+  }
+
+  .data-table [data-col="editedBy"] {
+    min-width: 9rem;
+    font-size: 0.82rem;
+  }
+
+  /* A primary button on every row shouts; keep it quiet until hovered. */
+  .data-table .btn-primary,
+  .pm-row .btn-primary {
+    background: var(--surface);
+    color: var(--accent-strong);
+    border-color: var(--border);
+    box-shadow: none;
+  }
+
+  .data-table .btn-primary:hover,
+  .pm-row .btn-primary:hover {
+    background: var(--accent);
+    color: var(--on-accent);
+    border-color: var(--accent);
+  }
+
+  .btn {
+    min-height: 38px;
+  }
+
+  .btn-small {
+    min-height: 34px;
+  }
+
+  .chip {
+    min-height: 34px;
+    padding: 0.25rem 0.8rem;
+    font-size: 0.86rem;
+  }
+}
+
+/* --- Phone: icon tab bar, roomier lists, nothing hidden behind buttons ------ */
+.tab {
+  flex-direction: column;
+  gap: 0.18rem;
+  border-top: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.tab-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.tab[aria-current="page"] {
+  color: var(--accent);
+  background: transparent;
+}
+
+.tab[aria-current="page"] .tab-icon {
+  stroke-width: 2.4;
+}
+
+@media screen and (max-width: 1023.98px) {
+  body {
+    /* tab bar + floating buttons must never cover the last list row */
+    padding-bottom: calc(var(--tabbar-height) + env(safe-area-inset-bottom) + 6rem);
+  }
+
+  .tabbar {
+    max-width: none;
+    box-shadow: 0 -1px 0 var(--border), 0 -6px 20px rgb(15 23 42 / 6%);
+    border-top: 0;
+  }
+
+  .fab {
+    min-height: 48px;
+    padding: 0.6rem 1.1rem;
+    box-shadow: 0 6px 18px rgb(36 81 201 / 35%);
+  }
+
+  .ai-chat-fab {
+    width: 44px;
+    height: 44px;
+    background: var(--surface);
+    color: var(--accent);
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+  }
+
+  .page-head {
+    margin-bottom: 0.6rem;
+  }
+
+  .row {
+    border-radius: 12px;
+  }
+}
+
+@media screen and (max-width: 767.98px) {
+  /* The floating "+ Service order" button already does this on the phone. */
+  .page-head a.btn-primary[href="#/jobs/new"] {
+    display: none;
+  }
+
+  /* Help is in the More sheet; the header keeps sync, user and settings. */
+  #help-link {
+    display: none;
+  }
+
+  .app-header {
+    gap: 0.35rem;
+  }
+
+  .page {
+    padding: 0.85rem 0.85rem 1rem;
+  }
+
+  .counters {
+    gap: 0.5rem;
+  }
+
+  .counter {
+    min-height: 0;
+    padding: 0.7rem 0.8rem;
+  }
+
+  .counter-value {
+    font-size: 1.5rem;
+  }
+}
+
+/* --- Floor map ------------------------------------------------------------- */
+/* Map text is drawn at 1.5–20 drawing units and scaled up by the viewBox.
+   Without geometricPrecision Chrome hints the glyphs at that tiny size (and on
+   Windows may pick a bitmap CJK strike), so printed text came out blocky and
+   dotted. Outline CJK fonts first, SimSun-style bitmap fonts never by default. */
+.fm-svg,
+.fm-print-svg {
+  font-family: "Segoe UI", "Noto Sans", Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+  text-rendering: geometricPrecision;
+}
+
+.fm-svg text,
+.fm-print-svg text {
+  text-rendering: geometricPrecision;
+}
+
+.fm-svg-wrap {
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.fm-mode-switch {
+  display: inline-flex;
+}
+
+.fm-name-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  max-height: calc(100vh - 260px);
+  overflow: auto;
+}
+
+.fm-name-table {
+  min-width: 720px;
+}
+
+.fm-name-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-3);
+  text-align: left;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.fm-name-table th,
+.fm-name-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.fm-name-table tbody th {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.fm-name-table td {
+  white-space: nowrap;
+}
+
+/* Row buttons ("Mark done") stay on one line. */
+table .btn {
+  white-space: nowrap;
+}
+
+.fm-name-table td .pill + .pill {
+  margin-left: 0.3rem;
+}
+
+.fm-name-row {
+  cursor: pointer;
+}
+
+.fm-name-row:hover td,
+.fm-name-row:hover th {
+  background: var(--accent-soft);
+}
+
+@media screen and (max-width: 767.98px) {
+  .fm-toolbar {
+    gap: 0.45rem;
+  }
+
+  .fm-toolbar .search-wrap {
+    flex: 1 1 100%;
+    margin-bottom: 0;
+  }
+
+  .fm-search-status {
+    display: none;
+  }
+
+  .fm-chips {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+  }
+
+  .fm-toolbar .btn,
+  .fm-toolbar .chip {
+    min-height: 36px;
+    padding: 0.25rem 0.65rem;
+    font-size: 0.84rem;
+  }
+
+  .fm-legend {
+    font-size: 0.78rem;
+    gap: 0.2rem 0.75rem;
+  }
+
+  /* The map gets the rest of the screen above the tab bar. */
+  .fm-svg {
+    height: calc(100dvh - 330px);
+    min-height: 320px;
+  }
+
+  .fm-name-table-wrap {
+    max-height: none;
+  }
+}
+
+@media print {
+  /* Name table: just the table on paper. */
+  body:has(.fm-name-table) {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff;
+  }
+
+  body:has(.fm-name-table) :is(.sidebar, .app-header, .tabbar, .fab, .ai-chat-fab, .fm-toolbar, .fm-legend, .skip-link) {
+    display: none !important;
+  }
+
+  body:has(.fm-name-table) .page {
+    max-width: none;
+    padding: 0;
+  }
+
+  .fm-name-table-wrap {
+    max-height: none;
+    overflow: visible;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .fm-name-table {
+    min-width: 0;
+    font-size: 10pt;
+  }
+
+  .fm-name-table thead th {
+    position: static;
+  }
+}
+
+/* Name table cells: spreadsheet look, borders only on focus. */
+.fm-name-table .fm-cell {
+  width: 100%;
+  min-width: 5rem;
+  min-height: 0;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+}
+
+.fm-name-table th .fm-cell {
+  font-weight: 700;
+}
+
+.fm-name-table .fm-cell:hover {
+  border-color: var(--border);
+}
+
+.fm-name-table .fm-cell:focus {
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 2px rgb(36 81 201 / 18%);
+}
+
+.fm-name-table .fm-cell.is-saving {
+  background: var(--accent-soft);
+}
+
+.fm-name-table td:has(.fm-cell),
+.fm-name-table th:has(.fm-cell) {
+  padding: 0.15rem 0.3rem;
+}
+
+.fm-name-table [data-col="2"],
+.fm-name-table [data-col="4"] {
+  min-width: 10rem;
+}
+
+.fm-cell-center {
+  text-align: center !important;
+}
+
+.fm-name-row {
+  cursor: default;
+}
+
+@media print {
+  .fm-name-table .fm-cell {
+    border: 0;
+    padding: 0;
+  }
+}
+
+.fm-name-table .btn {
+  min-height: 28px;
+  padding: 0 0.55rem;
+}
+
+/* Off-map list: the row opens the panel, Delete sits beside it. */
+.fm-offmap-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fm-offmap-item .fm-offmap-row {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- Safety (WPFI) view: failed workers in red on the map ---------- */
+.fm-wpfi-fail .fm-slot-rect {
+  fill: #fca5a5 !important;
+  stroke: #b91c1c;
+  stroke-width: 1.2;
+}
+
+.fm-svg.fm-wpfi .fm-station:not(.fm-wpfi-fail) {
+  opacity: 0.4;
+}
+
+.fm-svg.fm-wpfi .fm-selected .fm-slot-rect {
+  stroke: #7f1d1d;
+  stroke-width: 2.4;
+}
+
+.fm-swatch-wpfi {
+  background: #fca5a5;
+  border: 1px solid #b91c1c;
+}
+
+.fm-wpfi-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1rem;
+  margin: 0 0 0.55rem;
+  font-size: 0.88rem;
+}
+
+.fm-wpfi-head .btn {
+  margin-left: auto;
+}
+
+.fm-wpfi-body {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 0.9rem;
+}
+
+.fm-wpfi-list {
+  max-height: 420px;
+}
+
+.fm-wpfi-list .fm-name-row {
+  cursor: pointer;
+}
+
+.fm-name-row.is-selected th,
+.fm-name-row.is-selected td {
+  background: #fee2e2;
+}
+
+.fm-wpfi-detail .stats-table {
+  min-width: 0;
+  margin-bottom: 0.6rem;
+}
+
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .fm-name-row.is-selected th,
+  :root:not([data-theme="light"]) .fm-name-row.is-selected td {
+    background: #4c1d1d;
+  }
+}
+
+:root[data-theme="dark"] .fm-name-row.is-selected th,
+:root[data-theme="dark"] .fm-name-row.is-selected td {
+  background: #4c1d1d;
+}
+
+/* Worker findings in the side panel: wrap instead of scrolling sideways. */
+.fm-wpfi-detail .fm-name-table td,
+.fm-wpfi-detail .fm-name-table th {
+  white-space: normal;
+}
+
+/* ---------- Inspect: fill the WPFI Google Form from the map ---------- */
+.fm-inspect-hint {
+  margin: 0 0 0.55rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.fm-inspect {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.fm-inspect-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.fm-inspect-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+
+.fm-inspect-chips .chip {
+  min-height: 38px;
+}
+
+.fm-inspector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 40px;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fm-inspector:has(input:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.fm-inspect-open {
+  width: 100%;
+  min-height: 48px;
+}
+
+/* ---------- Home shortcuts: big tap targets for floor work ---------- */
+.home-shortcuts {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.home-shortcut {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-height: 72px;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.home-shortcut .user-menu-item-icon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  color: var(--accent);
+}
+
+.home-shortcut-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.home-shortcut-text strong {
+  font-size: 1.05rem;
+}
+
+.home-shortcut-text span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.home-shortcut.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 6px 18px rgb(36 81 201 / 28%);
+}
+
+.home-shortcut.is-primary .user-menu-item-icon,
+.home-shortcut.is-primary .home-shortcut-text span {
+  color: inherit;
+  opacity: 0.92;
+}
+
+@media (min-width: 768px) {
+  .home-shortcuts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---------- Phone bottom sheets: grab bar, slide up, swipe down (gestures.js) ---------- */
+.sheet-grabber {
+  flex: none;
+  width: 44px;
+  height: 5px;
+  margin: 0.1rem auto 0.45rem;
+  border-radius: 999px;
+  background: var(--border-strong);
+  opacity: 0.7;
+}
+
+/* The old static grip is replaced by the shared grab bar. */
+.filter-sheet-grip {
+  display: none;
+}
+
+.sheet {
+  animation: sheet-up 0.22s ease-out;
+  will-change: transform;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet {
+    animation: none;
+  }
+}
+
+/* Forms in the map sheet get the room they need; content scrolls up and down only. */
+.fm-sheet {
+  max-height: min(90vh, 760px);
+}
+
+.fm-sheet-body {
+  max-height: calc(min(90vh, 760px) - 4.2rem);
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+/* ---------- Phone: never wider than the screen ---------- */
+@media screen and (max-width: 767.98px) {
+  /* The map's view tabs share the width; with large text they wrap to 2 x 2. */
+  .fm-mode-switch {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(5.2rem, 1fr));
+    width: 100%;
+  }
+
+  .fm-mode-switch .view-switch-btn {
+    min-height: 40px;
+    padding: 0.25rem 0.3rem;
+    font-size: 0.82rem;
+    line-height: 1.15;
+    white-space: normal;
+    text-align: center;
+  }
+
+  /* Last line of defence: nothing makes the whole page pan sideways. */
+  body {
+    overflow-x: clip;
+  }
+
+  .fm-inspect-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .fm-inspect input:not([type="checkbox"]) {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+/* Zone key under the map (pale tints from logic-map.js zoneColor). */
+.fm-swatch-zone {
+  border: 1px solid rgb(15 23 42 / 25%);
+}
+
+.fm-zone-legend {
+  margin-top: -0.2rem;
+}
+
+/* ---------- Workers & skills page (workers.js) ---------- */
+.workers-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.workers-toolbar .search-wrap {
+  flex: 1 1 260px;
+  margin-bottom: 0;
+}
+
+.workers-toolbar select {
+  flex: 0 1 260px;
+  min-width: 0;
+}
+
+.workers-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.workers-table th,
+.workers-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.workers-table thead th {
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.skill-cell .pill + .pill {
+  margin-left: 0.25rem;
+}
+
+.skill-pill.is-expert {
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+.skill-pill.is-good {
+  background: var(--open-bg);
+  color: var(--open-fg);
+}
+
+.skill-pill.is-learning {
+  background: var(--progress-bg);
+  color: var(--progress-fg);
+}
+
+.worker-profile .section-title {
+  margin: 0.9rem 0 0.35rem;
+}
+
+.worker-cn {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.worker-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.5rem;
+}
+
+.worker-fact {
+  display: flex;
+  flex-direction: column;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-3);
+}
+
+.worker-skills {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.worker-skill-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.worker-skill-row .pill {
+  flex: none;
+  min-width: 4.8rem;
+  justify-content: center;
+}
+
+.worker-notes {
+  white-space: pre-wrap;
+}
+
+.worker-edit,
+.worker-save {
+  width: 100%;
+  margin-top: 0.8rem;
+}
+
+.worker-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.worker-matrix {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.worker-matrix-group {
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.worker-matrix-group legend {
+  padding: 0 0.3rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.worker-matrix-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.2rem 0;
+}
+
+.worker-matrix-row select {
+  flex: 0 0 8.5rem;
+  min-height: 38px;
+}
+
+.fm-worker-profile {
+  align-self: flex-start;
+  margin-bottom: 0.6rem;
+}
+
+/* Workers list on a phone: one card per worker, nothing to swipe sideways. */
+@media screen and (max-width: 767.98px) {
+  .workers-table {
+    min-width: 0;
+  }
+
+  .workers-table thead {
+    display: none;
+  }
+
+  .workers-table,
+  .workers-table tbody {
+    display: block;
+  }
+
+  .workers-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.2rem 0.75rem;
+    padding: 0.75rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .workers-table th,
+  .workers-table td {
+    padding: 0;
+    border: 0;
+  }
+
+  .workers-table tr > :nth-child(2),
+  .workers-table tr > :nth-child(4),
+  .workers-table tr > :nth-child(7) {
+    text-align: right;
+  }
+
+  .workers-table tr > :nth-child(3),
+  .workers-table tr > :nth-child(4),
+  .workers-table tr > :nth-child(6),
+  .workers-table tr > :nth-child(7) {
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .workers-table tr > :nth-child(5) {
+    grid-column: 1 / -1;
+  }
+
+  .workers-table tr > :nth-child(6)::before {
+    content: "Efficiency ";
+  }
+
+  .workers-table tr > :nth-child(7)::before {
+    content: "Quality ";
+  }
+
+  .workers-toolbar select {
+    flex: 1 1 100%;
+  }
+}
+
+.worker-phone {
+  font-weight: 700;
+  text-decoration: none;
+}
+
+/* ---------- AI chat v6: attach PDFs, the "steps" list under answers ---------- */
+.ai-chat-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.ai-chat-attach {
+  min-height: 34px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.ai-chat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0 0.75rem;
+}
+
+.ai-chat-chips:empty {
+  display: none;
+}
+
+.ai-chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 100%;
+  padding: 0.15rem 0.3rem 0.15rem 0.6rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.8rem;
+}
+
+.ai-chat-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-chat-chip-x {
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.ai-chat-steps {
+  margin: -0.2rem 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.ai-chat-steps summary {
+  cursor: pointer;
+}
+
+.ai-chat-steps ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.1rem;
+}
+
+/* ---------- Skill map (floor map "Skills" view) ---------- */
+.fm-skill-expert .fm-slot-rect { fill: #86efac !important; stroke: #15803d; stroke-width: 1.1; }
+.fm-skill-good .fm-slot-rect { fill: #93c5fd !important; stroke: #1d4ed8; stroke-width: 1.1; }
+.fm-skill-learning .fm-slot-rect { fill: #fde68a !important; stroke: #a16207; stroke-width: 1.1; }
+
+.fm-svg.fm-skills .fm-station:not(.fm-skill-expert):not(.fm-skill-good):not(.fm-skill-learning) {
+  opacity: 0.35;
+}
+
+.fm-swatch-skill-expert { background: #86efac; border: 1px solid #15803d; }
+.fm-swatch-skill-good { background: #93c5fd; border: 1px solid #1d4ed8; }
+.fm-swatch-skill-learning { background: #fde68a; border: 1px solid #a16207; }
+
+.fm-skill-head {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+
+.fm-skill-chips {
+  flex-wrap: wrap;
+}
+
+@media screen and (max-width: 767.98px) {
+  .fm-skill-chips {
+    flex-wrap: nowrap;
+  }
+}
+
+/* ---------- Workers: skill matrix (batch edit) ---------- */
+.workers-tabs {
+  margin-bottom: 0.7rem;
+}
+
+a.view-switch-btn {
+  text-decoration: none;
+}
+
+.workers-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.5rem;
+  margin: 0.6rem 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+}
+
+.workers-bulk select {
+  min-height: 36px;
+  max-width: 100%;
+}
+
+.skill-matrix-wrap {
+  max-height: calc(100vh - 300px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.skill-matrix {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.86rem;
+}
+
+.skill-matrix th,
+.skill-matrix td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.25rem;
+  background: var(--surface);
+}
+
+.skill-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-3);
+  vertical-align: bottom;
+}
+
+.skill-matrix .sm-type span {
+  display: inline-block;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  max-height: 9.5rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.74rem;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.skill-matrix .sm-check {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 2rem;
+  text-align: center;
+}
+
+.skill-matrix .sm-name {
+  position: sticky;
+  left: 2rem;
+  z-index: 1;
+  min-width: 11rem;
+  max-width: 14rem;
+  text-align: left;
+  box-shadow: 1px 0 0 var(--border);
+}
+
+.skill-matrix thead .sm-check,
+.skill-matrix thead .sm-name {
+  z-index: 3;
+}
+
+.sm-sub {
+  display: block;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 400;
+}
+
+.sm-cell {
+  text-align: center;
+}
+
+.skill-cell-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.skill-cell-btn:disabled {
+  cursor: default;
+}
+
+.skill-cell-btn.lv-expert { background: #86efac; border-color: #15803d; color: #14532d; }
+.skill-cell-btn.lv-good { background: #93c5fd; border-color: #1d4ed8; color: #1e3a8a; }
+.skill-cell-btn.lv-learning { background: #fde68a; border-color: #a16207; color: #713f12; }
+
+.skill-cell-btn.is-changed {
+  outline: 3px solid #f97316;
+  outline-offset: 1px;
+}
+
+.skill-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+}
+
+.skill-legend .skill-cell-btn {
+  width: 1.5rem;
+  height: 1.5rem;
+  cursor: default;
+}
+
+.workers-savebar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.workers-savebar .field-hint {
+  margin-right: auto;
+}
+
+@media screen and (max-width: 1023.98px) {
+  .workers-savebar {
+    bottom: calc(var(--tabbar-height) + env(safe-area-inset-bottom) + 0.5rem);
+  }
+}
+
+.ai-skills-scroll {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.ai-skills-card .stats-table {
+  min-width: 0;
+  font-size: 0.82rem;
+}
+
+.ai-skills-card th {
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+/* Skill matrix polish: compact controls; the save bar only floats with changes. */
+.workers-bulk select,
+.workers-toolbar select {
+  width: auto;
+  flex: 0 1 auto;
+}
+
+.workers-savebar {
+  position: static;
+  box-shadow: none;
+}
+
+.workers-savebar.has-changes {
+  position: sticky;
+  box-shadow: var(--shadow);
+  border-color: #f97316;
+}
+
+@media screen and (max-width: 767.98px) {
+  .workers-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .workers-toolbar .search-wrap,
+  .workers-toolbar > .field-hint {
+    grid-column: 1 / -1;
+  }
+
+  .workers-toolbar select,
+  .workers-bulk select {
+    width: 100%;
+    min-width: 0;
+    font-size: 0.88rem;
+  }
+
+  .workers-bulk {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: 0.5rem 0.6rem;
+  }
+
+  .workers-bulk > .field-hint,
+  .workers-bulk > button {
+    grid-column: 1 / -1;
+  }
+
+  .skill-matrix .sm-check {
+    width: 1.75rem;
+  }
+
+  .skill-matrix .sm-name {
+    left: 1.75rem;
+    min-width: 6.5rem;
+    max-width: 7.5rem;
+    font-size: 0.8rem;
+  }
+
+  .skill-matrix-wrap {
+    max-height: 62vh;
+  }
+
+  .skill-cell-btn {
+    width: 1.9rem;
+    height: 1.9rem;
+  }
+}
+
+/* Room for the round chat button at the right end of the save bar. */
+.workers-savebar.has-changes {
+  padding-right: 4.75rem;
+}
+
+/* AI skill updates in the narrow chat panel: name above its changes. */
+.ai-skills-card tr,
+.ai-skills-card th,
+.ai-skills-card td {
+  display: block;
+  white-space: normal;
+}
+
+.ai-skills-card tr {
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-skills-card th,
+.ai-skills-card td {
+  padding: 0;
+  border: 0;
+}
+
+/* ---------- Desktop: map and skill matrix fill exactly one screen ---------- */
+@media screen and (min-width: 1024px) and (min-height: 560px) {
+  body:has(.fit-page) {
+    padding-bottom: 0;
+  }
+
+  .page.fit-page {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - var(--header-h, 61px));
+    height: calc(100dvh - var(--header-h, 61px));
+    padding-top: 0.85rem;
+    padding-bottom: 0.75rem;
+    overflow: hidden;
+  }
+
+  .page.fit-page > * {
+    flex: none;
+  }
+
+  /* The main area takes whatever height the controls leave. */
+  .page.fm-fit > .fm-svg-wrap,
+  .page.fm-fit > .fm-name-table-wrap,
+  .page.workers-fit > .skill-matrix-wrap {
+    flex: 1 1 0;
+    min-height: 200px;
+    max-height: none;
+  }
+
+  .page.fm-fit .fm-svg {
+    height: 100%;
+  }
+
+  /* Tighter controls so more of the screen is map. */
+  .page.fit-page .fm-toolbar,
+  .page.fit-page .workers-toolbar {
+    gap: 0.35rem 0.5rem;
+    margin: 0 0 0.35rem;
+  }
+
+  .page.fit-page .search-wrap input,
+  .page.fit-page .workers-toolbar select,
+  .page.fit-page .workers-bulk select {
+    min-height: 36px;
+    padding-top: 0.3rem;
+    padding-bottom: 0.3rem;
+  }
+
+  .page.fit-page .fm-toolbar .btn,
+  .page.fit-page .fm-toolbar .chip,
+  .page.fit-page .fm-skill-chips .chip {
+    min-height: 32px;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.82rem;
+  }
+
+  .page.fit-page .view-switch-btn {
+    min-height: 32px;
+    padding: 0.15rem 0.7rem;
+    font-size: 0.88rem;
+  }
+
+  .page.fit-page .fm-legend {
+    margin: 0 0 0.3rem;
+    font-size: 0.8rem;
+    gap: 0.15rem 0.85rem;
+  }
+
+  .page.fit-page .fm-zone-legend {
+    margin-top: 0;
+  }
+
+  .page.fit-page .fm-skill-head {
+    gap: 0.25rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .page.fit-page .fm-offmap {
+    margin-top: 0.4rem;
+  }
+
+  .page.fit-page .fm-offmap > summary {
+    padding-block: 0.35rem;
+  }
+
+  /* An opened off-map list scrolls inside itself, never the page. */
+  .page.fit-page .fm-offmap[open] {
+    max-height: 30vh;
+    overflow: auto;
+  }
+
+  .page.fit-page .fm-inspect-hint {
+    margin-bottom: 0.3rem;
+  }
+
+  /* Skill matrix */
+  .page.workers-fit .workers-tabs {
+    margin-bottom: 0.45rem;
+  }
+
+  .page.workers-fit .workers-bulk {
+    margin: 0 0 0.45rem;
+    padding: 0.35rem 0.6rem;
+  }
+
+  .page.workers-fit .skill-matrix .sm-type span {
+    max-height: 7.5rem;
+  }
+
+  .page.workers-fit .skill-cell-btn {
+    width: 1.85rem;
+    height: 1.85rem;
+  }
+
+  .page.workers-fit .skill-matrix th,
+  .page.workers-fit .skill-matrix td {
+    padding: 0.18rem 0.22rem;
+  }
+
+  .page.workers-fit .skill-legend {
+    margin: 0.35rem 0 0;
+  }
+
+  .page.workers-fit .workers-savebar {
+    margin-top: 0.4rem;
+    padding: 0.4rem 0.75rem;
+  }
+
+  .page.workers-fit .workers-savebar.has-changes {
+    padding-right: 4.75rem;
+  }
+}
+
+/* ---------- Map + side column ---------- */
+/* Phone / tablet: the side column dissolves; legend above the map, off-map list below. */
+.fm-main {
+  display: flex;
+  flex-direction: column;
+}
+
+@media screen and (max-width: 1023.98px) {
+  .fm-side {
+    display: contents;
+  }
+
+  .fm-main > .fm-svg-wrap,
+  .fm-main > .fm-name-table-wrap {
+    order: 1;
+  }
+
+  .fm-side > .fm-offmap {
+    order: 2;
+  }
+}
+
+/* Desktop: the map uses the full height, the side column scrolls by itself. */
+@media screen and (min-width: 1024px) {
+  .fm-main {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+
+  .fm-main > .fm-svg-wrap,
+  .fm-main > .fm-name-table-wrap {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .fm-side {
+    display: flex;
+    flex: 0 0 15rem;
+    flex-direction: column;
+    gap: 0.6rem;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 0.15rem;
+  }
+
+  .fm-side .fm-legend {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+    margin: 0;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .fm-side .fm-skill-chips {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    overflow: visible;
+  }
+
+  .fm-side .fm-skill-chips .chip {
+    justify-content: flex-start;
+  }
+
+  .fm-side .fm-offmap {
+    margin: 0;
+  }
+
+  .fm-side .fm-inspect-hint {
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+}
+
+@media screen and (min-width: 1024px) and (min-height: 560px) {
+  .page.fm-fit > .fm-main {
+    flex: 1 1 0;
+    min-height: 200px;
+  }
+
+  .page.fm-fit .fm-main > .fm-svg-wrap,
+  .page.fm-fit .fm-main > .fm-name-table-wrap {
+    max-height: none;
+  }
+
+  .page.fm-fit .fm-side .fm-offmap[open] {
+    max-height: none;
+  }
+}
+
+@media screen and (min-width: 1024px) {
+  .fm-side .fm-skill-chips {
+    gap: 0.25rem;
+  }
+
+  .fm-side .fm-skill-chips .chip {
+    min-height: 30px;
+    padding: 0.15rem 0.65rem;
+    font-size: 0.8rem;
+  }
+}
+
+/* Admin roles: the "Hidden pages" section of the matrix. */
+.roles-matrix .matrix-section th {
+  padding-top: 0.9rem;
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-align: left;
+}
+
+.roles-matrix .matrix-hide {
+  text-align: center;
+}
+
+/* Name table: row actions and the "Add worker" panel. */
+/* The action buttons sit in a wrapper so the cell stays a real table cell. */
+.fm-row-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.fm-row-actions-inner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.3rem;
+}
+
+/* Every name-table cell lines up on the row's middle (text, inputs, boxes). */
+.fm-name-table th,
+.fm-name-table td {
+  vertical-align: middle;
+}
+
+.fm-name-table .fm-cell-check {
+  display: block;
+  margin: 0 auto;
+}
+
+/* The toolbar wraps instead of pushing buttons past the window edge. */
+.fm-toolbar {
+  min-width: 0;
+}
+
+.fm-toolbar .search-wrap {
+  max-width: 34rem;
+}
+
+.fm-add-worker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.fm-profile-only {
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+.fm-profile-only-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+}
+
+/* Name table fits the window on laptop screens: narrower minimums. */
+.fm-name-table .fm-cell {
+  min-width: 3.5rem;
+}
+
+.fm-name-table [data-col="2"],
+.fm-name-table [data-col="4"] {
+  min-width: 7rem;
+}
+
+@media screen and (min-width: 1024px) {
+  .fm-name-table {
+    min-width: 0;
+  }
+}
+
+/* Vacant, Machine and Status take only what they need; names get the rest. */
+.fm-name-table tr > :nth-child(6),
+.fm-name-table tr > :nth-child(7),
+.fm-name-table tr > :nth-child(8) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.fm-name-table [data-col="2"] {
+  min-width: 9.5rem;
+}
+
+.fm-name-table [data-col="4"] {
+  min-width: 8.5rem;
+}
+
+/* Contractor map link card (contractor detail). */
+.portal-card {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.portal-link {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.portal-link input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+}
+
+.contractor-comment p {
+  margin: 0;
+}
+
+.contractor-comment-text {
+  margin-top: 0.25rem !important;
+  white-space: pre-wrap;
+}
+
+/* Area marks on the floor map: production lines (print well in black & white). */
+.fm-areas {
+  pointer-events: none;
+}
+
+.fm-area {
+  fill: none;
+  stroke-width: 3;
+  stroke-dasharray: 9 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.fm-area-label {
+  fill: #ffffff;
+  font-weight: 800;
+  dominant-baseline: central;
+  letter-spacing: 0.02em;
+}
+
+/* Contractor list: map link buttons under the company name. */
+.company-cell {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.contractor-map-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.contractor-map-buttons .btn {
+  min-height: 30px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.78rem;
+}
+
+.person-card .contractor-map-buttons {
+  padding: 0 0.85rem 0.75rem;
+}
+
+.data-table .contractor-map-buttons {
+  flex-wrap: nowrap;
+}
+
+/* Worker editor: the Save button stays at the bottom of the panel. */
+.worker-where {
+  margin: 0 0 0.2rem;
+}
+
+.worker-save-bar {
+  position: sticky;
+  bottom: -1px;
+  z-index: 2;
+  margin: 0.4rem 0 0;
+  padding: 0.6rem 0 calc(0.6rem + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 -6px 14px rgb(15 23 42 / 8%);
+}
+
+.worker-save-bar .worker-save {
+  margin-top: 0;
+}
+
+/* ---------- QC records page (qc.js) ---------- */
+.qc-counters {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.qc-table th,
+.qc-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.qc-table thead th {
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.qc-rate {
+  font-weight: 750;
+}
+
+.qc-rate.is-warn {
+  color: #b45309;
+}
+
+.qc-rate.is-bad {
+  color: var(--danger);
+}
+
+.qc-row {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.qc-history {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.qc-history-item p {
+  margin: 0.2rem 0;
+}
+
+.qc-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.qc-notes {
+  white-space: pre-wrap;
+}
+
+.worker-qc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-3);
+  font-size: 0.88rem;
+}
+
+.worker-qc-actions {
+  display: flex;
+  gap: 0.3rem;
+}
+
+@media screen and (max-width: 767.98px) {
+  .qc-counters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* One card per worker on the phone. */
+  .qc-table thead {
+    display: none;
+  }
+
+  .qc-table,
+  .qc-table tbody {
+    display: block;
+    min-width: 0;
+  }
+
+  .qc-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.2rem 0.75rem;
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .qc-table th,
+  .qc-table td {
+    padding: 0;
+    border: 0;
+  }
+
+  .qc-table tr > :nth-child(2),
+  .qc-table tr > :nth-child(3),
+  .qc-table tr > :nth-child(4),
+  .qc-table tr > :nth-child(5) {
+    display: none;
+  }
+
+  .qc-table tr > :nth-child(6)::before {
+    content: "Defects ";
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  .qc-table tr > :nth-child(6) {
+    text-align: right;
+  }
+
+  .qc-table tr > :nth-child(8) {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    font-size: 0.85rem;
   }
 }

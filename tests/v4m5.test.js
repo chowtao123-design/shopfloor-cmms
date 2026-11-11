@@ -19,10 +19,15 @@ import {
   SYSTEM_PROMPT,
   aiSystemPrompt,
   buildContext,
+  buildLibrarySection,
   detectQuestionMachines,
+  libraryFileList,
   manualChunksFor,
+  parseLibraryRead,
   parseProposals,
+  readLibraryFile,
   splitIntoChunks,
+  stripLibraryRead,
   stripWatermarkLines,
 } from '../server/ai.js';
 
@@ -47,7 +52,7 @@ const PDF_MIME = 'application/pdf';
 // ---------------------------------------------------------------------------
 
 function startFakeProvider() {
-  const state = { requests: [] };
+  const state = { requests: [], replies: null };
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
@@ -63,10 +68,12 @@ function startFakeProvider() {
       }
       if (req.method === 'POST' && req.url === '/chat/completions') {
         state.requests.push({ authorization: req.headers.authorization, body });
+        const queued =
+          Array.isArray(state.replies) && state.replies.length > 0 ? state.replies.shift() : null;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(
           JSON.stringify(
-            state.reply ?? { choices: [{ message: { content: 'plain reply' } }] },
+            queued ?? state.reply ?? { choices: [{ message: { content: 'plain reply' } }] },
           ),
         );
         return;
@@ -403,6 +410,49 @@ test('detectQuestionMachines: name, model with different spacing, serial, SO num
     'the machine of the mentioned SO number',
   );
   assert.deepEqual(ids(detectQuestionMachines('total guess about nothing', machines, [])), []);
+  // A numeric machine name must not match inside a model number: otherwise
+  // "CP-180" looks like a mention of machine 18 and the snapshot drops the
+  // manual that was actually asked about.
+  const numeric = [{ id: 'm-18', data: { name: '18', model: 'DDL-8700-7' } }];
+  assert.deepEqual(ids(detectQuestionMachines('CP-180 panel error code', numeric, [])), [], '18 does not match inside 180');
+  assert.deepEqual(ids(detectQuestionMachines('machine 18 needs oil', numeric, [])), ['m-18'], 'a standalone number still matches');
+});
+
+test('buildLibrarySection: a panel model named in the question keeps its manual', async () => {
+  const iso = new Date().toISOString();
+  const fileId = crypto.randomUUID();
+  handle.store.insertFile({
+    id: fileId,
+    name: 'cp-180.pdf',
+    mime: PDF_MIME,
+    size: 512,
+    sha256: 'v4m5-panel',
+    uploadedAt: iso,
+  });
+  handle.store.upsertFileText({
+    fileId,
+    status: 'ok',
+    pages: [
+      'CP-180 control panel: error code E-07 means the pedal sensor is disconnected. Reconnect the pedal sensor connector.',
+    ],
+    chars: 120,
+    extractedAt: iso,
+  });
+  await put(ada, 'libraryItems', crypto.randomUUID(), {
+    kind: 'manual',
+    title: 'CP-180 Manual',
+    models: ['CP-180'],
+    attachments: [{ fileId, name: 'cp-180.pdf', mime: PDF_MIME, size: 512 }],
+  });
+  const options = {
+    machinesList: handle.store.listRecords('machines'),
+    workOrders: handle.store.listRecords('workOrders'),
+    partsList: handle.store.listRecords('parts'),
+  };
+  const plain = buildLibrarySection(handle.store, 'CP-180 panel error code', options).join('\n');
+  assert.ok(plain.includes('[Manual: CP-180 Manual'), 'the panel manual is in the snapshot');
+  const mixed = buildLibrarySection(handle.store, 'Juki DDL-8700 Line 1 CP-180 panel error code', options).join('\n');
+  assert.ok(mixed.includes('[Manual: CP-180 Manual'), 'the panel manual survives a machine match');
 });
 
 test('stripWatermarkLines: manualslib line and more-than-half-page boilerplate go', () => {
@@ -487,7 +537,11 @@ test('buildContext: a 200-page manual stays within the 7,000-char library budget
   assert.ok(context.length <= CONTEXT_MAX_CHARS, `context capped at ${CONTEXT_MAX_CHARS}, got ${context.length}`);
   const start = context.indexOf(LIBRARY_HEADERS.block);
   assert.ok(start > -1, 'library block present');
-  const end = context.indexOf('\nOpen service orders');
+  // The openable-file catalog is a separate block with its own budget; stop
+  // the measurement at its header so this still checks the 7,000-char library
+  // block itself.
+  const catalogAt = context.indexOf(LIBRARY_HEADERS.files);
+  const end = catalogAt > start ? catalogAt : context.indexOf('\nOpen service orders');
   assert.ok(end > start, 'the extract follows the library block (open order fixture)');
   const slice = context.slice(start, end);
   assert.ok(
@@ -570,14 +624,16 @@ test('parseProposals: libraryItems kept for kind method only; protected fields d
     '```',
   ].join('\n');
   const proposals = parseProposals(reply);
-  assert.equal(proposals.length, 2);
+  assert.equal(proposals.length, 3);
   assert.equal(proposals[0].store, 'libraryItems');
   assert.equal(proposals[0].id, null, 'create-only: no existing id needed');
   assert.equal(proposals[0].fields.kind, 'method');
   assert.equal('number' in proposals[0].fields, false);
   assert.equal('updatedBy' in proposals[0].fields, false);
-  assert.equal(proposals[1].store, 'machines');
-  assert.deepEqual(proposals[1].fields, { status: 'down' });
+  assert.equal(proposals[1].store, 'parts', 'parts are now editable');
+  assert.deepEqual(proposals[1].fields, { name: 'x' });
+  assert.equal(proposals[2].store, 'machines');
+  assert.deepEqual(proposals[2].fields, { status: 'down' });
 });
 
 test('POST /api/ai/apply: libraryItems creates a repair method attributed to the AI Assistant', async () => {
@@ -700,4 +756,101 @@ test('POST /api/ai/chat: library text reaches the provider; libraryItems proposa
   assert.ok(system.content.includes(LIBRARY_HEADERS.block), 'the library block reaches the provider');
   assert.ok(system.content.includes('[Repair method: Thread breaks at high speed]'));
   assert.ok(system.content.includes('[Manual: Juki DDL-8700 manual'));
+});
+
+test('buildContext: the Library files catalog lists openable PDFs with fileId and pages', () => {
+  const context = buildContext(handle.store, techUser(), 'Anything about the DDL 8700-7 manual?');
+  assert.ok(context.includes(LIBRARY_HEADERS.files), 'the catalog header is in the snapshot');
+  assert.ok(context.includes(pdf1Id), 'the manual file id is listed for on-demand reading');
+  assert.ok(context.includes('Juki DDL-8700 manual'), 'the manual title is listed');
+  assert.ok(context.includes(`${PDF1_PAGES.length} pages`), 'the page count is listed');
+});
+
+test('parseLibraryRead/stripLibraryRead: reads the request and removes it from the reply', () => {
+  const reply = 'Looking it up.\n```json\n{"readLibrary":{"fileId":"abc","query":"solenoid"}}\n```';
+  const request = parseLibraryRead(reply);
+  assert.equal(request.fileId, 'abc');
+  assert.equal(request.query, 'solenoid');
+  assert.equal(request.fromPage, null);
+  assert.equal(stripLibraryRead(reply), 'Looking it up.');
+  assert.equal(parseLibraryRead('```json\n{"proposals":[]}\n```'), null, 'other fenced blocks are ignored');
+  assert.equal(
+    stripLibraryRead('```json\n{"proposals":[]}\n```'),
+    '```json\n{"proposals":[]}\n```',
+    'proposal blocks are preserved',
+  );
+});
+
+test('readLibraryFile: reads a page range and searches pages; other files are refused', () => {
+  const files = libraryFileList(handle.store, { machinesList: handle.store.listRecords('machines') });
+  assert.ok(files.some((file) => file.fileId === pdf1Id), 'the manual is in the catalog');
+
+  const page = readLibraryFile(
+    handle.store,
+    { fileId: pdf1Id, fromPage: 3, toPage: 3, query: null },
+    files,
+  );
+  assert.equal(page.ok, true);
+  assert.ok(page.text.includes('[Manual: Juki DDL-8700 manual, p. 3]'), 'the page is labelled for citation');
+  assert.ok(page.text.includes('Error code E302'), 'the page text reaches the model');
+
+  const search = readLibraryFile(
+    handle.store,
+    { fileId: pdf200Id, query: 'needle bar timing', fromPage: null, toPage: null },
+    files,
+  );
+  assert.equal(search.ok, true);
+  assert.ok(search.text.includes('p. 1'), 'search returns page numbers');
+  const hits = search.text.match(/^- p\./gm) ?? [];
+  assert.ok(hits.length <= 10, `search is capped, got ${hits.length}`);
+
+  const denied = readLibraryFile(
+    handle.store,
+    { fileId: crypto.randomUUID(), fromPage: 1, toPage: 1, query: null },
+    files,
+  );
+  assert.equal(denied.ok, false, 'a file outside the catalog is refused');
+  assert.ok(denied.text.includes('not a readable library PDF'));
+});
+
+test('POST /api/ai/chat: the model can open a Library PDF and answer from it', async () => {
+  const set = await api(ada, '/api/ai/config', {
+    method: 'PUT',
+    body: {
+      provider: 'openai-compatible',
+      openai: { baseURL: fake.url, model: 'test-model', apiKey: 'sk-v4m5-test' },
+    },
+  });
+  assert.equal(set.res.status, 200, JSON.stringify(set.body));
+  fake.state.requests.length = 0;
+  fake.state.reply = null;
+  fake.state.replies = [
+    {
+      choices: [
+        {
+          message: {
+            content: `\`\`\`json\n${JSON.stringify({ readLibrary: { fileId: pdf1Id, fromPage: 3, toPage: 3 } })}\n\`\`\``,
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            content: 'E302 means the upper thread broke. (Manual: Juki DDL-8700 manual, p. 3)',
+          },
+        },
+      ],
+    },
+  ];
+  const { res, body } = await chat(tom, 'Open the manual and tell me what error E302 means');
+  assert.equal(res.status, 200, JSON.stringify(body));
+  assert.equal(body.reply, 'E302 means the upper thread broke. (Manual: Juki DDL-8700 manual, p. 3)');
+  assert.equal(body.reply.includes('readLibrary'), false, 'the read request never reaches the user');
+  assert.equal(fake.state.requests.length, 2, 'one read request, then the answer');
+  const second = fake.state.requests[1].body.messages;
+  const readResult = second[second.length - 1].content;
+  assert.ok(readResult.includes('Error code E302'), 'the page text is sent back to the model');
+  assert.ok(readResult.includes('[Manual: Juki DDL-8700 manual, p. 3]'), 'the page label is sent back');
 });

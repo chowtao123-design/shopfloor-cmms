@@ -3,7 +3,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { extractPdfText } from './pdfText.js';
+import { extractPdfText, PDF_READER_VERSION } from './pdfText.js';
+
+const READER_VERSION_KEY = 'pdfText.readerVersion';
 
 /**
  * Background PDF text extraction (SPEC-v4.md section 4.2).
@@ -122,6 +124,13 @@ export function startTextExtractionQueue(store) {
   state.stopped = false;
   state.pending.length = 0;
   try {
+    // A newer reader retries the PDFs an older one could not open, once.
+    if (store.getSetting(READER_VERSION_KEY) !== String(PDF_READER_VERSION)) {
+      for (const row of store.listFailedFileTexts()) {
+        store.upsertFileText({ fileId: row.file_id, status: PENDING, pages: [], chars: 0, extractedAt: new Date().toISOString() });
+      }
+      store.setSetting(READER_VERSION_KEY, String(PDF_READER_VERSION));
+    }
     for (const row of store.listFilesNeedingText()) {
       if (state.pending.includes(row.id)) continue;
       state.pending.push(row.id);

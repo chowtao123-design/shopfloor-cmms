@@ -299,6 +299,13 @@ test('changes feed is ordered by seq and pages with since/limit/more', async () 
   assert.equal(end.body.records.length, 0);
   assert.equal(end.body.more, false);
   assert.equal(end.body.lastSeq, Math.max(...seqs));
+  assert.equal(end.body.reset, undefined);
+
+  // A position past the newest change belongs to another database: resync.
+  const ahead = await changes(ben, Math.max(...seqs) + 1000, undefined);
+  assert.equal(ahead.body.records.length, 0);
+  assert.equal(ahead.body.reset, true);
+  assert.equal(ahead.body.lastSeq, Math.max(...seqs));
 });
 
 test('history lists newest first with before/after for every version', async () => {

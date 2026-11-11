@@ -57,7 +57,8 @@ test('index.html: sidebar collapses to an icon rail via the toggle button', () =
 test('index.html: phone bottom bar is Home · Orders · Prev. Maint. · Machines · More', () => {
   const html = read('index.html');
   for (const label of ['Home', 'Orders', 'Prev. Maint.', 'Machines', 'More']) {
-    assert.match(html, new RegExp(`>${label}</(a|button)>`), label);
+    // v6: each tab is an icon + <span>label</span>.
+    assert.match(html, new RegExp(`<span>${label.replace('.', '\\.')}</span></(a|button)>`), label);
   }
   assert.match(html, /id="more-button"/);
   assert.match(html, /aria-haspopup="dialog"/);

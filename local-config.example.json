@@ -1,0 +1,22 @@
+{
+  "_comment": "Copy to local-config.json and fill in. local-config.json is private (not in git).",
+  "wpfiCsvUrl": "https://docs.google.com/spreadsheets/d/<sheet id>/export?format=csv&gid=<tab id>",
+  "wpfiForm": {
+    "url": "https://docs.google.com/forms/d/e/<form id>/viewform",
+    "date": "entry.<id>",
+    "station": "entry.<id>",
+    "workerId": "entry.<id>",
+    "workerName": "entry.<id>",
+    "issue": "entry.<id>",
+    "inspector": "entry.<id>",
+    "issues": [
+      "Scissors Untied",
+      "Cell Phone",
+      "Earphone"
+    ],
+    "inspectors": [
+      "Inspector A",
+      "Inspector B"
+    ]
+  }
+}
