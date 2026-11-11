@@ -22,6 +22,7 @@ import {
   pmDueDate,
   pmPaused,
   pmState,
+  resolveMachineType,
   searchParts,
   searchWorkOrders,
   shouldOfferMachineDown,
@@ -654,6 +655,22 @@ test('MACHINE_TYPES covers every grouped value plus the legacy sewing', () => {
   assert.ok(MACHINE_TYPES.includes('pressing'));
   assert.ok(MACHINE_TYPES.includes('building'));
   assert.equal(new Set(MACHINE_TYPES).size, MACHINE_TYPES.length, 'no duplicate type values');
+});
+
+test('resolveMachineType: built-in, custom option and Other label', () => {
+  assert.deepEqual(resolveMachineType('single-needle'), { type: 'single-needle', typeLabel: '' });
+  assert.deepEqual(resolveMachineType('sewing'), { type: 'sewing', typeLabel: '' });
+  // A "Your types" option carries the custom label as its value.
+  assert.deepEqual(resolveMachineType('Piping machine'), { type: 'other', typeLabel: 'Piping machine' });
+  // The Other option uses the text field beside the select.
+  assert.deepEqual(resolveMachineType('other', '  Trim station  '), {
+    type: 'other',
+    typeLabel: 'Trim station',
+  });
+  // Selecting Other with an empty label stays invalid for the form to reject.
+  assert.deepEqual(resolveMachineType('other', ''), { type: 'other', typeLabel: '' });
+  assert.deepEqual(resolveMachineType('', ''), { type: 'other', typeLabel: '' });
+  assert.deepEqual(resolveMachineType(null), { type: 'other', typeLabel: '' });
 });
 
 test('customTypeOptions: de-dupes case-insensitively, most common spelling, A–Z', () => {

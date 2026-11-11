@@ -54,6 +54,7 @@ import {
 } from './branding.js';
 import {
   aiApplyProposal,
+  aiApplySkills,
   aiDeleteHistory,
   aiGetConfig,
   aiGetHistory,
@@ -67,13 +68,27 @@ import {
   can,
   enabledUsersWithAdminWrite,
   hasAdminWrite,
+  hiddenPagesOf,
   normalizePermissions,
   permissionsOf,
+  setHiddenPages,
   storeArea,
 } from './permissions.js';
 import { hashApiToken, openStore } from './store.js';
 import { ensureAgentUser, tokenPathAllowed, validTokenRequest } from './apiTokens.js';
 import { openApiSpec } from './openapi.js';
+import { readWpfi, refreshWpfi, startWpfiSchedule } from './wpfi.js';
+import { readLocalConfig, wpfiFormConfig } from './localConfig.js';
+import {
+  addPortalComment,
+  contractorForToken,
+  createPortalLink,
+  PORTAL_COMMENT_MAX,
+  portalLinkOf,
+  portalPayload,
+  portalWait,
+  revokePortalLink,
+} from './portal.js';
 
 /**
  * Shop Maintenance Log v2 team server: config from env, HTTP(S) server,
@@ -137,6 +152,7 @@ export function readConfig(env = process.env) {
     sessionDays: readInt(env, 'SESSION_DAYS', 14),
     backupKeep: readInt(env, 'BACKUP_KEEP', 30),
     backupDailyAt: readDailyAt(env),
+    wpfiUrl: env.WPFI_CSV_URL || '',
   };
 }
 
@@ -287,6 +303,8 @@ export function resolveStatic(rawUrl) {
   if (segments.length === 1) {
     const name = segments[0];
     if (name === 'index.html') return { rel: name, type: CONTENT_TYPES['.html'] };
+    // v6: the login-free contractor map page (its data needs the secret link).
+    if (name === 'contractor.html') return { rel: name, type: CONTENT_TYPES['.html'] };
     if (name === 'styles.css') return { rel: name, type: CONTENT_TYPES['.css'] };
     if (name === 'manifest.webmanifest') return { rel: name, type: CONTENT_TYPES['.webmanifest'] };
     if (name.endsWith('.js')) return { rel: name, type: CONTENT_TYPES['.js'] };
@@ -533,6 +551,96 @@ function fileTextStatusHandler(req, res, ctx, params) {
   });
 }
 
+// Contractor map page (server/portal.js). Public: the secret link token
+// comes in the X-Portal-Token header; each token may load once and comment
+// once per 5 seconds (429 with an English + Chinese message otherwise).
+const PORTAL_SLOW_DOWN = (seconds) => ({
+  error: 'rate_limited',
+  message: `Please wait ${seconds} s before refreshing again. 请等待 ${seconds} 秒后再刷新。`,
+  retryAfter: seconds,
+});
+
+function portalContractor(req) {
+  const token = req.headers['x-portal-token'];
+  return { token: typeof token === 'string' ? token : '', contractor: null };
+}
+
+function getPortalHandler(req, res, ctx) {
+  const { token } = portalContractor(req);
+  const contractor = contractorForToken(ctx.store, token);
+  if (!contractor) {
+    sendJson(req, res, 404, { error: 'not_found', message: 'This link is not valid any more. 此链接已失效。' });
+    return;
+  }
+  const wait = portalWait(token, 'load');
+  if (wait > 0) {
+    sendJson(req, res, 429, PORTAL_SLOW_DOWN(wait), { 'Retry-After': String(wait) });
+    return;
+  }
+  sendJson(req, res, 200, portalPayload(ctx.store, contractor));
+}
+
+async function postPortalCommentHandler(req, res, ctx) {
+  const { token } = portalContractor(req);
+  const contractor = contractorForToken(ctx.store, token);
+  if (!contractor) {
+    sendJson(req, res, 404, { error: 'not_found', message: 'This link is not valid any more. 此链接已失效。' });
+    return;
+  }
+  const body = await readJsonBody(req);
+  if (!isJsonObject(body) || typeof body.orderId !== 'string' || typeof body.text !== 'string') {
+    throw new HttpError(400, 'bad_request', 'Expected {orderId, text}');
+  }
+  const wait = portalWait(token, 'comment');
+  if (wait > 0) {
+    sendJson(req, res, 429, PORTAL_SLOW_DOWN(wait), { 'Retry-After': String(wait) });
+    return;
+  }
+  const result = addPortalComment(ctx.store, contractor, body.orderId, body.text);
+  if (typeof result === 'string') {
+    const messages = {
+      empty: 'Write a comment first. 请先输入留言。',
+      too_long: `At most ${PORTAL_COMMENT_MAX} characters. 最多 ${PORTAL_COMMENT_MAX} 个字符。`,
+      not_found: 'This job is closed or not assigned to you. 此工单已关闭或未分配给您。',
+    };
+    sendJson(req, res, result === 'not_found' ? 404 : 400, { error: result, message: messages[result] });
+    return;
+  }
+  sendJson(req, res, 201, { comment: result });
+}
+
+/** Staff side, on the contractor record: show / make / revoke the link. */
+function contractorPortalHandler(level, action) {
+  return async (req, res, ctx, params) => {
+    requireArea(ctx, 'contractors', level);
+    const row = ctx.store.getRecord('contractors', params.id);
+    if (!row || Number(row.deleted) === 1) throw new HttpError(404, 'not_found', 'No such contractor');
+    if (action === 'create') createPortalLink(ctx.store, params.id);
+    if (action === 'revoke') revokePortalLink(ctx.store, params.id);
+    sendJson(req, res, 200, { token: portalLinkOf(ctx.store, params.id) });
+  };
+}
+
+// WPFI safety findings (server/wpfi.js): floor-map readers see them, writers
+// may pull the sheet again now instead of waiting for the weekly refresh.
+function getWpfiHandler(req, res, ctx) {
+  requireArea(ctx, 'floorMap', 'read');
+  sendJson(req, res, 200, {
+    ...readWpfi(ctx.store.dataDir),
+    configured: Boolean(ctx.config?.wpfiUrl),
+    // The Inspect page's pre-filled Google Form (private settings).
+    form: ctx.config?.wpfiForm || null,
+  });
+}
+
+async function refreshWpfiHandler(req, res, ctx) {
+  requireArea(ctx, 'floorMap', 'write');
+  if (!ctx.config?.wpfiUrl) {
+    throw new HttpError(400, 'not_configured', 'The WPFI sheet link is not set: add wpfiCsvUrl to local-config.json and restart the server');
+  }
+  sendJson(req, res, 200, await refreshWpfi(ctx.store.dataDir, ctx.config.wpfiUrl));
+}
+
 function getBrandingHandler(req, res, ctx) {
   sendJson(req, res, 200, brandingPayload(ctx.store, SERVER_VERSION));
 }
@@ -713,6 +821,7 @@ function meHandler(req, res, ctx) {
   sendJson(req, res, 200, {
     ...publicUser(ctx.user),
     permissions: permissionsOf(ctx.store, ctx.user.roleId),
+    hiddenPages: hiddenPagesOf(ctx.store, ctx.user.roleId),
   });
 }
 
@@ -911,12 +1020,13 @@ async function patchUserHandler(req, res, ctx, params) {
 // Roles (SPEC-v3.md sections 13.1, 13.2)
 // ---------------------------------------------------------------------------
 
-function publicRole(row) {
+function publicRole(row, store = null) {
   return {
     id: row.id,
     name: row.name,
     builtin: Number(row.builtin) === 1,
     permissions: JSON.parse(row.permissions),
+    ...(store ? { hiddenPages: hiddenPagesOf(store, row.id) } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     updatedBy: row.updated_by === undefined || row.updated_by === null ? null : row.updated_by,
@@ -931,7 +1041,7 @@ function getRoleOr404(ctx, id) {
 
 function listRolesHandler(req, res, ctx) {
   requireArea(ctx, 'admin', 'write');
-  sendJson(req, res, 200, ctx.store.listRoles().map(publicRole));
+  sendJson(req, res, 200, ctx.store.listRoles().map((row) => publicRole(row, ctx.store)));
 }
 
 async function createRoleHandler(req, res, ctx) {
@@ -941,7 +1051,7 @@ async function createRoleHandler(req, res, ctx) {
     throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
   }
   for (const key of Object.keys(body)) {
-    if (!['name', 'permissions', 'copyOf'].includes(key)) {
+    if (!['name', 'permissions', 'copyOf', 'hiddenPages'].includes(key)) {
       throw new HttpError(400, 'bad_request', `Unknown body field "${key}"`);
     }
   }
@@ -961,7 +1071,14 @@ async function createRoleHandler(req, res, ctx) {
     permissions = normalizeRolePermissionsInput(body.permissions);
   }
   const role = ctx.store.createRole({ name: name.value, permissions, updatedBy: ctx.user.id });
-  sendJson(req, res, 201, publicRole(role));
+  if (body.hiddenPages !== undefined) {
+    try {
+      setHiddenPages(ctx.store, role.id, body.hiddenPages);
+    } catch (error) {
+      throw new HttpError(400, 'bad_request', error.message);
+    }
+  }
+  sendJson(req, res, 201, publicRole(role, ctx.store));
 }
 
 function normalizeRolePermissionsInput(raw) {
@@ -979,11 +1096,25 @@ async function patchRoleHandler(req, res, ctx, params) {
     throw new HttpError(400, 'bad_request', 'Expected a JSON object body');
   }
   for (const key of Object.keys(body)) {
-    if (!['name', 'permissions'].includes(key)) {
+    if (!['name', 'permissions', 'hiddenPages'].includes(key)) {
       throw new HttpError(400, 'bad_request', `Unknown body field "${key}"`);
     }
   }
   const role = getRoleOr404(ctx, params.id);
+  if (body.hiddenPages !== undefined) {
+    if (Number(role.builtin) === 1 && role.name === 'Administrator') {
+      throw new HttpError(409, 'role_immutable', 'The Administrator role cannot be changed');
+    }
+    try {
+      setHiddenPages(ctx.store, role.id, body.hiddenPages);
+    } catch (error) {
+      throw new HttpError(400, 'bad_request', error.message);
+    }
+    if (body.name === undefined && body.permissions === undefined) {
+      sendJson(req, res, 200, publicRole(role, ctx.store));
+      return;
+    }
+  }
   if (Number(role.builtin) === 1 && role.name === 'Administrator') {
     throw new HttpError(409, 'role_immutable', 'The Administrator role cannot be changed');
   }
@@ -1026,7 +1157,7 @@ async function patchRoleHandler(req, res, ctx, params) {
     }
   }
   const updated = ctx.store.updateRole(role.id, { ...fields, updatedBy: ctx.user.id });
-  sendJson(req, res, 200, publicRole(updated));
+  sendJson(req, res, 200, publicRole(updated, ctx.store));
 }
 
 async function deleteRoleHandler(req, res, ctx, params) {
@@ -1102,6 +1233,13 @@ const ROUTES = [
   compileRoute('POST', '/api/files', { auth: true }, uploadFileHandler),
   compileRoute('GET', '/api/files/:id', { auth: true }, getFileHandler),
   compileRoute('GET', '/api/files/:id/text-status', { auth: true }, fileTextStatusHandler),
+  compileRoute('GET', '/api/portal', { auth: false }, getPortalHandler),
+  compileRoute('POST', '/api/portal/comment', { auth: false }, postPortalCommentHandler),
+  compileRoute('GET', '/api/contractors/:id/portal', { auth: true }, contractorPortalHandler('read', 'show')),
+  compileRoute('POST', '/api/contractors/:id/portal', { auth: true }, contractorPortalHandler('write', 'create')),
+  compileRoute('DELETE', '/api/contractors/:id/portal', { auth: true }, contractorPortalHandler('write', 'revoke')),
+  compileRoute('GET', '/api/wpfi', { auth: true }, getWpfiHandler),
+  compileRoute('POST', '/api/wpfi/refresh', { auth: true }, refreshWpfiHandler),
   compileRoute('GET', '/api/branding', { auth: false }, getBrandingHandler),
   compileRoute('PUT', '/api/branding', { auth: true }, putBrandingHandler),
   compileRoute('POST', '/api/branding/logo', { auth: true }, postBrandingLogoHandler),
@@ -1115,6 +1253,8 @@ const ROUTES = [
   compileRoute('GET', '/api/ai/status', { auth: true }, aiRoute(aiGetStatus, 'aiAssistant', 'read')),
   compileRoute('POST', '/api/ai/chat', { auth: true }, aiRoute(aiPostChat, 'aiAssistant', 'read')),
   compileRoute('POST', '/api/ai/apply', { auth: true }, aiRoute(aiApplyProposal, 'aiAssistant', 'read')),
+  // v6: batch skill updates (chat "Apply all" and the Workers batch editor); floorMap Write checked inside.
+  compileRoute('POST', '/api/ai/apply-skills', { auth: true }, aiRoute(aiApplySkills, 'floorMap', 'write')),
   compileRoute('GET', '/api/ai/history', { auth: true }, aiRoute(aiGetHistory, 'aiAssistant', 'read')),
   compileRoute('DELETE', '/api/ai/history', { auth: true }, aiRoute(aiDeleteHistory, 'aiAssistant', 'read')),
 ];
@@ -1317,6 +1457,11 @@ export async function startServer(options = {}) {
     ...(options.backupKeep !== undefined ? { backupKeep: options.backupKeep } : {}),
     ...(options.backupDailyAt !== undefined ? { backupDailyAt: options.backupDailyAt } : {}),
   };
+  // Private shop settings (local-config.json): the WPFI sheet unless the
+  // environment set one, and the WPFI form for the Inspect page.
+  const local = options.localConfig ?? readLocalConfig();
+  if (!config.wpfiUrl && typeof local.wpfiCsvUrl === 'string') config.wpfiUrl = local.wpfiCsvUrl;
+  config.wpfiForm = wpfiFormConfig(local);
 
   const store = openStore(config.dataDir);
 
@@ -1383,6 +1528,8 @@ const isMain = isMainModule(import.meta.url);
 if (isMain) {
   try {
     const handle = await startServer();
+    // Only the real server downloads the WPFI sheet (tests never hit the network).
+    startWpfiSchedule({ dataDir: handle.store.dataDir, url: handle.config.wpfiUrl });
     const displayHost = handle.host === '0.0.0.0' ? '(any LAN address)' : handle.host;
     console.log(`Shop Maintenance Log v2 server ${SERVER_VERSION} listening`);
     console.log(`  ${handle.scheme}://${displayHost}:${handle.port}`);

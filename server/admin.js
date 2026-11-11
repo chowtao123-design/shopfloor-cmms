@@ -27,6 +27,7 @@ const USAGE = `Usage:
   node server/admin.js token revoke <token-id>
   node server/admin.js import-v1 <file> --as <username>
   node server/admin.js import-floor-map <layout.json> <stations.json> [--name "Main floor"] [--replace]
+  node server/admin.js link-floor-machines [--map "Main floor"] [--dry-run]
   node server/admin.js restore <backup-file> [--yes]
 
 Accounts live in the SQLite database under DATA_DIR (default: ./data).
@@ -607,6 +608,114 @@ async function cmdImportFloorMap(args) {
   }
 }
 
+/**
+ * Candidate machine keys for a station code, beyond the exact name match the
+ * import uses: "SN 45" -> "45" (single-needle machines are named by number),
+ * "DF3" -> "DF-03", "BT4 Bartack" -> "BT4". Codes for operator seats (QC,
+ * PAC, HP, TRIM...) produce no key and stay unlinked (SPEC-v5.md section 4).
+ */
+function stationMachineKeys(code) {
+  const text = String(code ?? '').trim();
+  if (text === '') return [];
+  const keys = [machineKey(text)];
+  const sn = /^SN\s*0*(\d+)$/i.exec(text);
+  if (sn !== null) keys.push(machineKey(sn[1]));
+  const df = /^DF\s*-?\s*0*(\d+)$/i.exec(text);
+  if (df !== null) keys.push(machineKey(`DF-0${df[1]}`), machineKey(`DF${df[1]}`));
+  const bt = /^BT\s*0*(\d+)(?:\b|$)/i.exec(text);
+  if (bt !== null) keys.push(machineKey(`BT${bt[1]}`));
+  return [...new Set(keys.filter((key) => key !== ''))];
+}
+
+/** Link floor stations to machine records by code; prints counts only. */
+async function cmdLinkFloorMachines(args) {
+  let mapName = null;
+  let dryRun = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--dry-run') {
+      dryRun = true;
+    } else if (arg === '--map') {
+      mapName = args[i + 1] ?? null;
+      i += 1;
+      if (typeof mapName !== 'string' || mapName.trim() === '') {
+        throw new Error('--map needs a floor name');
+      }
+      mapName = mapName.trim();
+    } else {
+      console.error(`Unknown argument: ${arg}`);
+      return usageError();
+    }
+  }
+
+  const store = openStore(DATA_DIR);
+  try {
+    const user = ensureSystemUser(store);
+    const byKey = new Map();
+    const duplicated = new Set();
+    for (const record of store.listRecords('machines')) {
+      const key = machineKey(record.data.name);
+      if (key === '') continue;
+      if (byKey.has(key)) duplicated.add(key);
+      byKey.set(key, record.id);
+    }
+    for (const key of duplicated) byKey.delete(key);
+
+    const maps = store.listRecords('floorMaps');
+    const targetMaps = mapName === null ? maps : maps.filter((record) => record.data.name === mapName);
+    if (targetMaps.length === 0) {
+      throw new Error(mapName === null ? 'there is no floor map to link' : `no floor map named "${mapName}"`);
+    }
+    const mapIds = new Set(targetMaps.map((record) => record.id));
+    const stations = store.listRecords('floorStations').filter((record) => mapIds.has(record.data.mapId));
+
+    let linked = 0;
+    let already = 0;
+    let ambiguous = 0;
+    const unmatched = new Map();
+    for (const station of stations) {
+      if (station.data.machineId !== null && station.data.machineId !== undefined) {
+        already += 1;
+        continue;
+      }
+      const candidates = [
+        ...new Set(stationMachineKeys(station.data.code).map((key) => byKey.get(key)).filter(Boolean)),
+      ];
+      if (candidates.length > 1) {
+        ambiguous += 1;
+        continue;
+      }
+      if (candidates.length === 0) {
+        const code = String(station.data.code ?? '').trim();
+        if (code !== '') unmatched.set(code, (unmatched.get(code) ?? 0) + 1);
+        continue;
+      }
+      if (!dryRun) {
+        putRecord(store, {
+          storeName: 'floorStations',
+          id: station.id,
+          body: { data: { ...station.data, machineId: candidates[0] } },
+          user,
+          note: 'linked to a machine by the admin CLI',
+        });
+      }
+      linked += 1;
+    }
+
+    console.log(
+      `${dryRun ? 'Would link' : 'Linked'} ${linked} station(s) to a machine; ${already} already linked, ${ambiguous} ambiguous.`
+    );
+    const codes = [...unmatched.keys()].sort();
+    if (codes.length > 0) {
+      console.log(`  ${codes.length} distinct code(s) without a machine match: ${codes.join(', ')}.`);
+    }
+    if (dryRun) console.log('  Dry run: nothing was written.');
+    return 0;
+  } finally {
+    if (typeof store.close === 'function') store.close();
+  }
+}
+
 /** Recorded backup row for `name` in the given database file, or null. */
 function recordedBackup(dbFile, name) {
   let db = null;
@@ -798,6 +907,8 @@ async function main(argv) {
       return cmdImportV1(args);
     case 'import-floor-map':
       return cmdImportFloorMap(args);
+    case 'link-floor-machines':
+      return cmdLinkFloorMachines(args);
     case 'restore':
       return cmdRestore(args);
     case '--help':

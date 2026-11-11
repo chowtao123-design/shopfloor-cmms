@@ -623,6 +623,10 @@ export function openStore(dataDir) {
      * run): the startup extraction sweep (SPEC-v4.md section 4.2), oldest
      * upload first.
      */
+    /** file_texts rows an older reader could not open ('error'). */
+    listFailedFileTexts() {
+      return db.prepare("SELECT file_id FROM file_texts WHERE status = 'error'").all();
+    },
     listFilesNeedingText() {
       return db
         .prepare(
@@ -941,8 +945,11 @@ export function openStore(dataDir) {
       if (records.length > 0) {
         lastSeq = records[records.length - 1].seq;
       } else {
-        const max = db.prepare('SELECT MAX(seq) AS seq FROM records').get();
-        lastSeq = Math.max(since, Number(max && max.seq) || 0);
+        const max = Number(db.prepare('SELECT MAX(seq) AS seq FROM records').get()?.seq) || 0;
+        // A client position past the newest change came from another
+        // database (restored backup, a copy run at home): tell it to resync.
+        if (since > max) return { records, lastSeq: max, more: false, reset: true };
+        lastSeq = since;
       }
       return { records, lastSeq, more };
     },

@@ -12,14 +12,14 @@ import {
   toServerData,
 } from './logic-sync.js';
 import { areaLabel } from './permissions.js';
-
+import { newRecordId, planIdRepairs } from './logic-ids.js';
 // v4 (SPEC-v4.md section 2): purchaseRequests pull like the other record
 // stores (stored offline by db.js; the requests page reads them in V4-M2).
 // v4 (SPEC-v4.md section 4.1): libraryItems too, so the Library page (M4)
 // and the offline mirror work from the same sync.
 // v5 (SPEC-v5.md section 1): floorMaps and floorStations arrive the same
 // way; the map page (V5-M2) renders them from the local mirror.
-const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests', 'libraryItems', 'floorMaps', 'floorStations'];
+const RECORD_STORES = ['machines', 'parts', 'workOrders', 'pmTasks', 'coworkers', 'contractors', 'purchaseRequests', 'libraryItems', 'floorMaps', 'floorStations', 'workerProfiles', 'qcRecords'];
 const PULL_INTERVAL_MS = 30000;
 const PULL_PAGE_LIMIT = 500;
 const MAX_PULL_PAGES = 200;
@@ -45,10 +45,10 @@ function nowISO() {
 }
 
 function uid() {
-  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
-  }
-  return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  // Always a UUID: the server refuses any other record id (SPEC-v2.md 7.1),
+  // and `crypto.randomUUID` is missing outside secure contexts (the app is
+  // also served over plain HTTP on the LAN).
+  return newRecordId();
 }
 
 function dispatch(name, detail) {
@@ -409,6 +409,16 @@ export async function pull() {
         break;
       }
       const data = response.data || {};
+      if (data.reset === true && since > 0) {
+        // This device synced with a different database (its position is past
+        // the server's newest change), so its copy would never fill in: drop
+        // the cached records and the stale queue, then pull everything again.
+        console.warn(`Sync position ${since} is ahead of the server; reloading all data.`);
+        await resetLocalCopy({ dropQueue: true });
+        since = 0;
+        applied += 1;
+        continue;
+      }
       const records = Array.isArray(data.records) ? data.records : [];
       if (records.length > 0) {
         const localRecords = await loadLocalRecords();
@@ -564,6 +574,22 @@ export async function start(user) {
   schedulePush();
 }
 
+/**
+ * Forget the cached records and the sync position so the next pull loads
+ * everything from the server. Used at every interactive sign-in: a device
+ * that last synced with another database (an old test run, a restored
+ * backup) would otherwise only receive the newest changes and show empty
+ * pages. Unsynced edits stay queued unless `dropQueue`.
+ */
+export async function resetLocalCopy({ dropQueue = false } = {}) {
+  for (const store of db.STORES) await db.clear(store);
+  if (dropQueue) {
+    await db.clear(db.OUTBOX_STORE);
+    await db.setMeta('failed', []);
+  }
+  await db.setMeta('lastSeq', 0);
+}
+
 /** Stop syncing and clear timers (called on sign-out). */
 export function stop() {
   me = null;
@@ -588,6 +614,40 @@ export function stop() {
 /** MoveIds of failed outbox entries, newest last, for the Settings list (S6). */
 export async function failedEntries() {
   return getFailedEntries();
+}
+
+/**
+ * Repair the local ids the server would reject.
+ *
+ * The map page used to mint floor-station ids like `st-<uuid>`; the server
+ * only accepts a UUID or a `sample-*` id (SPEC-v2.md 7.1), so every station
+ * added that way was refused and landed in the failed list. A record whose id
+ * never reached the server can simply be re-keyed: the local record, its
+ * queued outbox entries and its failed entries get one fresh UUID each, so
+ * the changes can be pushed again.
+ *
+ * @returns {Promise<number>} how many ids were re-keyed
+ */
+export async function repairIds() {
+  const localRecords = [];
+  for (const store of db.STORES) {
+    const rows = await db.getAll(store);
+    for (const record of rows) localRecords.push({ store, record });
+  }
+  const outbox = await db.getAll(db.OUTBOX_STORE);
+  const failed = await getFailedEntries();
+  const plan = planIdRepairs({ records: localRecords, outbox, failed });
+  if (plan.changed === 0 && plan.outboxDropped.length === 0 && plan.failedDropped.length === 0) {
+    return 0;
+  }
+  for (const rename of plan.recordRenames) {
+    await db.del(rename.store, rename.fromId);
+    await db.put(rename.store, rename.record);
+  }
+  for (const entry of plan.outbox) await db.put(db.OUTBOX_STORE, entry);
+  for (const opId of plan.outboxDropped) await db.del(db.OUTBOX_STORE, opId);
+  await db.setMeta('failed', plan.failed);
+  return plan.changed;
 }
 
 /** Retry the entries on the failed list once (Settings action, S6). */

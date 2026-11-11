@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Your jobs · 您的工单</title>
+    <link rel="icon" type="image/png" href="icons/icon-192.png" />
+    <style>
+      :root {
+        --bg: #f3f5f9;
+        --surface: #ffffff;
+        --text: #0f172a;
+        --muted: #5b6578;
+        --border: #dde3ec;
+        --accent: #2451c9;
+        --hot: #dc2626;
+        --hot-soft: #fee2e2;
+        color-scheme: light;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", system-ui, -apple-system, Roboto, "Noto Sans", "Microsoft YaHei", "PingFang SC", sans-serif;
+        line-height: 1.45;
+      }
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.75rem 1rem;
+        background: #0f172a;
+        color: #fff;
+      }
+      header h1 { margin: 0; font-size: 1.05rem; }
+      header .who { font-size: 0.85rem; opacity: 0.85; }
+      main { max-width: 1100px; margin: 0 auto; padding: 1rem; }
+      .zh { color: var(--muted); font-weight: 400; }
+      .notice {
+        margin: 0 0 1rem;
+        padding: 0.7rem 0.9rem;
+        border-radius: 10px;
+        background: #fff7ed;
+        border: 1px solid #fdba74;
+      }
+      .notice.error { background: var(--hot-soft); border-color: #fca5a5; }
+      .layout { display: grid; gap: 1rem; }
+      @media (min-width: 900px) {
+        .layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+        .map-card { position: sticky; top: 4.2rem; }
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0.9rem;
+        box-shadow: 0 1px 2px rgb(15 23 42 / 6%);
+      }
+      .map-card svg { display: block; width: 100%; height: auto; max-height: 70vh; background: #f8fafc; border-radius: 8px; }
+      .map-card h2, .jobs h2 { margin: 0 0 0.6rem; font-size: 1rem; }
+      .hl { cursor: pointer; }
+      .hl rect { fill: var(--hot); stroke: #7f1d1d; stroke-width: 1.2; }
+      .hl.is-on rect { fill: #f97316; }
+      .hl text { fill: #fff; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+      .jobs { display: grid; gap: 0.8rem; }
+      .job { scroll-margin-top: 4.5rem; }
+      .job.is-on { outline: 3px solid #f97316; }
+      .job-head { display: flex; align-items: flex-start; gap: 0.6rem; }
+      .num {
+        flex: none;
+        display: grid;
+        place-items: center;
+        min-width: 2rem;
+        max-width: 7rem;
+        height: 2rem;
+        padding: 0 0.5rem;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        border-radius: 999px;
+        background: var(--hot);
+        color: #fff;
+        font-weight: 800;
+      }
+      .job h3 { margin: 0; font-size: 1rem; }
+      .meta { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.88rem; }
+      .pills { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.5rem 0; }
+      .pill { padding: 0.1rem 0.55rem; border-radius: 999px; background: #e2e8f0; font-size: 0.78rem; font-weight: 650; }
+      .pill.urgent, .pill.high { background: var(--hot-soft); color: #991b1b; }
+      .problem { white-space: pre-wrap; margin: 0.4rem 0; }
+      .comments { margin: 0.6rem 0; padding: 0; list-style: none; display: grid; gap: 0.4rem; }
+      .comments li { padding: 0.45rem 0.6rem; border-radius: 8px; background: #eef2ff; font-size: 0.9rem; white-space: pre-wrap; }
+      .comments time { display: block; color: var(--muted); font-size: 0.75rem; }
+      textarea {
+        width: 100%;
+        min-height: 4.5rem;
+        padding: 0.55rem 0.65rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font: inherit;
+        font-size: 16px;
+        resize: vertical;
+      }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.45rem; }
+      button {
+        min-height: 42px;
+        padding: 0.45rem 1rem;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button.ghost { background: transparent; color: #fff; border-color: rgb(255 255 255 / 40%); }
+      button:disabled { opacity: 0.55; cursor: default; }
+      .status { color: var(--muted); font-size: 0.82rem; }
+      .empty { text-align: center; padding: 2rem 1rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Your jobs <span class="zh">· 您的工单</span></h1>
+        <div class="who" id="who"></div>
+      </div>
+      <button class="ghost" id="refresh" type="button">Refresh · 刷新</button>
+    </header>
+    <main>
+      <p class="notice" id="notice" hidden></p>
+      <div class="layout" id="content"></div>
+    </main>
+    <script type="module" src="contractor.js"></script>
+  </body>
+</html>

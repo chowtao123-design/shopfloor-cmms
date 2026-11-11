@@ -34,6 +34,8 @@ const STORE_AREAS = new Map([
   // v5 (SPEC-v5.md section 1.3): both floor stores -> the floorMap area.
   ['floorMaps', 'floorMap'],
   ['floorStations', 'floorMap'],
+  ['workerProfiles', 'floorMap'],
+  ['qcRecords', 'floorMap'],
   ['parts', 'parts'],
   // v4 (SPEC-v4.md section 1): purchaseRequests -> purchasing,
   // libraryItems -> library.

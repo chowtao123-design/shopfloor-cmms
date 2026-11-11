@@ -16,7 +16,8 @@ import {
   isISODate,
 } from './logic.js';
 
-export const MESSAGE_MAX_CHARS = 2000;
+// v6: matches the server (room to paste a table for analysis).
+export const MESSAGE_MAX_CHARS = 12000;
 
 export const AI_STARTERS = [
   'Which machines are down?',
@@ -26,7 +27,7 @@ export const AI_STARTERS = [
 ];
 
 export const AI_PRIVACY_NOTICE =
-  'Questions and the records needed to answer them are sent to the configured AI provider.';
+  'Questions and the records needed to answer them are sent to the configured AI provider; web searches go to DuckDuckGo.';
 
 export const AI_OFFLINE_TEXT = 'The assistant needs a connection to the server';
 
@@ -85,7 +86,7 @@ export function stripDraftFences(text) {
         const parsed = JSON.parse(inner[1]);
         isDraft =
           isPlainObject(parsed) &&
-          (isPlainObject(parsed.draftServiceOrder) || Array.isArray(parsed.proposals));
+          (isPlainObject(parsed.draftServiceOrder) || Array.isArray(parsed.proposals) || Array.isArray(parsed.skillUpdates));
       } catch {
         isDraft = false;
       }
@@ -490,6 +491,8 @@ const PROPOSAL_STORES = {
   machines: { area: 'machines', label: 'Machine' },
   workOrders: { area: 'serviceOrders', label: 'Service order' },
   pmTasks: { area: 'pm', label: 'PM task' },
+  parts: { area: 'parts', label: 'Part' },
+  purchaseRequests: { area: 'purchasing', label: 'Parts request' },
   libraryItems: { area: 'library', label: 'Repair method' },
 };
 
@@ -540,7 +543,7 @@ function valueText(value) {
     return value.length === 0 ? '—' : value.map((item) => valueText(item)).join(', ');
   }
   if (typeof value === 'object') {
-    const label = value.name ?? value.title ?? value.label ?? value.id;
+    const label = value.description ?? value.name ?? value.title ?? value.label ?? value.id;
     return label === undefined ? JSON.stringify(value) : String(label);
   }
   return String(value);
@@ -639,10 +642,74 @@ function userMessageNode(text) {
   return el('div', { class: 'ai-msg is-user' }, el('p', { class: 'chat-para' }, text));
 }
 
-function assistantMessageNode(content, draft, proposals) {
+const LEVEL_WORDS = { expert: 'Expert', good: 'Good', learning: 'Learning', '': 'removed', none: 'removed' };
+
+/** One line per worker: "Binder → Good · Efficiency 92% · note". */
+function skillChangeText(update) {
+  const parts = [];
+  for (const [type, level] of Object.entries(isPlainObject(update.skills) ? update.skills : {})) {
+    parts.push(`${LABELS.machineType[type] || type} → ${LEVEL_WORDS[String(level).toLowerCase()] ?? level}`);
+  }
+  if (update.efficiency !== undefined && update.efficiency !== null) parts.push(`Efficiency ${update.efficiency}%`);
+  if (update.dailyOutput !== undefined && update.dailyOutput !== null) parts.push(`Output ${update.dailyOutput} pcs/day`);
+  if (update.quality) parts.push(`Quality ${update.quality}`);
+  if (update.note) parts.push(`Note: ${update.note}`);
+  return parts.join(' · ');
+}
+
+/** The AI's skill-update batch: a table to review and one Apply all (floorMap Write). */
+function skillUpdatesCardNode(updates) {
+  if (!Array.isArray(updates) || updates.length === 0) return null;
+  const names = new Map();
+  const stations = deps && typeof deps.records === 'function' ? deps.records('floorStations') : [];
+  for (const st of stations) if (st && st.empId && !names.has(String(st.empId).trim())) names.set(String(st.empId).trim(), st.name || '');
+  const rows = updates.map((update) =>
+    el(
+      'tr',
+      {},
+      el('th', { scope: 'row' }, `${update.empId}${names.get(String(update.empId).trim()) ? ` ${names.get(String(update.empId).trim())}` : ''}`),
+      el('td', {}, skillChangeText(update)),
+    ),
+  );
+  const status = el('p', { class: 'field-hint', role: 'status' });
+  const canApply = Boolean(deps && typeof deps.can === 'function' && deps.can('floorMap', 'write'));
+  const apply = el('button', { class: 'btn btn-primary btn-small', type: 'button' }, `Apply all (${updates.length})`);
+  apply.addEventListener('click', async () => {
+    apply.disabled = true;
+    status.textContent = 'Saving…';
+    try {
+      const response = await deps.api('POST', '/api/ai/apply-skills', { updates, source: 'from AI chat' });
+      if (!response.ok) {
+        status.textContent = (response.data && response.data.message) || `Could not save (HTTP ${response.status}).`;
+        apply.disabled = false;
+        return;
+      }
+      const failed = response.data.results.filter((r) => !r.ok);
+      status.textContent = `Saved ${response.data.applied} of ${updates.length}.${failed.length ? ` Not saved: ${failed.map((r) => `${r.empId} (${r.error})`).join('; ')}` : ''}`;
+      if (typeof deps.refresh === 'function') await deps.refresh();
+    } catch {
+      status.textContent = AI_OFFLINE_TEXT;
+      apply.disabled = false;
+    }
+  });
+  return el(
+    'div',
+    { class: 'card ai-proposal-card ai-skills-card' },
+    el('p', { class: 'ai-proposal-title' }, `Skill updates for ${updates.length} worker${updates.length === 1 ? '' : 's'}`),
+    el('div', { class: 'ai-skills-scroll' }, el('table', { class: 'stats-table' }, el('tbody', {}, ...rows))),
+    canApply
+      ? el('div', { class: 'ai-proposal-actions' }, apply, el('span', { class: 'field-hint' }, 'Nothing is saved until you press Apply all.'))
+      : el('p', { class: 'field-hint' }, 'You need edit access to the floor map to apply these.'),
+    status,
+  );
+}
+
+function assistantMessageNode(content, draft, proposals, skillUpdates) {
   const bubble = el('div', { class: 'ai-msg is-assistant' });
   bubble.append(...renderChatText(el, stripDraftFences(content)));
   const nodes = [bubble];
+  const skillsCard = skillUpdatesCardNode(skillUpdates);
+  if (skillsCard !== null) nodes.push(skillsCard);
   const card = draftCardNode(draft !== undefined ? draft : null);
   if (card !== null) nodes.push(card);
   const list = Array.isArray(proposals) ? proposals : [];
@@ -700,7 +767,27 @@ function ensurePanel() {
     'aria-label': 'Message the AI assistant',
   });
   const sendButton = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Send');
-  const form = el('form', { class: 'ai-chat-form', novalidate: true }, input, sendButton);
+  // v6: attach PDFs (a manual, a quote, a report) for the assistant to read.
+  const fileInput = el('input', { type: 'file', accept: 'application/pdf', hidden: true, multiple: true });
+  const attachButton = el(
+    'button',
+    { class: 'btn ai-chat-attach', type: 'button', title: 'Attach a PDF for the assistant to read', 'aria-label': 'Attach PDF' },
+    'PDF',
+  );
+  const chips = el('div', { class: 'ai-chat-chips' });
+  attachButton.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    const picked = [...fileInput.files];
+    fileInput.value = '';
+    void attachFiles(picked);
+  });
+  const form = el(
+    'form',
+    { class: 'ai-chat-form', novalidate: true },
+    input,
+    el('div', { class: 'ai-chat-actions' }, attachButton, sendButton),
+    fileInput,
+  );
   const counter = el('span', { class: 'ai-chat-count', 'aria-hidden': 'true' }, `0 / ${MESSAGE_MAX_CHARS}`);
   const notice = el('p', { class: 'ai-chat-notice field-hint' }, AI_PRIVACY_NOTICE);
 
@@ -731,6 +818,7 @@ function ensurePanel() {
     list,
     thinking,
     errorLine,
+    chips,
     form,
     el('div', { class: 'ai-chat-foot' }, counter, notice),
   );
@@ -743,8 +831,77 @@ function ensurePanel() {
     closePanel();
   });
 
-  chatPanel = { root, list, input, sendButton, form, counter, thinking, errorLine };
+  chatPanel = { root, list, input, sendButton, form, counter, thinking, errorLine, chips, attachButton };
   return chatPanel;
+}
+
+/** PDFs uploaded for the next question: [{fileId, name}]. */
+let pendingFiles = [];
+
+function renderChips() {
+  if (!chatPanel) return;
+  chatPanel.chips.replaceChildren(
+    ...pendingFiles.map((file) =>
+      el(
+        'span',
+        { class: 'ai-chat-chip' },
+        el('span', {}, file.name),
+        (() => {
+          const remove = el('button', { type: 'button', class: 'ai-chat-chip-x', 'aria-label': `Remove ${file.name}` }, '×');
+          remove.addEventListener('click', () => {
+            pendingFiles = pendingFiles.filter((entry) => entry !== file);
+            renderChips();
+          });
+          return remove;
+        })(),
+      ),
+    ),
+  );
+}
+
+async function attachFiles(files) {
+  const panel = ensurePanel();
+  for (const file of files) {
+    if (pendingFiles.length >= 5) {
+      showError('At most 5 PDFs per question.');
+      break;
+    }
+    if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+      showError(`${file.name} is not a PDF.`);
+      continue;
+    }
+    panel.attachButton.disabled = true;
+    panel.attachButton.textContent = 'Uploading…';
+    try {
+      const response = await fetch('/api/files', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'maint-log', 'Content-Type': 'application/pdf', 'X-File-Name': encodeURIComponent(file.name) },
+        body: file,
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || !data.fileId) {
+        showError(response.status === 403 ? 'Your role cannot upload files.' : (data && data.message) || `Upload failed (HTTP ${response.status}).`);
+        continue;
+      }
+      hideError();
+      pendingFiles.push({ fileId: data.fileId, name: file.name });
+      renderChips();
+    } catch {
+      showError(AI_OFFLINE_TEXT);
+    } finally {
+      panel.attachButton.disabled = false;
+      panel.attachButton.textContent = 'PDF';
+    }
+  }
+}
+
+/** "What the assistant did" under an answer: tool steps from the server. */
+function stepsNode(steps) {
+  if (!Array.isArray(steps) || steps.length === 0) return null;
+  const details = el('details', { class: 'ai-chat-steps' }, el('summary', {}, `${steps.length} step${steps.length === 1 ? '' : 's'}: data, files and web it checked`));
+  details.append(el('ul', {}, ...steps.map((step) => el('li', {}, String(step)))));
+  return details;
 }
 
 function scrollListToEnd() {
@@ -779,7 +936,10 @@ async function ask(question) {
   const text = String(question || '').trim().slice(0, MESSAGE_MAX_CHARS);
   if (text === '') return;
   const panel = ensurePanel();
-  panel.list.append(userMessageNode(text));
+  const files = pendingFiles;
+  pendingFiles = [];
+  renderChips();
+  panel.list.append(userMessageNode(files.length ? `${text}\n📎 ${files.map((f) => f.name).join(', ')}` : text));
   listTouched = true;
   hideError();
   scrollListToEnd();
@@ -788,6 +948,7 @@ async function ask(question) {
   panel.sendButton.disabled = true;
   try {
     const body = { message: text };
+    if (files.length) body.attachments = files.map((f) => f.fileId);
     const conversationId = sessionGet(AI_CONVERSATION_KEY);
     if (conversationId !== null && conversationId !== '') body.conversationId = conversationId;
     const response = await deps.api('POST', '/api/ai/chat', body);
@@ -802,7 +963,9 @@ async function ask(question) {
     const draft =
       isPlainObject(data.draftServiceOrder) ? data.draftServiceOrder : parseDraftServiceOrder(data.reply);
     const proposals = Array.isArray(data.proposals) ? data.proposals : parseProposals(data.reply);
-    panel.list.append(...assistantMessageNode(data.reply || '', draft, proposals));
+    panel.list.append(...assistantMessageNode(data.reply || '', draft, proposals, data.skillUpdates));
+    const steps = stepsNode(data.steps);
+    if (steps) panel.list.append(steps);
   } catch (error) {
     console.warn('AI chat failed (network):', error);
     showError(AI_OFFLINE_TEXT);

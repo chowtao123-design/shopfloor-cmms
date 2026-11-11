@@ -7,8 +7,8 @@
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#eef0f3",
-  "theme_color": "#d9541a",
+  "background_color": "#f3f5f9",
+  "theme_color": "#0f172a",
   "icons": [
     {
       "src": "icons/icon-192.png",
@@ -21,6 +21,34 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Inspect a worker (WPFI form)",
+      "short_name": "Inspect",
+      "description": "Fill in the WPFI form from the floor map",
+      "url": "./#/map?view=inspect",
+      "icons": [
+        {
+          "src": "icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Safety results (WPFI)",
+      "short_name": "Safety",
+      "description": "Workers who failed in the last 2 months",
+      "url": "./#/map?view=wpfi",
+      "icons": [
+        {
+          "src": "icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ]
 }

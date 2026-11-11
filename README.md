@@ -1,7 +1,5 @@
 # Shop Maintenance Log
 
-![Walkthrough: a machine fault from report to fixed, floor map, preventive maintenance and statistics (example data)](docs/demo.gif)
-
 A mobile-first, offline-capable maintenance log for a garment factory: work
 orders, machines, parts inventory and preventive maintenance. Plain HTML + CSS
 + vanilla JavaScript ES modules. No build step, no framework, no dependencies.
@@ -12,6 +10,34 @@ Two ways to run it:
   signs in and syncs, edits queue while offline. See the next section.
 - **Standalone** — one device, no server; the data stays in that browser.
   See *Run locally* below.
+
+## What's new in v6 (November 2026)
+
+**Updating an existing install:** follow [UPDATE-WINDOWS.md](UPDATE-WINDOWS.md) (code update, then a
+one-time `node server/setup-v6.js` preview / `--apply` for the Supervisor role and floor zones).
+Shop-private settings (the WPFI Google sheet and form links) go in `local-config.json`, which is not in
+git: copy `local-config.example.json` and fill it in.
+
+- **New look**: calmer blue design, a real sign-in page (and no more "stuck after sign-in"), light/dark
+  button, icon tab bar and swipe-down panels on phones, pages that never slide sideways, desktop map and
+  skill matrix fit one screen, the uploaded logo as app and tab icon.
+- **Shop floor** sidebar group:
+  - *Floor map* — zone colours that print well in black & white, crisp PDF text, *Show lines*
+    (Line A / B / C outlines), delete off-map stations.
+  - *Name table* — a spreadsheet of every station: type, Enter / arrows, paste from Excel,
+    *+ Add worker* for people not on the map.
+  - *Skill map* — one tap on a machine type colours who can run it (Expert / Good / Learning).
+  - *Workers & skills* — profile per worker (skills, efficiency, output, quality, phone, locker),
+    skill matrix with batch edit.
+  - *QC records* — quality checks per worker (style, PO, pieces, defects, defect types), worst first.
+  - *Safety (WPFI)* — last two months of the WPFI Google Form, failures in red, read weekly.
+  - *Inspect (WPFI form)* — tap a worker's station, the Google Form opens filled in.
+- **Contractor map page** (Outside Contractors → *Copy map link*): a login-free page in English and
+  Chinese with only the contractor's machines and a comment box; one refresh per 5 seconds.
+- **Supervisor role** and per-role *Hidden pages* (Admin → Roles).
+- **AI assistant** uses tools: searches and analyses records, reads PDFs (also encrypted manuals and
+  files attached in the chat), searches the web (`AI_WEB=off` to disable), rates skills from Chinese
+  ticket data and answers in English, proposes skill updates with one *Apply all*.
 
 ## Install on Windows (10 / 11)
 
@@ -335,8 +361,13 @@ numbers or specific machines. Making a manual readable by the AI:
 In the chat, name the machine (name, model, serial or a service order
 number) and the assistant builds the answer from the matching repair
 methods, manual excerpts and the machine’s last completed fixes, citing
-where each fact came from. When a fix works, ask it to save the steps: it
-proposes a repair method that you save with one Apply button.
+where each fact came from. The snapshot also lists every readable PDF with
+its `fileId`, so the assistant can **open pages or search a manual on
+demand** (up to 2 reads per question, 4 pages per read) and quote the page
+it actually read. When a fix works, ask it to save the steps: it proposes a
+repair method that you save with one Apply button. It can also propose a new
+**part** or **parts request** (with line items) from the chat, which you
+approve with the same Apply button.
 
 ## Run locally (standalone, single device)
 

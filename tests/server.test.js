@@ -85,6 +85,7 @@ test('readConfig returns documented defaults', () => {
     sessionDays: 14,
     backupKeep: 30,
     backupDailyAt: '02:00',
+    wpfiUrl: '', // private: local-config.json or WPFI_CSV_URL
   });
 });
 
@@ -98,6 +99,7 @@ test('readConfig reads environment variables', () => {
     SESSION_DAYS: '7',
     BACKUP_KEEP: '5',
     BACKUP_DAILY_AT: '03:15',
+    WPFI_CSV_URL: 'https://example.test/sheet.csv',
   });
   assert.deepEqual(cfg, {
     port: 9000,
@@ -108,6 +110,7 @@ test('readConfig reads environment variables', () => {
     sessionDays: 7,
     backupKeep: 5,
     backupDailyAt: '03:15',
+    wpfiUrl: 'https://example.test/sheet.csv',
   });
 });
 

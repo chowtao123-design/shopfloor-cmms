@@ -79,22 +79,32 @@ export function renderLogin(container, onSuccess) {
     }
     submit.disabled = true;
     submit.textContent = 'Signing in…';
+    let response;
     try {
-      const response = await api('POST', '/api/login', { username, password });
-      if (response.ok && response.data && response.data.id) {
-        if (typeof onSuccess === 'function') onSuccess(response.data);
+      response = await api('POST', '/api/login', { username, password });
+    } catch {
+      response = null;
+      error.textContent = 'Could not reach the server. Check the network and try again.';
+    }
+    if (response && response.ok && response.data && response.data.id) {
+      // Keep the button busy until the app has loaded: the first sync can take
+      // a while and the card must not look like nothing happened.
+      submit.textContent = 'Loading your data…';
+      try {
+        if (typeof onSuccess === 'function') await onSuccess(response.data);
         return;
+      } catch (loadError) {
+        console.error('Signed in, but the app could not load:', loadError);
+        error.textContent = 'Signed in, but the app could not load. Reload the page.';
       }
+    } else if (response) {
       error.textContent =
         response.data && response.data.message
           ? response.data.message
           : 'Could not sign in. Check your username and password.';
-    } catch {
-      error.textContent = 'Could not reach the server. Check the network and try again.';
-    } finally {
-      submit.disabled = false;
-      submit.textContent = 'Sign in';
     }
+    submit.disabled = false;
+    submit.textContent = 'Sign in';
   });
   const card = el(
     'section',
@@ -102,6 +112,7 @@ export function renderLogin(container, onSuccess) {
     el('h2', {}, 'Shop Maintenance Log'),
     el('p', { class: 'login-sub' }, 'Sign in with your team account.'),
     form,
+    el('p', { class: 'login-foot' }, 'Maintenance · Machines · Parts · Floor map'),
   );
   container.append(card);
   usernameInput.focus();

@@ -13,6 +13,39 @@
 
 export const LEVELS = ['none', 'read', 'write'];
 
+/**
+ * v6: pages a role can have hidden from its menus while it keeps the data
+ * access its permissions give (a Supervisor creating service orders must read
+ * the machine list, without a Machines page). Keys are the app's nav tabs;
+ * 'mapEdit' hides the floor map's "Edit map". Stored per role in settings.
+ */
+export const HIDEABLE_PAGES = Object.freeze([
+  'home', 'jobs', 'pm', 'statistics', 'machines', 'map', 'table', 'skills', 'workers', 'qc', 'wpfi', 'inspect',
+  'library', 'parts', 'requests', 'coworkers', 'contractors', 'mapEdit',
+]);
+
+const hiddenPagesKey = (roleId) => `role.hiddenPages.${roleId}`;
+
+/** A role's hidden pages ([] when none or unreadable). */
+export function hiddenPagesOf(store, roleId) {
+  if (!roleId) return [];
+  try {
+    const value = JSON.parse(store.getSetting(hiddenPagesKey(roleId)) || '[]');
+    return Array.isArray(value) ? value.filter((page) => HIDEABLE_PAGES.includes(page)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Validate and store a role's hidden pages; throws on an unknown page. */
+export function setHiddenPages(store, roleId, pages) {
+  if (!Array.isArray(pages)) throw new Error('hiddenPages must be an array');
+  for (const page of pages) {
+    if (!HIDEABLE_PAGES.includes(page)) throw new Error(`hiddenPages: unknown page "${page}"; expected ${HIDEABLE_PAGES.join(', ')}`);
+  }
+  store.setSetting(hiddenPagesKey(roleId), JSON.stringify([...new Set(pages)]));
+}
+
 const LEVEL_RANK = new Map(LEVELS.map((level, index) => [level, index]));
 
 /** Areas with fixed keys and the labels shown in the UI (13.1 table). */
@@ -55,6 +88,8 @@ const STORE_AREAS = new Map([
   // v5 (SPEC-v5.md section 1.3): both floor stores -> the floorMap area.
   ['floorMaps', 'floorMap'],
   ['floorStations', 'floorMap'],
+  ['workerProfiles', 'floorMap'],
+  ['qcRecords', 'floorMap'],
   ['parts', 'parts'],
   ['purchaseRequests', 'purchasing'],
   ['libraryItems', 'library'],

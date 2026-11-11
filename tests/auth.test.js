@@ -110,7 +110,8 @@ test('GET /api/me returns the signed-in user without the password hash', async (
   assert.equal(res.status, 200);
   const body = await res.json();
   const tess = handle.store.getUserByUsername('tess');
-  const { permissions, ...identity } = body;
+  const { permissions, hiddenPages, ...identity } = body;
+  assert.deepEqual(hiddenPages, [], 'v6: no hidden pages unless the role sets some');
   assert.deepEqual(identity, {
     id: tess.id,
     username: 'tess',
@@ -445,12 +446,16 @@ test('sessions slide: expiry extends at most once per hour of use', () => {
     const afterFirstUse = store.getSessionWithUser(session.tokenHash);
     assert.equal(afterFirstUse.expires_at, created.expires_at);
 
+    // Last seen 2 h ago with an expiry an hour earlier than a fresh one, so the
+    // slide is measurable even when the whole test runs within one millisecond.
+    const earlier = new Date(Date.parse(created.expires_at) - 60 * 60 * 1000).toISOString();
     store.touchSession(session.tokenHash, {
       lastSeenAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      expiresAt: earlier,
     });
     assert.ok(auth.validateSession(store, session.token, 14) !== null);
     const afterSlide = store.getSessionWithUser(session.tokenHash);
-    assert.ok(Date.parse(afterSlide.expires_at) > Date.parse(created.expires_at));
+    assert.ok(Date.parse(afterSlide.expires_at) > Date.parse(earlier));
 
     store.touchSession(session.tokenHash, { expiresAt: new Date(Date.now() - 1000).toISOString() });
     assert.equal(auth.validateSession(store, session.token, 14), null);

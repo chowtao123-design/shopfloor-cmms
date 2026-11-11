@@ -2,3 +2,5 @@
 .tmp/
 node_modules/
 data/
+# Private shop settings (Google sheet / form links, inspector names)
+local-config.json

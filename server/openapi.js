@@ -9,7 +9,7 @@
  * per-record GET, because the client mirror is the source of truth.
  */
 
-const storeEnum = ['machines', 'workOrders', 'pmTasks', 'purchaseRequests', 'libraryItems', 'floorMaps', 'floorStations'];
+const storeEnum = ['machines', 'workOrders', 'pmTasks', 'purchaseRequests', 'libraryItems', 'floorMaps', 'floorStations', 'workerProfiles', 'qcRecords'];
 
 function recordRef() {
   return { $ref: '#/components/schemas/Record' };

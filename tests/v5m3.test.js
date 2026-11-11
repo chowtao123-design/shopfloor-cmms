@@ -397,8 +397,11 @@ test('map.js: stations of removed boxes go off-map (boxId null), never deleted',
   assert.match(src, /const offIds = new Set\(offMapStationIds\(stations, data\)\)/);
   assert.match(src, /\{ \.\.\.station, boxId: null, updatedAt: ctx\.nowISO\(\) \}/);
   assert.match(src, /sync\.saveRecord\('floorStations', next, station\.version\)/);
-  // Nothing in the editor deletes a station record.
-  assert.ok(!src.includes('deleteRecord'), 'no record deletions in map.js');
+  // Nothing in the editor deletes a station record; the only delete is the
+  // explicit, confirmed Delete on an off-map station (v6).
+  assert.equal(src.split('deleteRecord').length - 1, 1, 'one record deletion in map.js');
+  const fn = src.slice(src.indexOf('async function deleteOffMapStation'));
+  assert.ok(fn.slice(0, fn.indexOf('\n}\n')).includes('deleteRecord'), 'it lives in deleteOffMapStation');
   // The toast counts the off-map moves — no staff names, ever (privacy).
   assert.match(src, /Map saved\. \$\{movedOff\} station/);
   assert.ok(!src.includes('console.log'), 'map.js must never console.log (roster privacy)');

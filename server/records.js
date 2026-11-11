@@ -45,6 +45,12 @@ export const STORES = [
   // (staff names) stays in the database only — never in the repo or the AI.
   'floorMaps',
   'floorStations',
+  // v6: one profile per floor worker (skills, specialty, productivity),
+  // keyed by employee ID so it follows the person between stations. Same
+  // `floorMap` area and the same privacy as the roster.
+  'workerProfiles',
+  // v6: QC inspections of a worker's output (pieces checked, defects).
+  'qcRecords',
 ];
 
 export const STOCK_REASONS = ['job-done', 'job-reopened', 'manual', 'import'];
@@ -705,7 +711,9 @@ const FIELD_SPECS = {
     required: ['title', 'machineId'],
     // `number` is server-assigned (SPEC-v3.md section 2): it is ignored in
     // incoming data and set on first save, inside the write transaction.
-    serverOwned: ['number'],
+    // v6: `contractorComments` only comes from the contractor map page
+    // (portal.js); every other save keeps the stored list.
+    serverOwned: ['number', 'contractorComments'],
     fields: {
       title: { type: 'string', nonEmpty: true },
       machineId: { type: 'string', nonEmpty: true },
@@ -901,6 +909,62 @@ const FIELD_SPECS = {
       vacant: false,
       remark: '',
       machineId: null,
+    }),
+  },
+  // v6: one QC inspection of one worker's work: pieces checked, defects
+  // found and their kinds, the result. The worker is kept by employee ID
+  // (+ the name at the time, for reading the record later).
+  qcRecords: {
+    required: ['date', 'empId', 'checked'],
+    fields: {
+      date: { type: 'date' },
+      empId: { type: 'string', nonEmpty: true, maxLength: 20 },
+      workerName: { type: 'string', maxLength: 80 },
+      stationCode: { type: 'string', maxLength: 40 },
+      // Optional: garment style (e.g. 3084WT) and purchase order (e.g. 110115).
+      style: { type: 'string', maxLength: 40 },
+      po: { type: 'string', maxLength: 40 },
+      operation: { type: 'string', maxLength: 80 },
+      checked: { type: 'int', min: 1, max: 100000 },
+      defects: { type: 'int', min: 0, max: 100000 },
+      defectTypes: { type: 'stringArray' },
+      result: { type: 'enum', values: ['pass', 'rework', 'fail'] },
+      inspector: { type: 'string', maxLength: 80 },
+      notes: { type: 'string', maxLength: 500 },
+    },
+    defaults: () => ({ workerName: '', stationCode: '', style: '', po: '', operation: '', defects: 0, defectTypes: [], result: 'pass', inspector: '', notes: '' }),
+  },
+  // v6: what a supervisor needs to know about a worker. Skills are machine
+  // type values (logic.js MACHINE_TYPE_GROUPS) in three levels; 0 = not
+  // measured for efficiency and daily output.
+  workerProfiles: {
+    required: ['empId'],
+    fields: {
+      empId: { type: 'string', nonEmpty: true, maxLength: 20 },
+      name: { type: 'string', maxLength: 80 },
+      phone: { type: 'string', maxLength: 40 },
+      locker: { type: 'string', maxLength: 20 },
+      specialty: { type: 'string', maxLength: 200 },
+      skillsExpert: { type: 'stringArray' },
+      skillsGood: { type: 'stringArray' },
+      skillsLearning: { type: 'stringArray' },
+      efficiency: { type: 'int', min: 0, max: 300 },
+      dailyOutput: { type: 'int', min: 0, max: 100000 },
+      quality: { type: 'enum', values: ['', 'excellent', 'good', 'fair', 'coaching'] },
+      notes: { type: 'string', maxLength: 1000 },
+    },
+    defaults: () => ({
+      name: '',
+      phone: '',
+      locker: '',
+      specialty: '',
+      skillsExpert: [],
+      skillsGood: [],
+      skillsLearning: [],
+      efficiency: 0,
+      dailyOutput: 0,
+      quality: '',
+      notes: '',
     }),
   },
 };
@@ -1116,7 +1180,7 @@ function recordJson(
  * to record who approved the change.
  * @returns {{record: object, conflict: null | object}}
  */
-export function putRecord(store, { storeName, id, body, user, note = null }) {
+export function putRecord(store, { storeName, id, body, user, note = null, serverFields = null }) {
   checkStoreAndId(storeName, id);
   if (!isPlainObject(body)) throw bad('Request body must be a JSON object');
   for (const key of Object.keys(body)) {
@@ -1176,6 +1240,11 @@ export function putRecord(store, { storeName, id, body, user, note = null }) {
         data.number = store.nextWorkOrderNumber();
       } else {
         data.number = prior.number;
+      }
+      if (serverFields && Array.isArray(serverFields.contractorComments)) {
+        data.contractorComments = serverFields.contractorComments;
+      } else if (prior && Array.isArray(prior.contractorComments)) {
+        data.contractorComments = prior.contractorComments;
       }
     }
     if (storeName === 'purchaseRequests') {

@@ -3,7 +3,7 @@
 // slot, grid snapping and hit-testing. No DOM, no fetch, no stores — the
 // module is unit-tested in tests/v5m1.test.js and rendered by app.js (V5-M2).
 
-import { pmDueDate, pmPaused, todayISO } from './logic.js';
+import { MACHINE_TYPE_GROUPS, pmDueDate, pmPaused, todayISO } from './logic.js';
 
 /** The edit canvas snap grid (SPEC-v5.md section 3): 2 drawing units. */
 export const SNAP_GRID = 2;
@@ -850,4 +850,342 @@ export function sanitizeMapForSave(map) {
 /** A finite number, or the fallback. */
 function numberOr(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+// --- WPFI safety findings (server/wpfi.js) ----------------------------------
+
+/** "2026-11-10" → "2026-09-10": the same day two calendar months earlier (clamped to month end). */
+export function twoMonthsBefore(todayIso) {
+  const [y, m, d] = String(todayIso).split('-').map(Number);
+  const last = new Date(Date.UTC(y, m - 2, 0)).getUTCDate(); // days in the target month
+  const target = new Date(Date.UTC(y, m - 3, Math.min(d, last)));
+  return target.toISOString().slice(0, 10);
+}
+
+const wpfiKey = (value) => String(value ?? '').toUpperCase().replace(/\s+/g, '');
+
+/**
+ * Group the findings on or after `sinceIso` by worker and find each worker's
+ * station: by Worker ID against the station's employee ID first (people move,
+ * the ID stays), else by the station number written on the form.
+ * @returns {Array<{key, workerId, workerName, station, records}>} most
+ *   findings first, then the most recent; records newest first
+ */
+export function wpfiGroups(records, stations, sinceIso) {
+  const list = (Array.isArray(stations) ? stations : []).filter((s) => s && typeof s === 'object');
+  const byEmp = new Map(list.filter((s) => s.empId).map((s) => [wpfiKey(s.empId), s]));
+  const byCode = new Map(list.filter((s) => s.code).map((s) => [wpfiKey(s.code), s]));
+  const groups = new Map();
+  for (const record of Array.isArray(records) ? records : []) {
+    if (!record || !record.date || record.date < sinceIso) continue;
+    const key = wpfiKey(record.workerId) || `NAME:${wpfiKey(record.workerName)}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        key,
+        workerId: record.workerId || '',
+        workerName: record.workerName || '',
+        station: byEmp.get(wpfiKey(record.workerId)) || byCode.get(wpfiKey(record.station)) || null,
+        records: [],
+      };
+      groups.set(key, group);
+    }
+    if (!group.workerName && record.workerName) group.workerName = record.workerName;
+    group.records.push(record);
+  }
+  const out = [...groups.values()];
+  for (const group of out) group.records.sort((a, b) => b.date.localeCompare(a.date));
+  out.sort((a, b) => b.records.length - a.records.length || b.records[0].date.localeCompare(a.records[0].date));
+  return out;
+}
+
+/**
+ * The pre-filled Google Form link: everything known is filled in, the
+ * inspector only checks it and presses Submit. A finding that is not one of
+ * the form's choices goes in the form's "Other" box. `form` is the shop's
+ * private form settings (local-config.json wpfiForm, sent by GET /api/wpfi):
+ * {url, date, station, workerId, workerName, issue, inspector, issues}.
+ */
+export function wpfiFormUrl(form, { date, station, workerId, workerName, issue, inspectors = [] } = {}) {
+  const params = new URLSearchParams({ usp: 'pp_url' });
+  const add = (key, value) => {
+    const text = String(value ?? '').trim();
+    if (key && text) params.append(key, text);
+  };
+  add(form.date, date);
+  add(form.station, station);
+  add(form.workerId, workerId);
+  add(form.workerName, workerName);
+  const finding = String(issue ?? '').trim();
+  if (form.issue && (form.issues || []).includes(finding)) {
+    params.append(form.issue, finding);
+  } else if (form.issue && finding) {
+    params.append(form.issue, '__other_option__');
+    params.append(`${form.issue}.other_option_response`, finding);
+  }
+  for (const name of inspectors) add(form.inspector, name);
+  return `${form.url}?${params}`;
+}
+
+// --- Zone colours -------------------------------------------------------------
+//
+// Pale tints only: every colour keeps a grey value of at least 88% so a
+// black-and-white print shows the zones as near-white and the black text
+// stays as sharp as on plain white.
+
+const ZONE_TINTS = {
+  'line a': '#dbeafe',
+  'line b': '#dcfce7',
+  'line c': '#ede9fe', // pale purple, matches the Line C outline
+  qc: '#fef3c7',
+  bd: '#f3e8ff',
+  'down fill': '#cffafe',
+  'packing and special machine': '#ffedd5',
+};
+
+/** Grey value 0..1 of a #rrggbb colour, as a black-and-white printer sees it. */
+export function greyValue(hex) {
+  const n = parseInt(String(hex).slice(1), 16);
+  return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+}
+
+/** The station fill for a zone name (case and spacing ignored); unknown zones get a stable pale hue, no zone stays white. */
+export function zoneColor(zone) {
+  const key = String(zone ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!key) return '#ffffff';
+  if (ZONE_TINTS[key]) return ZONE_TINTS[key];
+  let hash = 0;
+  for (const ch of key) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+  // HSL(h, 60%, 93%) as hex, so greyValue() and print stay predictable.
+  const h = hash % 360;
+  const s = 0.6;
+  const l = 0.93;
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(c * 255).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+// --- Worker roster (Workers page) -------------------------------------------
+
+/** Skill levels stored on a worker profile, best first. */
+export const SKILL_LEVELS = Object.freeze([
+  { key: 'skillsExpert', label: 'Expert' },
+  { key: 'skillsGood', label: 'Good' },
+  { key: 'skillsLearning', label: 'Learning' },
+]);
+
+/**
+ * Everyone on the floor: each staffed station's worker, merged with their
+ * profile by employee ID (case and spaces ignored), plus profiles whose worker
+ * is on no station. A worker sitting at two stations is listed once, with
+ * both station codes.
+ * @returns {Array<{key, empId, name, nameCn, stations, zone, profile}>} sorted by name
+ */
+export function workerRoster(stations, profiles) {
+  const norm = (value) => String(value ?? '').toUpperCase().replace(/\s+/g, '');
+  const byKey = new Map();
+  for (const station of Array.isArray(stations) ? stations : []) {
+    if (!station || station.vacant === true) continue;
+    const empId = String(station.empId ?? '').trim();
+    const name = String(station.name ?? '').trim();
+    if (!empId && !name) continue;
+    const key = empId ? `ID:${norm(empId)}` : `NAME:${norm(name)}`;
+    let worker = byKey.get(key);
+    if (!worker) {
+      worker = { key, empId, name, nameCn: String(station.nameCn ?? '').trim(), stations: [], zone: String(station.zone ?? '').trim(), profile: null };
+      byKey.set(key, worker);
+    }
+    worker.stations.push(station);
+    if (!worker.name && name) worker.name = name;
+  }
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    if (!profile || !profile.empId) continue;
+    const key = `ID:${norm(profile.empId)}`;
+    const worker = byKey.get(key);
+    if (worker) {
+      worker.profile = profile;
+    } else {
+      byKey.set(key, { key, empId: profile.empId, name: profile.name || '', nameCn: '', stations: [], zone: '', profile });
+    }
+  }
+  return [...byKey.values()].sort((a, b) => (a.name || a.empId).localeCompare(b.name || b.empId));
+}
+
+/** The level ('Expert' | 'Good' | 'Learning') a profile has for a machine type, or ''. */
+export function skillLevel(profile, type) {
+  if (!profile) return '';
+  const found = SKILL_LEVELS.find((level) => Array.isArray(profile[level.key]) && profile[level.key].includes(type));
+  return found ? found.label : '';
+}
+
+// --- Skills: one shared vocabulary for the page, the skill map and the AI ---
+
+/** Machine types a floor worker can be skilled on: [{group, options: [[key, label]]}]. */
+export const SKILL_GROUPS = Object.freeze(
+  MACHINE_TYPE_GROUPS.filter((group) => group.group !== 'Facility' && group.group !== 'Other')
+);
+export const SKILL_KEYS = Object.freeze(SKILL_GROUPS.flatMap((group) => group.options.map(([key]) => key)));
+
+/** Level word ('expert' | 'good' | 'learning' | '' = none) for a profile and machine type. */
+export function skillLevelKey(profile, type) {
+  const label = skillLevel(profile, type);
+  return label ? label.toLowerCase() : '';
+}
+
+/**
+ * A copy of the profile's three skill arrays with `type` set to `level`
+ * ('expert' | 'good' | 'learning', or '' to remove). A type is only ever in
+ * one level.
+ */
+export function withSkill(profile, type, level) {
+  const out = {};
+  for (const { key } of SKILL_LEVELS) {
+    out[key] = (Array.isArray(profile && profile[key]) ? profile[key] : []).filter((t) => t !== type);
+  }
+  const target = SKILL_LEVELS.find((entry) => entry.label.toLowerCase() === level);
+  if (target) out[target.key] = [...out[target.key], type];
+  return out;
+}
+
+const QUALITY_VALUES = ['', 'excellent', 'good', 'fair', 'coaching'];
+
+/**
+ * Validate one skill update (from the batch editor or an AI proposal) and
+ * return the profile fields it changes, or an error string. Shape:
+ * {empId, skills?: {machineType: level|''}, efficiency?, dailyOutput?, quality?, note?}
+ */
+export function skillUpdateFields(profile, update) {
+  if (!update || typeof update !== 'object') return 'not an object';
+  const empId = String(update.empId ?? '').trim();
+  if (!empId) return 'empId is missing';
+  let skills = {
+    skillsExpert: profile?.skillsExpert || [],
+    skillsGood: profile?.skillsGood || [],
+    skillsLearning: profile?.skillsLearning || [],
+  };
+  const fields = {};
+  const changes = update.skills && typeof update.skills === 'object' ? Object.entries(update.skills) : [];
+  for (const [type, rawLevel] of changes) {
+    const level = String(rawLevel ?? '').toLowerCase();
+    if (!SKILL_KEYS.includes(type)) return `unknown machine type "${type}"`;
+    if (!['', 'none', 'expert', 'good', 'learning'].includes(level)) return `unknown level "${rawLevel}" for ${type}`;
+    skills = withSkill(skills, type, level === 'none' ? '' : level);
+  }
+  if (changes.length) Object.assign(fields, skills);
+  for (const [key, max] of [['efficiency', 300], ['dailyOutput', 100000]]) {
+    if (update[key] === undefined || update[key] === null) continue;
+    const n = Math.round(Number(update[key]));
+    if (!Number.isFinite(n) || n < 0 || n > max) return `${key} must be 0-${max}`;
+    fields[key] = n;
+  }
+  if (update.quality !== undefined && update.quality !== null) {
+    if (!QUALITY_VALUES.includes(update.quality)) return `quality must be one of ${QUALITY_VALUES.filter(Boolean).join(', ')}`;
+    fields.quality = update.quality;
+  }
+  if (typeof update.note === 'string' && update.note.trim()) {
+    const stamp = `${new Date().toISOString().slice(0, 10)}: ${update.note.trim()}`.slice(0, 300);
+    fields.notes = [profile?.notes, stamp].filter(Boolean).join('\n').slice(-1000);
+  }
+  return Object.keys(fields).length ? fields : 'nothing to change';
+}
+
+// --- Area marks: an outline + label around each production line ------------
+
+/** Strong colour per line letter (the deep version of its pale zone tint); dark enough for B&W print. */
+const LINE_COLORS = { A: '#1d4ed8', B: '#15803d', C: '#7e22ce', D: '#c2410c', E: '#0e7490', F: '#be185d' };
+export const lineColor = (label) => LINE_COLORS[String(label).replace(/^Line\s+/i, '').toUpperCase()] || '#334155';
+
+/**
+ * The rectangle around every placed station of each "Line …" zone (case and
+ * spacing ignored, so "LINE B" and "Line B" are one area), with a little
+ * padding, in drawing units. Other zones are scattered over the floor and
+ * get no outline.
+ * @returns {Array<{label: string, x: number, y: number, w: number, h: number}>}
+ */
+export function lineAreas(stations, map, pad = 1.5) {
+  if (!map || !Array.isArray(map.boxes)) return [];
+  const rects = new Map();
+  for (const box of map.boxes) {
+    if (!box) continue;
+    for (const r of slotRects(box)) rects.set(`${box.id}:${r.slot}`, r);
+  }
+  const areas = new Map();
+  for (const st of Array.isArray(stations) ? stations : []) {
+    if (!st || !st.boxId) continue;
+    const zone = String(st.zone ?? '').trim().replace(/\s+/g, ' ');
+    const match = /^line\s+(.+)$/i.exec(zone);
+    if (!match) continue;
+    const r = rects.get(`${st.boxId}:${Number(st.slot) || 0}`);
+    if (!r) continue;
+    const key = zone.toLowerCase();
+    const a = areas.get(key) || { label: `Line ${match[1].toUpperCase()}`, x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+    a.x1 = Math.min(a.x1, r.x);
+    a.y1 = Math.min(a.y1, r.y);
+    a.x2 = Math.max(a.x2, r.x + r.w);
+    a.y2 = Math.max(a.y2, r.y + r.h);
+    areas.set(key, a);
+  }
+  return [...areas.values()]
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .map((a) => ({ label: a.label, color: lineColor(a.label), x: a.x1 - pad, y: a.y1 - pad, w: a.x2 - a.x1 + pad * 2, h: a.y2 - a.y1 + pad * 2 }));
+}
+
+// --- QC records (qc.js) -------------------------------------------------------
+
+/** Common sewing defects offered as one-tap choices on a QC record. */
+export const QC_DEFECT_TYPES = Object.freeze([
+  'Broken stitch',
+  'Skipped stitch',
+  'Uneven / crooked seam',
+  'Puckering',
+  'Open seam',
+  'Wrong measurement',
+  'Stain / oil mark',
+  'Untrimmed threads',
+  'Wrong part / label',
+  'Hole / fabric damage',
+  'Other',
+]);
+
+/** Suggested result for a defect rate: up to 2% pass, up to 5% rework, more fail. */
+export function qcSuggestedResult(checked, defects) {
+  const rate = Number(checked) > 0 ? Number(defects || 0) / Number(checked) : 0;
+  return rate <= 0.02 ? 'pass' : rate <= 0.05 ? 'rework' : 'fail';
+}
+
+/**
+ * Per worker (by employee ID, case and spaces ignored) for the records on or
+ * after `sinceIso`: checks, pieces checked, defects, defect rate (%), fails,
+ * the newest record and the defect kinds seen most. Worst rate first.
+ */
+export function qcSummary(records, sinceIso = '') {
+  const key = (value) => String(value ?? '').toUpperCase().replace(/\s+/g, '');
+  const out = new Map();
+  for (const r of Array.isArray(records) ? records : []) {
+    if (!r || !r.empId || !r.date || String(r.date) < sinceIso) continue;
+    const k = key(r.empId);
+    const s = out.get(k) || { empId: r.empId, workerName: '', checks: 0, checked: 0, defects: 0, fails: 0, reworks: 0, last: null, kinds: {} };
+    s.checks += 1;
+    s.checked += Number(r.checked) || 0;
+    s.defects += Number(r.defects) || 0;
+    if (r.result === 'fail') s.fails += 1;
+    if (r.result === 'rework') s.reworks += 1;
+    for (const kind of Array.isArray(r.defectTypes) ? r.defectTypes : []) s.kinds[kind] = (s.kinds[kind] || 0) + 1;
+    // Newest by date, then by save time (two checks on one day).
+    const stamp = (x) => `${x.date}|${x.updatedAt || x.createdAt || ''}`;
+    if (!s.last || stamp(r) >= stamp(s.last)) {
+      s.last = r;
+      if (r.workerName) s.workerName = r.workerName;
+    }
+    out.set(k, s);
+  }
+  return [...out.values()]
+    .map((s) => ({
+      ...s,
+      rate: s.checked ? Math.round((s.defects / s.checked) * 1000) / 10 : 0,
+      topKinds: Object.entries(s.kinds).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([kind]) => kind),
+    }))
+    .sort((a, b) => b.rate - a.rate || b.checks - a.checks);
 }
